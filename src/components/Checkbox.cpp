@@ -104,12 +104,20 @@ bool CheckboxComponent::Render(const char *label, Rectangle bounds,
 
   bool isVisible = Layout::IsRectVisibleInScrollContainer(bounds);
 #if RAYM3_USE_INPUT_LAYERS
-  bool canProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(bounds);
-  bool clicked = canProcessInput && CheckCollisionPointRec(GetMousePosition(), bounds) &&
-                 IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+  int layerId = InputLayerManager::GetCurrentLayerId();
+  // High-layer overlays bypass scroll container clipping
+  if (layerId >= 100)
+    isVisible = true;
+
+  bool canProcessInput =
+      isVisible && InputLayerManager::ShouldProcessMouseInput(bounds, layerId);
+  bool clicked = canProcessInput &&
+                 CheckCollisionPointRec(GetMousePosition(), bounds) &&
+                 IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #else
-  bool clicked = isVisible && CheckCollisionPointRec(GetMousePosition(), bounds) &&
-                 IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+  bool clicked = isVisible &&
+                 CheckCollisionPointRec(GetMousePosition(), bounds) &&
+                 IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #endif
   if (!inputBlocked && clicked) {
     *checked = !*checked;
@@ -126,7 +134,13 @@ ComponentState CheckboxComponent::GetState(Rectangle bounds) {
   Vector2 mousePos = GetMousePosition();
   bool isVisible = Layout::IsRectVisibleInScrollContainer(bounds);
 #if RAYM3_USE_INPUT_LAYERS
-  bool canProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(bounds);
+  int layerId = InputLayerManager::GetCurrentLayerId();
+  // High-layer overlays bypass scroll container clipping
+  if (layerId >= 100)
+    isVisible = true;
+
+  bool canProcessInput =
+      isVisible && InputLayerManager::ShouldProcessMouseInput(bounds, layerId);
   bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, bounds);
 #else
   bool isHovered = isVisible && CheckCollisionPointRec(mousePos, bounds);

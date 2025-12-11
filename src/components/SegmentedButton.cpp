@@ -173,7 +173,16 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
     }
 
     // Input
-    if (state == ComponentState::Pressed) {
+    Vector2 mousePos = GetMousePosition();
+#if RAYM3_USE_INPUT_LAYERS
+    bool canProcessInput = InputLayerManager::ShouldProcessMouseInput(segmentBounds);
+    bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, segmentBounds);
+    bool isClicked = isHovered && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
+#else
+    bool isHovered = CheckCollisionPointRec(mousePos, segmentBounds);
+    bool isClicked = isHovered && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
+#endif
+    if (isClicked && !inputBlocked) {
       *selectedIndex = i;
       changed = true;
 #if RAYM3_USE_INPUT_LAYERS

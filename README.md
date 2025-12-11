@@ -300,7 +300,40 @@ raym3 is an independent, self-contained project. All resources (icons and fonts)
 
 ## Known Issues / TODO
 
-- **List Component Input Blocking**: The List component currently still reacts to clicks even when there are higher layers above it. This should be fixed to respect the input layer system and block input when appropriate.
+- **List Component Input Blocking**: The List component currently still reacts to clicks even when there are higher layers above it. This should be fixed to verify blocking.
+
+## Debugging
+
+raym3 provides built-in tools for debugging layouts and understanding component bounds:
+
+### Layout Debug Visualization
+
+The layout system includes a powerful debug visualization tool that helps you understand how your UI is being laid out:
+
+```cpp
+// Enable debug visualization
+raym3::Layout::SetDebug(true);
+
+// In your render loop, after Layout::End():
+raym3::Layout::DrawDebug();
+```
+
+**Features:**
+- **Color-Coded Boxes**: Each layout node gets a unique color generated from its index, making it easy to distinguish between different components
+- **Hover Highlighting**: When you hover over a component, it darkens and becomes more opaque with a darker outline for clear identification
+- **Low-Opacity Overlays**: Non-hovered components use very low opacity (5%) so they don't obscure your actual UI
+- **Visual Hierarchy**: Helps you understand container nesting, padding, gaps, and flexbox behavior
+
+**Usage Tips:**
+- Enable debug mode when your layout isn't behaving as expected
+- Hover over components to see their exact bounds
+- Use it to verify padding, gaps, and alignment are working correctly
+- Toggle it on/off at runtime to compare the visual layout with the debug overlay
+
+## Interaction Model
+
+- **Click on Release**: Components (Buttons, etc.) trigger their primary action on **mouse release** while hovering, rather than on press. This matches standard UI behavior and allows users to cancel a click by moving the mouse away before releasing.
+- **Input Capture**: Drag operations (sliders, scrollbars) capture input, allowing the user to drag outside the component bounds once the gesture has started.
 
 ---
 

@@ -37,8 +37,11 @@ static float RenderListItems(Rectangle bounds, ListItem *items, int itemCount,
 
     Vector2 mousePos = GetMousePosition();
 #if RAYM3_USE_INPUT_LAYERS
-    bool canProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(itemBounds, listLayerId);
-    bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, itemBounds);
+    bool canProcessInput =
+        isVisible &&
+        InputLayerManager::ShouldProcessMouseInput(itemBounds, listLayerId);
+    bool isHovered =
+        canProcessInput && CheckCollisionPointRec(mousePos, itemBounds);
 #else
     bool isHovered = isVisible && CheckCollisionPointRec(mousePos, itemBounds);
 #endif
@@ -119,10 +122,14 @@ static float RenderListItems(Rectangle bounds, ListItem *items, int itemCount,
                                     itemBounds.y, buttonSize, buttonSize};
 
 #if RAYM3_USE_INPUT_LAYERS
-          bool actionCanProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(actionBounds, listLayerId);
-          bool actionHovered = actionCanProcessInput && CheckCollisionPointRec(mousePos, actionBounds);
+          bool actionCanProcessInput =
+              isVisible && InputLayerManager::ShouldProcessMouseInput(
+                               actionBounds, listLayerId);
+          bool actionHovered = actionCanProcessInput &&
+                               CheckCollisionPointRec(mousePos, actionBounds);
 #else
-          bool actionHovered = isVisible && CheckCollisionPointRec(mousePos, actionBounds);
+          bool actionHovered =
+              isVisible && CheckCollisionPointRec(mousePos, actionBounds);
 #endif
           bool actionClicked =
               actionHovered && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);

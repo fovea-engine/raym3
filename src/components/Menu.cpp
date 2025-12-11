@@ -187,7 +187,7 @@ void MenuComponent::Render(Rectangle bounds, const MenuItem *items,
 #if RAYM3_USE_INPUT_LAYERS
     bool canProcessInput = InputLayerManager::ShouldProcessMouseInput(itemBounds);
     if (canInteract && canProcessInput && CheckCollisionPointRec(GetMousePosition(), itemBounds) &&
-        IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
       if (selected) {
         *selected = i;
       }
@@ -195,7 +195,7 @@ void MenuComponent::Render(Rectangle bounds, const MenuItem *items,
     }
 #else
     if (canInteract && CheckCollisionPointRec(GetMousePosition(), itemBounds) &&
-        IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
       if (selected) {
         *selected = i;
       }

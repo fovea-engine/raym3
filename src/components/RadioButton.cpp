@@ -1,5 +1,6 @@
 #include "raym3/components/RadioButton.h"
 #include "raym3/components/Dialog.h"
+#include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
 #include "raymath.h"
@@ -24,14 +25,21 @@ bool RadioButtonComponent::Render(const char *label, Rectangle bounds,
   // Interaction logic
   Vector2 mousePos = GetMousePosition();
 #if RAYM3_USE_INPUT_LAYERS
-  bool canProcessInput = InputLayerManager::ShouldProcessMouseInput(bounds);
+  int layerId = InputLayerManager::GetCurrentLayerId();
+  // High-layer overlays bypass scroll container clipping
+  bool isVisible =
+      (layerId >= 100) ? true : Layout::IsRectVisibleInScrollContainer(bounds);
+
+  bool canProcessInput =
+      isVisible && InputLayerManager::ShouldProcessMouseInput(bounds, layerId);
   bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, bounds);
   bool isPressed = isHovered && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-  bool isClicked = isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+  bool isClicked = isHovered && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #else
-  bool isHovered = CheckCollisionPointRec(mousePos, bounds);
+  bool isVisible = Layout::IsRectVisibleInScrollContainer(bounds);
+  bool isHovered = isVisible && CheckCollisionPointRec(mousePos, bounds);
   bool isPressed = isHovered && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-  bool isClicked = isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+  bool isClicked = isHovered && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #endif
 
   // Modal check

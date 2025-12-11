@@ -240,13 +240,14 @@ Rectangle Layout::BeginContainer(LayoutStyle style) {
 void Layout::EndContainer() {
   if (impl_->nodeStack.size() > 1) {
     // Check if this container was a scroll container
-    if (!impl_->nodeIsScrollContainer.empty() && impl_->nodeIsScrollContainer.back()) {
+    if (!impl_->nodeIsScrollContainer.empty() &&
+        impl_->nodeIsScrollContainer.back()) {
       // Pop the scroll stack
       if (!impl_->scrollStack.empty()) {
         impl_->scrollStack.pop_back();
       }
     }
-    
+
     impl_->nodeStack.pop_back();
     if (!impl_->nodeIsScrollContainer.empty()) {
       impl_->nodeIsScrollContainer.pop_back();
@@ -415,9 +416,10 @@ Rectangle Layout::BeginScrollContainer(LayoutStyle style, bool scrollX,
   if (id < impl_->previousFrameBounds.size()) {
     bounds = impl_->previousFrameBounds[id];
   }
-  
+
   // If bounds are invalid (first frame), use screen bounds as fallback
-  // This ensures scissor mode is always set up, and bounds will be corrected on next frame
+  // This ensures scissor mode is always set up, and bounds will be corrected on
+  // next frame
   if (bounds.width <= 0 || bounds.height <= 0) {
     bounds = {0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()};
   }
@@ -439,7 +441,7 @@ Rectangle Layout::BeginScrollContainer(LayoutStyle style, bool scrollX,
   // Handle input
   Vector2 mousePos = GetMousePosition();
   bool mouseInBounds = CheckCollisionPointRec(mousePos, bounds);
-  
+
 #if RAYM3_USE_INPUT_LAYERS
   // Use input capture to ensure drags must start in bounds
   bool canProcessInput = InputLayerManager::BeginInputCapture(bounds, true);
@@ -532,13 +534,64 @@ bool Layout::IsRectVisibleInScrollContainer(Rectangle rect) {
     // No scroll container active, element is always visible
     return true;
   }
-  
+
   // Get the current scroll container's bounds (scissor bounds)
   const ScrollContainerState &scrollState = impl_->scrollStack.back();
   Rectangle scissorBounds = scrollState.bounds;
-  
+
   // Check if rect intersects with scissor bounds
   return CheckCollisionRecs(rect, scissorBounds);
+}
+
+static bool debugEnabled = false;
+
+void Layout::SetDebug(bool enabled) { debugEnabled = enabled; }
+
+void Layout::DrawDebug() {
+  if (!debugEnabled || !impl_)
+    return;
+
+  Vector2 mousePos = GetMousePosition();
+
+  // Iterate all bounds to draw them
+  for (size_t i = 0; i < impl_->currentFrameBounds.size(); ++i) {
+    Rectangle rect = impl_->currentFrameBounds[i];
+
+    // Generate distinct color based on index
+    // Using prime number steps to distribute colors across the hue spectrum
+    float hue = (float)((i * 67) % 360);
+    Color baseColor = ColorFromHSV(hue, 0.8f, 0.9f);
+
+    bool isHovered = CheckCollisionPointRec(mousePos, rect);
+
+    // Determine fill and outline colors based on hover state
+    Color fillColor;
+    Color outlineColor;
+
+    if (isHovered) {
+      // Hover: Darken the color (lower value in HSV)
+      Color darkerColor = ColorFromHSV(hue, 0.8f, 0.6f); // Darker value
+      fillColor = ColorAlpha(darkerColor, 0.15f);
+      outlineColor =
+          ColorAlpha(darkerColor, 1.0f); // Fully opaque darker outline
+    } else {
+      // Normal: Low opacity fill, dark outline
+      fillColor = ColorAlpha(baseColor, 0.05f);
+      // Darker shade for outline
+      outlineColor = {(unsigned char)(baseColor.r * 0.5f),
+                      (unsigned char)(baseColor.g * 0.5f),
+                      (unsigned char)(baseColor.b * 0.5f), 255};
+    }
+
+    DrawRectangleRec(rect, fillColor);
+    DrawRectangleLinesEx(rect, 1.0f, outlineColor);
+  }
+}
+
+void Layout::RegisterDebugRect(Rectangle rect) {
+  if (!impl_)
+    return;
+  impl_->currentFrameBounds.push_back(rect);
 }
 
 } // namespace raym3

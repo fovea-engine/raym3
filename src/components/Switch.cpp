@@ -200,10 +200,10 @@ bool SwitchComponent::Render(const char *label, Rectangle bounds,
 #if RAYM3_USE_INPUT_LAYERS
   bool canProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(bounds);
   bool clicked = canProcessInput && CheckCollisionPointRec(GetMousePosition(), bounds) &&
-                 IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+                 IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #else
   bool clicked = isVisible && CheckCollisionPointRec(GetMousePosition(), bounds) &&
-                 IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+                 IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #endif
   if (!inputBlocked && clicked && state != ComponentState::Disabled) {
     *checked = !*checked;

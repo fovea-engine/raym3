@@ -30,35 +30,39 @@ public:
   static void Initialize();
   static void BeginFrame();
   static void EndFrame();
-  
+
   // Layer management
   static int PushLayer(int zOrder = 0);
   static void PopLayer();
   static int GetCurrentLayerId();
   static int GetHighestLayerId();
-  
+
   // Blocking region registration
   static void RegisterBlockingRegion(Rectangle bounds, bool blocksInput = true);
-  
+
   // Input capture (for drags/scrolls)
   // layerId: The layer ID that the component is on. If -1, uses currentLayerId_
-  static bool BeginInputCapture(Rectangle bounds, bool requireStartInBounds = true, int layerId = -1);
+  static bool BeginInputCapture(Rectangle bounds,
+                                bool requireStartInBounds = true,
+                                int layerId = -1);
   static bool IsInputCaptured();
   static bool IsInputCapturedBy(Rectangle bounds, int layerId = -1);
   static void ReleaseCapture();
-  
+
   // Basic input check
   // layerId: The layer ID to check from. If -1, uses currentLayerId_
   static bool ShouldProcessMouseInput(Rectangle bounds, int layerId = -1);
-  
+
   // Check if there's a blocking region above a specific layer at mouse position
   static bool IsBlockedByHigherLayer(int layerId, Vector2 mousePos);
-  
+
   // Input consumption
   static void ConsumeInput();
 
 private:
   static std::vector<BlockingRegion> blockingRegions_;
+  static std::vector<BlockingRegion>
+      activeBlockingRegions_; // For double-buffering
   static int currentLayerId_;
   static std::vector<int> layerStack_;
   static int registrationOrder_;
@@ -94,4 +98,3 @@ public:
 #endif // RAYM3_USE_INPUT_LAYERS
 
 } // namespace raym3
-

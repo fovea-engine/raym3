@@ -167,6 +167,89 @@ EndScissorMode();
 raym3::Layout::EndContainer();
 ```
 
+## Debugging Layouts
+
+If your layout isn't behaving as expected, you can enable debug mode to visualize the computed bounds of every container and item.
+
+### Enabling Debug Mode
+
+```cpp
+// 1. Enable debug mode (can be toggled at runtime)
+raym3::Layout::SetDebug(true);
+
+// 2. Draw debug visualization at the end of your frame (after Layout::End())
+raym3::Layout::DrawDebug();
+```
+
+### Debug Visualization Features
+
+The debug overlay provides several helpful features:
+
+- **Unique Colors**: Each layout node gets a distinct color generated from its index using a hue-based algorithm. This makes it easy to distinguish between different components and containers.
+
+- **Hover Highlighting**: When you hover your mouse over a component:
+  - The component darkens (lower HSV value)
+  - Opacity increases to 15% (from 5%)
+  - Outline becomes fully opaque and darker for clear identification
+  
+- **Low-Opacity Overlays**: Non-hovered components use very low opacity (5%) so they don't obscure your actual UI while still showing the layout structure.
+
+- **Visual Hierarchy**: The overlay helps you understand:
+  - Container nesting and parent-child relationships
+  - Padding and gap spacing
+  - Flexbox grow/shrink behavior
+  - Alignment and justification
+
+### Common Debugging Scenarios
+
+**Problem: Component not appearing**
+- Enable debug mode to see if the component has zero width/height
+- Check if the component is being allocated space but rendering outside the visible area
+
+**Problem: Unexpected spacing**
+- Use hover to identify which container is adding the extra space
+- Verify padding and gap values in your LayoutStyle
+
+**Problem: Flexbox not working as expected**
+- Check if parent container has enough space to distribute
+- Verify flexGrow/flexShrink values
+- Ensure you're using the correct direction (Row vs Column)
+
+### Example: Debugging a Complex Layout
+
+```cpp
+raym3::BeginFrame();
+
+// Enable debug mode
+raym3::Layout::SetDebug(true);
+
+Rectangle screen = {0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()};
+raym3::Layout::Begin(screen);
+
+// Your layout code here...
+raym3::LayoutStyle mainStyle = raym3::Layout::Row();
+raym3::Layout::BeginContainer(mainStyle);
+// ... components ...
+raym3::Layout::EndContainer();
+
+raym3::Layout::End();
+
+// Draw debug overlay AFTER Layout::End()
+raym3::Layout::DrawDebug();
+
+raym3::EndFrame();
+```
+
+**Pro Tip**: You can toggle debug mode at runtime based on a key press:
+
+```cpp
+if (IsKeyPressed(KEY_F3)) {
+    static bool debugEnabled = false;
+    debugEnabled = !debugEnabled;
+    raym3::Layout::SetDebug(debugEnabled);
+}
+```
+
 ## Important Notes
 
 1. **Frame-Based Calculation**: Layout bounds are calculated from the *previous* frame. On the first frame, bounds may be `{0, 0, 0, 0}` until the layout is calculated.

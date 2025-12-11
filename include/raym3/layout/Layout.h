@@ -55,9 +55,10 @@ public:
 
   // Set scroll offset for the active scroll container
   static void SetScrollOffset(Vector2 offset);
-  
-  // Check if a rectangle is visible within the current scroll container's scissor bounds
-  // Returns true if the rectangle intersects with the visible scissor area
+
+  // Check if a rectangle is visible within the current scroll container's
+  // scissor bounds Returns true if the rectangle intersects with the visible
+  // scissor area
   static bool IsRectVisibleInScrollContainer(Rectangle rect);
 
   // Helpers
@@ -65,6 +66,12 @@ public:
   static LayoutStyle Column();
   static LayoutStyle Flex(float grow = 1.0f);
   static LayoutStyle Fixed(float width, float height);
+
+  // Debug visualization
+  static void SetDebug(bool enabled);
+  static void DrawDebug();
+  // Register manual layout bounds for debug visualization
+  static void RegisterDebugRect(Rectangle rect);
 
 private:
   struct Impl;
