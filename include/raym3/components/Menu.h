@@ -10,7 +10,7 @@ struct MenuItem; // Forward declaration
 class MenuComponent {
 public:
   static void Render(Rectangle bounds, const struct MenuItem *items,
-                     int itemCount, int *selected);
+                     int itemCount, int *selected, bool iconOnly = false);
 
 private:
   static ComponentState GetItemState(Rectangle itemBounds, int index,

@@ -168,8 +168,8 @@ bool Dialog(const char *title, const char *message, const char *buttons) {
 }
 
 void Menu(Rectangle bounds, const MenuItem *items, int itemCount,
-          int *selectedIndex) {
-  MenuComponent::Render(bounds, items, itemCount, selectedIndex);
+          int *selectedIndex, bool iconOnly) {
+  MenuComponent::Render(bounds, items, itemCount, selectedIndex, iconOnly);
 }
 
 bool SegmentedButton(Rectangle bounds, const SegmentedButtonItem *items,

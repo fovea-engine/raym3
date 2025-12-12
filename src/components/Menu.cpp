@@ -14,13 +14,111 @@
 namespace raym3 {
 
 void MenuComponent::Render(Rectangle bounds, const MenuItem *items,
-                           int itemCount, int *selected) {
+                           int itemCount, int *selected, bool iconOnly) {
   if (!items || itemCount <= 0)
     return;
 
   ColorScheme &scheme = Theme::GetColorScheme();
   float cornerRadius = Theme::GetShapeTokens().cornerMedium;
 
+  // Icon-only mode: horizontal row of square icon buttons
+  if (iconOnly) {
+    float iconSize = 40.0f;   // Square button size
+    float padding = 4.0f;     // Padding between icons
+    float menuPadding = 8.0f; // Padding inside menu container
+
+    // Draw menu background
+    Renderer::DrawElevatedRectangle(bounds, cornerRadius, 2,
+                                    scheme.surfaceContainer);
+
+    float currentX = bounds.x + menuPadding;
+    float centerY = bounds.y + bounds.height / 2.0f;
+
+    bool inputBlocked =
+        DialogComponent::IsActive() && !DialogComponent::IsRendering();
+
+    for (int i = 0; i < itemCount; i++) {
+      if (items[i].isGap || items[i].isDivider) {
+        currentX += padding * 2; // Extra space for separators
+        continue;
+      }
+
+      Rectangle itemBounds = {currentX, centerY - iconSize / 2.0f, iconSize,
+                              iconSize};
+      float itemCornerRadius = Theme::GetShapeTokens().cornerSmall;
+
+      ComponentState state = items[i].disabled
+                                 ? ComponentState::Disabled
+                                 : GetItemState(itemBounds, i, selected);
+
+      if (inputBlocked && state != ComponentState::Disabled) {
+        state = ComponentState::Default;
+      }
+
+      bool isSelected = (selected && *selected == i);
+
+      // Background for selected item
+      if (isSelected) {
+        Renderer::DrawRoundedRectangle(itemBounds, itemCornerRadius,
+                                       scheme.secondaryContainer);
+      }
+
+      // State Layer
+      if (!items[i].disabled) {
+        Color stateBaseColor =
+            isSelected ? scheme.onSecondaryContainer : scheme.onSurface;
+        Renderer::DrawStateLayer(itemBounds, itemCornerRadius, stateBaseColor,
+                                 state);
+      }
+
+      // Icon (centered in square)
+      const char *iconName =
+          items[i].leadingIcon ? items[i].leadingIcon : items[i].text;
+      if (iconName) {
+        float iconDrawSize = 24.0f;
+        Rectangle iconRect = {itemBounds.x + (iconSize - iconDrawSize) / 2.0f,
+                              itemBounds.y + (iconSize - iconDrawSize) / 2.0f,
+                              iconDrawSize, iconDrawSize};
+        Color iconColor = items[i].disabled
+                              ? ColorAlpha(scheme.onSurface, 0.38f)
+                              : scheme.onSurfaceVariant;
+        if (isSelected)
+          iconColor = scheme.onSecondaryContainer;
+
+        SvgRenderer::DrawIcon(iconName, iconRect, IconVariation::Filled,
+                              iconColor);
+      }
+
+      // Interaction
+      bool canInteract = !items[i].disabled && !inputBlocked;
+
+#if RAYM3_USE_INPUT_LAYERS
+      bool canProcessInput =
+          InputLayerManager::ShouldProcessMouseInput(itemBounds);
+      if (canInteract && canProcessInput &&
+          CheckCollisionPointRec(GetMousePosition(), itemBounds) &&
+          IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        if (selected) {
+          *selected = i;
+        }
+        InputLayerManager::ConsumeInput();
+      }
+#else
+      if (canInteract &&
+          CheckCollisionPointRec(GetMousePosition(), itemBounds) &&
+          IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+        if (selected) {
+          *selected = i;
+        }
+      }
+#endif
+
+      currentX += iconSize + padding;
+    }
+    return;
+  }
+
+  // Standard text-based menu (existing implementation)
   float itemHeight = 48.0f;        // Min height 48dp
   float verticalPadding = 8.0f;    // Padding at top/bottom of menu list
   float horizontalPadding = 12.0f; // Padding for items inside menu
@@ -185,8 +283,10 @@ void MenuComponent::Render(Rectangle bounds, const MenuItem *items,
     bool canInteract = !items[i].disabled && !inputBlocked;
 
 #if RAYM3_USE_INPUT_LAYERS
-    bool canProcessInput = InputLayerManager::ShouldProcessMouseInput(itemBounds);
-    if (canInteract && canProcessInput && CheckCollisionPointRec(GetMousePosition(), itemBounds) &&
+    bool canProcessInput =
+        InputLayerManager::ShouldProcessMouseInput(itemBounds);
+    if (canInteract && canProcessInput &&
+        CheckCollisionPointRec(GetMousePosition(), itemBounds) &&
         IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
       if (selected) {
         *selected = i;
@@ -211,9 +311,14 @@ ComponentState MenuComponent::GetItemState(Rectangle itemBounds, int index,
   Vector2 mousePos = GetMousePosition();
 #if RAYM3_USE_INPUT_LAYERS
   int menuLayerId = InputLayerManager::GetCurrentLayerId();
-  bool isVisible = (menuLayerId >= 100) ? true : Layout::IsRectVisibleInScrollContainer(itemBounds);
-  bool canProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(itemBounds, menuLayerId);
-  bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, itemBounds);
+  bool isVisible = (menuLayerId >= 100)
+                       ? true
+                       : Layout::IsRectVisibleInScrollContainer(itemBounds);
+  bool canProcessInput =
+      isVisible &&
+      InputLayerManager::ShouldProcessMouseInput(itemBounds, menuLayerId);
+  bool isHovered =
+      canProcessInput && CheckCollisionPointRec(mousePos, itemBounds);
 #else
   bool isHovered = CheckCollisionPointRec(mousePos, itemBounds);
 #endif

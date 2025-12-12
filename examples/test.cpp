@@ -163,7 +163,24 @@ int main() {
     raym3::Menu({col2X + 260, col2Y, 200, 250}, gapMenuItems, 5,
                 &selectedGapMenuItem);
 
-    col2Y += 320.0f;
+    // Icon-only menu demo (horizontal toolbar style)
+    static raym3::MenuItem iconOnlyItems[] = {
+        {.text = nullptr, .leadingIcon = "undo"},
+        {.text = nullptr, .leadingIcon = "redo"},
+        {.isDivider = true}, // Separator
+        {.text = nullptr, .leadingIcon = "content_cut"},
+        {.text = nullptr, .leadingIcon = "content_copy"},
+        {.text = nullptr, .leadingIcon = "content_paste"},
+        {.isDivider = true}, // Separator
+        {.text = nullptr, .leadingIcon = "format_bold"},
+        {.text = nullptr, .leadingIcon = "format_italic"},
+        {.text = nullptr, .leadingIcon = "format_underlined"},
+    };
+    static int selectedIconMenuItem = -1;
+    raym3::Menu({col2X, col2Y + 310, 396, 56}, iconOnlyItems, 10,
+                &selectedIconMenuItem, true); // iconOnly = true
+
+    col2Y += 390.0f;
 
     raym3::Card({col2X, col2Y, 350, 160}, raym3::CardVariant::Elevated);
     col2Y += 180.0f;

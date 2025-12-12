@@ -76,7 +76,7 @@ struct MenuItem {
 };
 
 void Menu(Rectangle bounds, const MenuItem *items, int itemCount,
-          int *selectedIndex);
+          int *selectedIndex, bool iconOnly = false);
 
 struct SegmentedButtonItem; // Forward declaration
 bool SegmentedButton(Rectangle bounds, const SegmentedButtonItem *items,
