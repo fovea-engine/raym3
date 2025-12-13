@@ -26,7 +26,7 @@ raym3 currently implements the following Material Design 3 components:
 ### Input Components
 - **Button** - Text, Filled, Outlined, Tonal, Elevated variants
 - **IconButton** - Buttons with Material Design icons
-- **TextField** - Single-line text input with label
+- **TextField** - Single-line text input with label, password mode, input masking, undo/redo support, and automatic cursor color inversion for custom backgrounds
 - **Checkbox** - Standard checkbox with label
 - **Switch** - Toggle switch
 - **RadioButton** - Radio button with label
@@ -36,7 +36,7 @@ raym3 currently implements the following Material Design 3 components:
 - **Card** - Elevated surface container with multiple variants
 - **Dialog** - Modal dialog with customizable buttons
 - **Modal** - Full-screen modal component with backdrop and text input support
-- **Menu** - Dropdown menu with icons and dividers
+- **Menu** - Dropdown menu with leading/trailing icons, dividers, gaps, icon-only mode, and disabled items
 - **List** - Material Design list component with expandable items, icons, and selection callbacks
 - **SegmentedButton** - Segmented button groups
 - **ProgressIndicator** - Circular and linear progress indicators
@@ -66,6 +66,7 @@ int main() {
     char textBuffer[256] = "";
     bool checked = false;
     float sliderValue = 50.0f;
+    int selectedMenuItem = 0;
     
     while (!WindowShouldClose()) {
         BeginDrawing();
@@ -81,9 +82,25 @@ int main() {
                          raym3::ButtonVariant::Filled,
                          raym3::IconVariation::Filled);
         
-        raym3::TextField(textBuffer, sizeof(textBuffer), {100, 210, 200, 56}, "Label");
+        // TextField with custom background and automatic cursor inversion
+        raym3::TextFieldOptions options;
+        options.backgroundColor = PURPLE;
+        options.textColor = WHITE;
+        raym3::TextField(textBuffer, sizeof(textBuffer), {100, 210, 200, 56}, "Label", options);
+        
         raym3::Checkbox("Check me", {100, 280, 200, 24}, &checked);
         sliderValue = raym3::Slider({100, 320, 200, 40}, sliderValue, 0.0f, 100.0f, "Slider");
+        
+        // Menu with icons, dividers, and gaps
+        static raym3::MenuItem menuItems[] = {
+            {"Home", "home"},
+            {"Settings", "settings"},
+            {nullptr, nullptr, nullptr, nullptr, true}, // Divider
+            {"Profile", "person"},
+            {nullptr, nullptr, nullptr, nullptr, false, true}, // Gap
+            {"Logout", "logout"}
+        };
+        raym3::Menu({100, 380, 200, 240}, menuItems, 6, &selectedMenuItem);
         
         raym3::EndFrame();
         EndDrawing();
@@ -94,6 +111,29 @@ int main() {
     return 0;
 }
 ```
+
+### TextField Features
+
+The TextField component supports several advanced features:
+
+- **Custom Colors**: Set `backgroundColor` and `textColor` in `TextFieldOptions`
+- **Automatic Cursor Inversion**: Cursor color automatically inverts based on background luminance
+- **Password Mode**: Set `passwordMode = true` to mask input
+- **Input Masking**: Use regex patterns via `inputMask` for validation
+- **Undo/Redo**: Built-in support with configurable history depth via `maxUndoHistory`
+- **Icons**: Add `leadingIcon` and `trailingIcon` with click callbacks
+- **Read-Only**: Set `readOnly = true` to prevent editing
+
+### Menu Component Features
+
+The Menu component supports:
+
+- **Leading Icons**: Display icons on the left side of menu items
+- **Trailing Text/Icons**: Show additional text or icons on the right
+- **Dividers**: Add visual separators with `isDivider = true`
+- **Gaps**: Create spacing between items with `isGap = true`
+- **Icon-Only Mode**: Set `iconOnly = true` for compact horizontal menus
+- **Disabled Items**: Set `disabled = true` to prevent interaction
 
 ## Building
 

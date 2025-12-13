@@ -702,7 +702,7 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
       UpdateCursor(buffer, bufferSize, fieldState.lastBlinkTime);
       DrawCursor(inputBounds, buffer, fieldState.cursorPosition,
                  fieldState.scrollOffset, fieldState.lastBlinkTime,
-                 textStartX - inputBounds.x);
+                 textStartX - inputBounds.x, bgColor);
     }
 
     NormalizeSelection(fieldState.selectionStart, fieldState.selectionEnd);
@@ -907,7 +907,8 @@ void TextFieldComponent::UpdateCursor(char *buffer, int bufferSize,
 
 void TextFieldComponent::DrawCursor(Rectangle bounds, const char *text,
                                     int position, float scrollOffset,
-                                    float lastBlinkTime, float textStartX) {
+                                    float lastBlinkTime, float textStartX,
+                                    Color bgColor) {
   float currentTime = GetTime();
   float blinkCycle = (currentTime - lastBlinkTime) * 2.0f;
   bool showCursor = ((int)blinkCycle % 2 == 0);
@@ -923,6 +924,24 @@ void TextFieldComponent::DrawCursor(Rectangle bounds, const char *text,
     }
 
     Color cursorColor = Theme::GetColorScheme().onSurface;
+
+    // If a custom background color is set, invert the cursor color
+    if (bgColor.a > 0) {
+      // Calculate luminance of background color
+      float luminance =
+          (0.299f * bgColor.r + 0.587f * bgColor.g + 0.114f * bgColor.b) /
+          255.0f;
+
+      // Invert based on luminance
+      if (luminance > 0.5f) {
+        // Light background -> dark cursor
+        cursorColor = BLACK;
+      } else {
+        // Dark background -> light cursor
+        cursorColor = WHITE;
+      }
+    }
+
     float cursorHeight = bounds.height - 8.0f;
     DrawLine((int)cursorX, (int)(bounds.y + 4), (int)cursorX,
              (int)(bounds.y + 4 + cursorHeight), cursorColor);

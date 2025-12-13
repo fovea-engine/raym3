@@ -15,7 +15,9 @@ public:
 
 private:
   static void UpdateCursor(char *buffer, int bufferSize, float &lastBlinkTime);
-  static void DrawCursor(Rectangle bounds, const char *text, int position, float scrollOffset, float lastBlinkTime, float textStartX);
+  static void DrawCursor(Rectangle bounds, const char *text, int position,
+                         float scrollOffset, float lastBlinkTime,
+                         float textStartX, Color bgColor);
 };
 
 } // namespace raym3
