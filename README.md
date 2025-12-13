@@ -331,7 +331,7 @@ We're particularly interested in contributions that add more Material Design 3 c
 - Tabs
 - Chips
 - DataTables
-- Snackbars
+- ~Snackbars~ implemented
 - Tooltips
 - FloatingActionButton (FAB)
 - BottomSheet
