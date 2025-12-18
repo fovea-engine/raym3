@@ -66,7 +66,6 @@ struct TextFieldOptions {
   bool passwordMode = false;
   bool readOnly = false;
   bool disabled = false;
-  bool useNativeInput = false; // Use platform-native text input for IME support
   const char *inputMask = nullptr;
   int maxUndoHistory = 15;
   const char *leadingIcon = nullptr;

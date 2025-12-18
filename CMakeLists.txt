@@ -8,7 +8,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(RAYM3_USE_YOGA "Enable Yoga layout support" ON)
 set(YOGA_DIR "" CACHE PATH "Path to Yoga directory (auto-detected if not set and yoga is a sibling directory)")
 option(RAYM3_USE_INPUT_LAYERS "Enable layered input system with render queue" ON)
-option(RAYM3_ENABLE_NATIVE_TEXT_INPUT "Enable platform-native text input for IME support" ON)
 option(RAYM3_EMBED_RESOURCES "Embed SVG icons and fonts into the static library" OFF)
 option(RAYM3_EMBED_ALL_ICONS "Embed all icons instead of only used ones (ignored if RAYM3_EMBED_RESOURCES is OFF)" OFF)
 
@@ -111,29 +110,7 @@ else()
     target_compile_definitions(raym3 PUBLIC RAYM3_USE_INPUT_LAYERS=0)
 endif()
 
-if(RAYM3_ENABLE_NATIVE_TEXT_INPUT)
-    target_compile_definitions(raym3 PRIVATE RAYM3_ENABLE_NATIVE_TEXT_INPUT=1)
-    message(STATUS "Native text input support enabled")
-    
-    # Add platform-specific implementation
-    if(APPLE)
-        target_sources(raym3 PRIVATE src/input/NativeTextInput.mm)
-        target_link_libraries(raym3 PRIVATE "-framework Cocoa")
-        # Add GLFW include path (from raylib's external GLFW)
-        target_include_directories(raym3 PRIVATE 
-            ${CMAKE_BINARY_DIR}/_deps/raylib-src/src/external/glfw/include)
-        message(STATUS "  Using macOS Cocoa backend for native text input")
 
-    elseif(WIN32)
-        # Windows implementation would go here
-        message(STATUS "  Windows native text input not yet implemented")
-    elseif(UNIX)
-        # Linux implementation would go here  
-        message(STATUS "  Linux native text input not yet implemented")
-    endif()
-else()
-    target_compile_definitions(raym3 PRIVATE RAYM3_ENABLE_NATIVE_TEXT_INPUT=0)
-endif()
 
 
 set_target_properties(raym3 PROPERTIES
