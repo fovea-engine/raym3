@@ -331,7 +331,6 @@ We're particularly interested in contributions that add more Material Design 3 c
 - Tabs
 - Chips
 - DataTables
-- ~Snackbars~ implemented
 - Tooltips
 - FloatingActionButton (FAB)
 - BottomSheet
@@ -353,10 +352,6 @@ raym3 is an independent, self-contained project. All resources (icons and fonts)
 
 ### v1.1.0
 - **Removed Native Text Input**: The `useNativeInput` option in `TextFieldOptions` has been removed along with the `RAYM3_ENABLE_NATIVE_TEXT_INPUT` CMake option. The TextField component now provides full native-like text editing behavior (keyboard shortcuts, word/line navigation, selection, undo/redo) without requiring platform-specific backends. This simplifies cross-platform deployment and removes the Cocoa framework dependency on macOS.
-
-## Known Issues / TODO
-
-- **List Component Input Blocking**: The List component currently still reacts to clicks even when there are higher layers above it. This should be fixed to verify blocking.
 
 ## Debugging
 
