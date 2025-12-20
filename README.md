@@ -30,7 +30,8 @@ raym3 currently implements the following Material Design 3 components:
 - **Checkbox** - Standard checkbox with label
 - **Switch** - Toggle switch
 - **RadioButton** - Radio button with label
-- **Slider** - Continuous value slider with optional label
+- **Slider** - Continuous or discrete value slider with M3 Expressive features (tick marks, stop indicators, value display)
+- **RangeSlider** - Multi-thumb range slider for selecting value ranges
 
 ### Display Components
 - **Card** - Elevated surface container with multiple variants
@@ -66,6 +67,7 @@ int main() {
     char textBuffer[256] = "";
     bool checked = false;
     float sliderValue = 50.0f;
+    std::vector<float> rangeValues = {20.0f, 80.0f};
     int selectedMenuItem = 0;
     
     while (!WindowShouldClose()) {
@@ -89,7 +91,18 @@ int main() {
         raym3::TextField(textBuffer, sizeof(textBuffer), {100, 210, 200, 56}, "Label", options);
         
         raym3::Checkbox("Check me", {100, 280, 200, 24}, &checked);
-        sliderValue = raym3::Slider({100, 320, 200, 40}, sliderValue, 0.0f, 100.0f, "Slider");
+        
+        // Slider with discrete mode and tick marks
+        raym3::SliderOptions sliderOpts;
+        sliderOpts.stepValue = 10.0f;
+        sliderOpts.showTickMarks = true;
+        sliderOpts.showStopIndicators = true;
+        sliderValue = raym3::Slider({100, 320, 200, 40}, sliderValue, 0.0f, 100.0f, "Slider", sliderOpts);
+        
+        // Range slider for selecting a range
+        raym3::RangeSliderOptions rangeOpts;
+        rangeOpts.showValueIndicators = true;
+        rangeValues = raym3::RangeSlider({100, 380, 200, 40}, rangeValues, 0.0f, 100.0f, "Range", rangeOpts);
         
         // Menu with icons, dividers, and gaps
         static raym3::MenuItem menuItems[] = {
@@ -100,7 +113,7 @@ int main() {
             {nullptr, nullptr, nullptr, nullptr, false, true}, // Gap
             {"Logout", "logout"}
         };
-        raym3::Menu({100, 380, 200, 240}, menuItems, 6, &selectedMenuItem);
+        raym3::Menu({100, 440, 200, 240}, menuItems, 6, &selectedMenuItem);
         
         raym3::EndFrame();
         EndDrawing();
@@ -137,14 +150,29 @@ The Menu component supports:
 
 ### Slider Component Features
 
-The Slider component supports MD3 customization:
+The Slider component supports M3 Expressive customization:
 
+- **Discrete Mode**: Set `stepValue > 0` to snap to specific increments
+- **Tick Marks**: Enable `showTickMarks` to display step indicators in discrete mode
+- **Stop Indicators**: Enable `showStopIndicators` to show dots at min/max positions
 - **Inset Icons**: Add icons *inside* the track (`startIcon`, `endIcon`)
 - **Value Indicator**: Show a value bubble above the thumb on drag (`showValueIndicator`)
 - **Start/End Text**: Add text labels
 - **Track Colors**: Customize active/inactive track colors
 - **Handle Color**: Customize the handle thumb color
 - **End Dot**: Customize or hide the end-of-track dot
+
+### RangeSlider Component Features
+
+The RangeSlider component provides multi-thumb range selection:
+
+- **Multiple Thumbs**: Support for any number of thumbs via `std::vector<float>`
+- **Range Fill**: Active track fill between first and last thumb
+- **Thumb Constraints**: Thumbs cannot cross each other
+- **Minimum Distance**: Set `minDistance` to enforce spacing between thumbs
+- **Discrete Mode**: Supports `stepValue` and `showTickMarks` like Slider
+- **Value Indicators**: Show value bubbles for all thumbs when dragging
+- **Stop Indicators**: Display min/max position markers
 
 ## Building
 

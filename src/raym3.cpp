@@ -4,6 +4,7 @@
 #include "raym3/components/Checkbox.h"
 #include "raym3/components/Dialog.h"
 #include "raym3/components/Menu.h"
+#include "raym3/components/RangeSlider.h"
 #include "raym3/components/Slider.h"
 #include "raym3/components/Switch.h"
 #include "raym3/components/TextField.h"
@@ -58,6 +59,7 @@ void BeginFrame() {
     Initialize();
   TextFieldComponent::ResetFieldId();
   SliderComponent::ResetFieldId();
+  RangeSliderComponent::ResetFieldId();
 
 #if RAYM3_USE_INPUT_LAYERS
   InputLayerManager::BeginFrame();
@@ -138,6 +140,13 @@ float Slider(Rectangle bounds, float value, float min, float max,
 float Slider(Rectangle bounds, float value, float min, float max,
              const char *label, const SliderOptions &options) {
   return SliderComponent::Render(bounds, value, min, max, label, options);
+}
+
+std::vector<float> RangeSlider(Rectangle bounds,
+                               const std::vector<float> &values, float min,
+                               float max, const char *label,
+                               const RangeSliderOptions &options) {
+  return RangeSliderComponent::Render(bounds, values, min, max, label, options);
 }
 
 void Icon(const char *name, Rectangle bounds, IconVariation variation,

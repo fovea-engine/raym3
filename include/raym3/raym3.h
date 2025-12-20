@@ -2,12 +2,14 @@
 
 #include "raym3/components/Divider.h"         // Include for enum definition
 #include "raym3/components/List.h"            // Include for List component
+#include "raym3/components/RangeSlider.h"     // Include for RangeSlider
 #include "raym3/components/SegmentedButton.h" // Include for struct definition
 #include "raym3/components/Snackbar.h"
 #include "raym3/components/View3D.h" // Include for View3D class
 #include "raym3/styles/Theme.h"
 #include "raym3/types.h"
 #include <raylib.h>
+#include <vector>
 
 namespace raym3 {
 
@@ -48,6 +50,12 @@ float Slider(Rectangle bounds, float value, float min, float max,
              const char *label = nullptr);
 float Slider(Rectangle bounds, float value, float min, float max,
              const char *label, const SliderOptions &options);
+
+// Range slider (multi-thumb)
+std::vector<float> RangeSlider(Rectangle bounds,
+                               const std::vector<float> &values, float min,
+                               float max, const char *label = nullptr,
+                               const RangeSliderOptions &options = {});
 
 void CircularProgressIndicator(Rectangle bounds, float value = 0.0f,
                                bool indeterminate = false, Color color = BLANK,

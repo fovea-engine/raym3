@@ -64,10 +64,10 @@ float SliderComponent::Render(Rectangle bounds, float value, float min,
                               const SliderOptions &options) {
   ColorScheme &scheme = Theme::GetColorScheme();
 
-  // MD3 measurements
-  float trackHeight = 24.0f; // Thick pill shape
+  // M3 Expressive measurements
+  float trackHeight = 16.0f; // M3 spec: 16dp track
   float thumbWidth = 4.0f;   // User requested hard minimum 4px
-  float thumbHeight = 32.0f;
+  float thumbHeight = 44.0f; // M3 spec: 44dp touch target
 
   Rectangle trackBounds = GetTrackBounds(bounds);
 
@@ -76,7 +76,7 @@ float SliderComponent::Render(Rectangle bounds, float value, float min,
   // We do NOT shrink the track bounds.
   // We render the icon inside the track on the left (startIcon).
   float itemSize = 24.0f;
-  float padding = 8.0f;
+  float padding = 4.0f; // Closer to track edges
   float centerY = trackBounds.y + trackHeight / 2.0f;
 
   // Calculate normalized value and splitX
@@ -140,6 +140,12 @@ float SliderComponent::Render(Rectangle bounds, float value, float min,
       if (mouseDown) {
         float normalized = GetValueFromPosition(trackBounds, mousePos.x);
         value = min + normalized * (max - min);
+        // Discrete mode: snap to step
+        if (options.stepValue > 0.0f) {
+          value = std::round((value - min) / options.stepValue) *
+                      options.stepValue +
+                  min;
+        }
         value = std::clamp(value, min, max);
         // Recalculate normalized for drawing
         normalizedValue = (value - min) / (max - min);
@@ -169,7 +175,7 @@ float SliderComponent::Render(Rectangle bounds, float value, float min,
                             : scheme.surfaceVariant;
   Color handleColor =
       options.handleColor.a > 0 ? options.handleColor : scheme.primary;
-  float cornerRadius = std::min(trackHeight / 2.0f, 6.0f);
+  float cornerRadius = trackHeight / 2.0f; // M3: full pill (8dp for 16dp track)
 
   // 1. Inactive Track (Right side)
   // Draw full rounded rect first as background (inactive part visible on right)
@@ -233,8 +239,45 @@ float SliderComponent::Render(Rectangle bounds, float value, float min,
     DrawCircleV(dotPos, dotRadius, activeColor);
   }
 
-  // Gap Mask (Surface color)
-  float gapSize = 6.0f;
+  // Draw Stop Indicators at min/max (M3 feature)
+  if (options.showStopIndicators) {
+    float stopDotRadius = 2.0f;
+    float stopInset = 6.0f;
+    // Start stop (at min)
+    if (normalizedValue > 0.02f) { // Only show if thumb isn't covering it
+      Vector2 startDotPos = {trackBounds.x + stopInset,
+                             trackBounds.y + trackHeight / 2.0f};
+      DrawCircleV(startDotPos, stopDotRadius, activeColor);
+    }
+    // End stop (at max)
+    if (normalizedValue < 0.98f) { // Only show if thumb isn't covering it
+      Vector2 endDotPos = {trackBounds.x + trackBounds.width - stopInset,
+                           trackBounds.y + trackHeight / 2.0f};
+      DrawCircleV(endDotPos, stopDotRadius, inactiveColor);
+    }
+  }
+
+  // Draw Tick Marks for discrete mode
+  if (options.showTickMarks && options.stepValue > 0.0f) {
+    int numSteps = (int)((max - min) / options.stepValue);
+    float tickRadius = 1.5f;
+    float tickInset = 6.0f; // Inset from track edges
+    float tickableWidth = trackBounds.width - (tickInset * 2);
+    for (int i = 0; i <= numSteps; i++) {
+      float tickNorm = (float)i / (float)numSteps;
+      float tickX = trackBounds.x + tickInset + tickableWidth * tickNorm;
+      // Skip ticks covered by thumb
+      if (std::abs(tickX - splitX) < thumbWidth + 4.0f)
+        continue;
+      Vector2 tickPos = {tickX, trackBounds.y + trackHeight / 2.0f};
+      Color tickColor =
+          (tickNorm < normalizedValue) ? scheme.onPrimary : activeColor;
+      DrawCircleV(tickPos, tickRadius, tickColor);
+    }
+  }
+
+  // Gap Mask (Surface color) - M3: 4dp gap
+  float gapSize = 4.0f;
   Rectangle maskRect = {thumbRect.x - gapSize,
                         thumbRect.y, // Match thumb y
                         thumbRect.width + (gapSize * 2), thumbRect.height};
@@ -299,7 +342,7 @@ float SliderComponent::Render(Rectangle bounds, float value, float min,
 }
 
 Rectangle SliderComponent::GetTrackBounds(Rectangle bounds) {
-  float trackHeight = 24.0f; // Updated to match Render
+  float trackHeight = 16.0f; // M3 spec: 16dp track
   float labelHeight = 20.0f; // Approximate space for label
 
   // If label is present, track is pushed down. Logic in Render handles label

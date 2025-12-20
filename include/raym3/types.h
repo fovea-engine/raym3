@@ -89,6 +89,22 @@ struct SliderOptions {
   Color activeTrackColor = {0, 0, 0, 0};
   Color inactiveTrackColor = {0, 0, 0, 0};
   Color handleColor = {0, 0, 0, 0};
+  // M3 Expressive features
+  bool showStopIndicators = false; // Show dots at min/max positions
+  float stepValue = 0.0f;          // 0 = continuous, >0 = discrete mode
+  bool showTickMarks = false;      // Show tick marks for discrete mode
+};
+
+struct RangeSliderOptions {
+  bool showValueIndicators = false;
+  const char *valueFormat = "%.0f";
+  Color activeTrackColor = {0, 0, 0, 0};   // Fill between thumbs
+  Color inactiveTrackColor = {0, 0, 0, 0}; // Inactive portions
+  Color handleColor = {0, 0, 0, 0};
+  bool showStopIndicators = false;
+  float stepValue = 0.0f;     // 0 = continuous, >0 = discrete
+  bool showTickMarks = false; // Show tick marks for discrete mode
+  float minDistance = 0.0f;   // Minimum distance between adjacent thumbs
 };
 
 } // namespace raym3

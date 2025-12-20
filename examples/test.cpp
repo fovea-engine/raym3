@@ -47,28 +47,8 @@ int main() {
                      "Text Field");
     y += spacing + 20;
 
-    static char filledWithIconsBuffer[256] = "";
     static char outlinedWithIconsBuffer[256] = "";
     static bool showPassword = false;
-
-    static bool clearClicked = false;
-    raym3::TextFieldOptions filledIconsOpts;
-    filledIconsOpts.variant = raym3::TextFieldVariant::Filled;
-    filledIconsOpts.leadingIcon = "search";
-    filledIconsOpts.trailingIcon = "clear";
-    filledIconsOpts.placeholder = "Search";
-    filledIconsOpts.onTrailingIconClick = []() {
-      clearClicked = true;
-      printf("Clear icon clicked!\n");
-      return true;
-    };
-    raym3::TextField(filledWithIconsBuffer, sizeof(filledWithIconsBuffer),
-                     {20, y, 300, 56}, "Filled with Icons", filledIconsOpts);
-    if (clearClicked) {
-      filledWithIconsBuffer[0] = '\0';
-      clearClicked = false;
-    }
-    y += spacing + 20;
 
     raym3::TextFieldOptions outlinedIconsOpts;
     outlinedIconsOpts.variant = raym3::TextFieldVariant::Outlined;
@@ -88,20 +68,9 @@ int main() {
                      outlinedIconsOpts);
     y += spacing + 20;
 
-    // Additional TextField Demo
-    static char additionalBuffer[256] = "";
-    raym3::TextFieldOptions additionalOpts;
-    additionalOpts.variant = raym3::TextFieldVariant::Filled;
-    additionalOpts.placeholder = "Additional text field";
-    additionalOpts.leadingIcon = "language";
-    raym3::TextField(additionalBuffer, sizeof(additionalBuffer),
-                     {20, y, 300, 56}, "Additional Field", additionalOpts);
-    y += spacing + 20;
-
-    raym3::Checkbox("Checkbox", {20, y, 200, 24}, &checkboxChecked);
-    y += spacing;
-
-    raym3::Switch("Switch", {20, y, 200, 24}, &switchChecked);
+    // Checkbox and Switch on same row
+    raym3::Checkbox("Checkbox", {20, y, 120, 24}, &checkboxChecked);
+    raym3::Switch("Switch", {150, y, 120, 24}, &switchChecked);
     y += spacing;
 
     sliderValue =
@@ -127,7 +96,26 @@ int main() {
                                "Range", rangeOpts);
     y += spacing + 20;
 
-    y += 10.0f;
+    // Discrete slider with tick marks (M3 feature)
+    static float discreteValue = 50.0f;
+    raym3::SliderOptions discreteOpts;
+    discreteOpts.stepValue = 10.0f;
+    discreteOpts.showTickMarks = true;
+    discreteOpts.showStopIndicators = true;
+    discreteOpts.showValueIndicator = true;
+    discreteValue = raym3::Slider({20, y, 250, 40}, discreteValue, 0.0f, 100.0f,
+                                  "Discrete", discreteOpts);
+    y += spacing + 20;
+
+    // Range slider (multi-thumb)
+    static std::vector<float> rangeValues = {25.0f, 75.0f};
+    raym3::RangeSliderOptions rangeSliderOpts;
+    rangeSliderOpts.showValueIndicators = true;
+    rangeSliderOpts.minDistance = 10.0f;
+    rangeValues = raym3::RangeSlider({20, y, 250, 40}, rangeValues, 0.0f,
+                                     100.0f, "Range Slider", rangeSliderOpts);
+    y += spacing + 20;
+
     // Moved RadioButtons and SegmentedButton to Column 1 flow
     static int selectedOption = 0;
     if (raym3::RadioButton("Option 1", {20, y, 120, 48}, selectedOption == 0))
