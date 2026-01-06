@@ -12,19 +12,26 @@
 namespace raym3 {
 
 bool ButtonComponent::Render(const char *text, Rectangle bounds,
-                             ButtonVariant variant) {
+                             ButtonVariant variant,
+                             const ButtonOptions &options) {
   // Interaction
   Vector2 mousePos = GetMousePosition();
-  
+
 #if RAYM3_USE_INPUT_LAYERS
-  // Get the current layer ID (buttons should be on the same layer as their parent)
+  // Get the current layer ID (buttons should be on the same layer as their
+  // parent)
   int buttonLayerId = InputLayerManager::GetCurrentLayerId();
-  
-  // High-layer overlays (dialogs at 9999, context menus at 100) bypass scroll container clipping
-  // since they're absolutely positioned outside the layout flow
-  bool isVisible = (buttonLayerId >= 100) ? true : Layout::IsRectVisibleInScrollContainer(bounds);
-  
-  bool canProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(bounds, buttonLayerId);
+
+  // High-layer overlays (dialogs at 9999, context menus at 100) bypass scroll
+  // container clipping since they're absolutely positioned outside the layout
+  // flow
+  bool isVisible = (buttonLayerId >= 100)
+                       ? true
+                       : Layout::IsRectVisibleInScrollContainer(bounds);
+
+  bool canProcessInput =
+      isVisible &&
+      InputLayerManager::ShouldProcessMouseInput(bounds, buttonLayerId);
   bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, bounds);
 #else
   bool isVisible = Layout::IsRectVisibleInScrollContainer(bounds);
@@ -48,8 +55,11 @@ bool ButtonComponent::Render(const char *text, Rectangle bounds,
   else
     state = ComponentState::Default;
 
-  Color bgColor = GetBackgroundColor(variant, state);
-  Color textColor = GetTextColor(variant, state);
+  Color bgColor = (options.backgroundColor.a > 0)
+                      ? options.backgroundColor
+                      : GetBackgroundColor(variant, state);
+  Color textColor = (options.textColor.a > 0) ? options.textColor
+                                              : GetTextColor(variant, state);
   // MD3 Buttons are typically Pill shaped (fully rounded)
   float cornerRadius = bounds.height / 2.0f;
 
@@ -68,12 +78,15 @@ bool ButtonComponent::Render(const char *text, Rectangle bounds,
     // Filled button: Use bgColor which handles hover state (inversion)
     int elevation = (state == ComponentState::Pressed) ? 1 : 2;
     Renderer::DrawElevatedRectangle(bounds, cornerRadius, elevation, bgColor);
-  } else if (variant == ButtonVariant::Tonal) {
+  } else if (options.drawBackground && variant != ButtonVariant::Text) {
     Renderer::DrawRoundedRectangle(bounds, cornerRadius, bgColor);
-  } else if (variant == ButtonVariant::Outlined) {
+  }
+
+  if (options.drawOutline && variant == ButtonVariant::Outlined) {
     // Outlined button user requested white bg and shadow -> User now requested
     // NO shadow Re-using bgColor which we will set to white/surface below
-    Renderer::DrawRoundedRectangle(bounds, cornerRadius, bgColor);
+    // Renderer::DrawRoundedRectangle(bounds, cornerRadius, bgColor); // This
+    // was moved to the drawBackground check
 
     // Draw outline on top
     Color borderColor = (state == ComponentState::Disabled)
@@ -83,7 +96,8 @@ bool ButtonComponent::Render(const char *text, Rectangle bounds,
       borderColor = scheme.outline;
 
     // Use primary color outline as per user request
-    borderColor = scheme.primary;
+    borderColor =
+        (options.outlineColor.a > 0) ? options.outlineColor : scheme.primary;
 
     Renderer::DrawRoundedRectangleEx(bounds, cornerRadius, borderColor, 1.0f);
   } else if (variant == ButtonVariant::Text) {
@@ -110,26 +124,29 @@ bool ButtonComponent::Render(const char *text, Rectangle bounds,
   // Fix: Check for release independently of current frame's "Pressed" state
   // (which requires mouse down)
   bool wasClicked = isHovered && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
-  
+
 #if RAYM3_USE_INPUT_LAYERS
   if (isHovered || wasClicked) {
     InputLayerManager::ConsumeInput();
   }
 #endif
-  
+
   return wasClicked;
 }
 
 ComponentState ButtonComponent::GetState(Rectangle bounds) {
   Vector2 mousePos = GetMousePosition();
-  
+
   // Check if element is visible in scroll container
   bool isVisible = Layout::IsRectVisibleInScrollContainer(bounds);
-  
+
 #if RAYM3_USE_INPUT_LAYERS
-  // Get the current layer ID (buttons should be on the same layer as their parent)
+  // Get the current layer ID (buttons should be on the same layer as their
+  // parent)
   int buttonLayerId = InputLayerManager::GetCurrentLayerId();
-  bool canProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(bounds, buttonLayerId);
+  bool canProcessInput =
+      isVisible &&
+      InputLayerManager::ShouldProcessMouseInput(bounds, buttonLayerId);
   bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, bounds);
 #else
   bool isHovered = isVisible && CheckCollisionPointRec(mousePos, bounds);

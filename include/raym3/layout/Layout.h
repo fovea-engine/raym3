@@ -61,6 +61,10 @@ public:
   // scissor area
   static bool IsRectVisibleInScrollContainer(Rectangle rect);
 
+  // Get the combined scissor bounds of all active scroll containers
+  // Returns screen bounds if no scroll container is active
+  static Rectangle GetActiveScissorBounds();
+
   // Helpers
   static LayoutStyle Row();
   static LayoutStyle Column();

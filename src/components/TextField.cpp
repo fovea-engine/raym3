@@ -510,13 +510,22 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
     bgColor = ColorAlpha(scheme.surface, 0.5f);
   }
 
-  if (options.variant == TextFieldVariant::Filled) {
-    // Use DrawRoundedRectangle for filled background, not
-    // DrawRoundedRectangleEx
-    Renderer::DrawRoundedRectangle(inputBounds, cornerRadius, bgColor);
+  if (options.variant == TextFieldVariant::Filled && options.drawBackground) {
+    Color bgColor = (options.backgroundColor.a > 0)
+                        ? options.backgroundColor
+                        : scheme.surfaceContainerHighest;
+    // Subtler top rounding, flat bottom corners
+    float topRadius = 4.0f;
+    Renderer::DrawRoundedRectangle(inputBounds, topRadius, bgColor);
+    // Overlap with a rectangle on the bottom half to flatten corners
+    Rectangle bottomHalf = {inputBounds.x,
+                            inputBounds.y + inputBounds.height / 2.0f,
+                            inputBounds.width, inputBounds.height / 2.0f};
+    DrawRectangleRec(bottomHalf, bgColor);
   }
 
-  Color outlineColor = scheme.outline;
+  Color outlineColor =
+      (options.outlineColor.a > 0) ? options.outlineColor : scheme.outline;
   float outlineWidth = 1.0f;
   if (state == ComponentState::Focused && !options.readOnly) {
     outlineColor = scheme.primary;
@@ -525,11 +534,17 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
     outlineWidth = 1.0f;
   }
 
-  Renderer::DrawRoundedRectangleEx(inputBounds, cornerRadius, outlineColor,
-                                   outlineWidth);
-
-  if (options.variant == TextFieldVariant::Filled) {
-    Renderer::DrawStateLayer(inputBounds, cornerRadius, bgColor, state);
+  if (options.drawOutline) {
+    if (options.variant == TextFieldVariant::Outlined) {
+      Renderer::DrawRoundedRectangleEx(inputBounds, cornerRadius, outlineColor,
+                                       outlineWidth);
+    } else {
+      // Filled bottom line
+      Rectangle bottomLine = {inputBounds.x,
+                              inputBounds.y + inputBounds.height - 2,
+                              inputBounds.width, 2};
+      DrawRectangleRec(bottomLine, outlineColor);
+    }
   } else {
     Renderer::DrawStateLayer(inputBounds, cornerRadius,
                              ColorAlpha(scheme.surface, 0.0f), state);
@@ -707,37 +722,32 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
         if (fieldState.cursorPosition < 0)
           fieldState.cursorPosition = 0;
 
-        std::string testBuffer = std::string(buffer ? buffer : "");
+        bool selectionDeletedThisLoop = false;
+        // If there's a selection, delete it first
         if (fieldState.selectionStart != -1 && fieldState.selectionEnd != -1) {
           int sStart = fieldState.selectionStart;
           int sEnd = fieldState.selectionEnd;
           NormalizeSelection(sStart, sEnd);
-          testBuffer.erase(sStart, sEnd - sStart);
-          fieldState.cursorPosition = sStart;
-          fieldState.selectionStart = -1;
-          fieldState.selectionEnd = -1;
-        }
 
-        testBuffer.insert(fieldState.cursorPosition, 1, (char)key);
-
-        if (!options.inputMask ||
-            ValidateInputMask(testBuffer.c_str(), options.inputMask)) {
           SaveToHistory(fieldState, std::string(buffer ? buffer : ""),
                         options.maxUndoHistory);
 
-          if (fieldState.selectionStart != -1 &&
-              fieldState.selectionEnd != -1) {
-            int sStart = fieldState.selectionStart;
-            int sEnd = fieldState.selectionEnd;
-            NormalizeSelection(sStart, sEnd);
-            int len = (int)strlen(buffer);
-            memmove(&buffer[sStart], &buffer[sEnd], (size_t)(len - sEnd + 1));
-            fieldState.cursorPosition = sStart;
-            fieldState.selectionStart = -1;
-            fieldState.selectionEnd = -1;
+          int currentLen = (int)strlen(buffer);
+          memmove(&buffer[sStart], &buffer[sEnd],
+                  (size_t)(currentLen - sEnd + 1));
+          fieldState.cursorPosition = sStart;
+          fieldState.selectionStart = -1;
+          fieldState.selectionEnd = -1;
+          len = (int)strlen(buffer);
+          selectionDeletedThisLoop = true;
+        }
+
+        if (len < bufferSize - 1) {
+          if (!selectionDeletedThisLoop) {
+            SaveToHistory(fieldState, std::string(buffer ? buffer : ""),
+                          options.maxUndoHistory);
           }
 
-          int len = (int)strlen(buffer);
           if (fieldState.cursorPosition < len) {
             memmove(&buffer[fieldState.cursorPosition + 1],
                     &buffer[fieldState.cursorPosition],
@@ -781,11 +791,13 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
       if (shouldDelete) {
         fieldState.lastBlinkTime = GetTime(); // Reset blink
         if (hasSelection) {
-          SaveToHistory(fieldState, std::string(buffer ? buffer : ""),
-                        options.maxUndoHistory);
           int sStart = fieldState.selectionStart;
           int sEnd = fieldState.selectionEnd;
           NormalizeSelection(sStart, sEnd);
+
+          SaveToHistory(fieldState, std::string(buffer ? buffer : ""),
+                        options.maxUndoHistory);
+
           int len = (int)strlen(buffer);
           memmove(&buffer[sStart], &buffer[sEnd], (size_t)(len - sEnd + 1));
           fieldState.cursorPosition = sStart;
@@ -875,22 +887,28 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
 
     if (controlPressed && IsKeyPressed(KEY_V)) {
       const char *clipboard = GetClipboardText();
-      if (clipboard != NULL) {
+      if (clipboard != NULL && !options.readOnly) {
         int clipLen = (int)strlen(clipboard);
         int currentLen = (int)strlen(buffer ? buffer : "");
-        int available = bufferSize - 1 - currentLen;
+
+        int sStart = fieldState.selectionStart;
+        int sEnd = fieldState.selectionEnd;
+        NormalizeSelection(sStart, sEnd);
+        bool hasSel = sStart != -1 && sEnd != -1;
+
+        int available =
+            bufferSize - 1 - currentLen + (hasSel ? (sEnd - sStart) : 0);
 
         if (available > 0 && clipLen > 0) {
+          int toCopy = std::min(clipLen, available);
+
+          // Test with input mask
           std::string testBuffer = std::string(buffer ? buffer : "");
-          if (hasSelection) {
-            testBuffer.erase(fieldState.selectionStart,
-                             fieldState.selectionEnd -
-                                 fieldState.selectionStart);
-            testBuffer.insert(fieldState.selectionStart, clipboard,
-                              std::min(clipLen, available));
+          if (hasSel) {
+            testBuffer.erase(sStart, sEnd - sStart);
+            testBuffer.insert(sStart, clipboard, toCopy);
           } else {
-            testBuffer.insert(fieldState.cursorPosition, clipboard,
-                              std::min(clipLen, available));
+            testBuffer.insert(fieldState.cursorPosition, clipboard, toCopy);
           }
 
           if (!options.inputMask ||
@@ -898,28 +916,23 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
             SaveToHistory(fieldState, std::string(buffer ? buffer : ""),
                           options.maxUndoHistory);
 
-            if (hasSelection) {
+            if (hasSel) {
               int len = (int)strlen(buffer);
-              memmove(&buffer[fieldState.selectionStart],
-                      &buffer[fieldState.selectionEnd],
-                      (size_t)(len - fieldState.selectionEnd + 1));
-              fieldState.cursorPosition = fieldState.selectionStart;
+              memmove(&buffer[sStart], &buffer[sEnd], (size_t)(len - sEnd + 1));
+              fieldState.cursorPosition = sStart;
               fieldState.selectionStart = -1;
               fieldState.selectionEnd = -1;
             }
 
-            int toCopy = std::min(clipLen, available);
-            int currentLen = (int)strlen(buffer);
-
-            if (fieldState.cursorPosition < currentLen) {
+            int len = (int)strlen(buffer);
+            if (fieldState.cursorPosition < len) {
               memmove(&buffer[fieldState.cursorPosition + toCopy],
                       &buffer[fieldState.cursorPosition],
-                      (size_t)(currentLen - fieldState.cursorPosition + 1));
+                      (size_t)(len - fieldState.cursorPosition + 1));
             }
 
-            strncpy(&buffer[fieldState.cursorPosition], clipboard, toCopy);
+            memcpy(&buffer[fieldState.cursorPosition], clipboard, toCopy);
             fieldState.cursorPosition += toCopy;
-            buffer[currentLen + toCopy] = '\0';
             fieldState.lastValue = std::string(buffer);
           }
         }

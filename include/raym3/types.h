@@ -60,8 +60,16 @@ struct ShapeTokens {
   float cornerExtraLarge;
 };
 
+struct ButtonOptions {
+  Color backgroundColor = {0, 0, 0, 0};
+  Color outlineColor = {0, 0, 0, 0};
+  Color textColor = {0, 0, 0, 0};
+  bool drawOutline = true;
+  bool drawBackground = true;
+};
+
 struct TextFieldOptions {
-  TextFieldVariant variant = TextFieldVariant::Filled;
+  TextFieldVariant variant = TextFieldVariant::Outlined;
   const char *placeholder = nullptr;
   bool passwordMode = false;
   bool readOnly = false;
@@ -73,8 +81,11 @@ struct TextFieldOptions {
   bool (*onLeadingIconClick)() = nullptr;
   bool (*onTrailingIconClick)() = nullptr;
   Color backgroundColor = {0, 0, 0, 0}; // If alpha > 0, use as background color
+  Color outlineColor = {0, 0, 0, 0};    // If alpha > 0, use as outline color
   Color textColor = {0, 0, 0, 0};       // If alpha > 0, use as text color
   Color iconColor = {0, 0, 0, 0};       // If alpha > 0, use as icon color
+  bool drawOutline = true;
+  bool drawBackground = true;
 };
 
 struct SliderOptions {

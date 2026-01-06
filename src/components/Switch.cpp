@@ -37,11 +37,15 @@ bool SwitchComponent::Render(const char *label, Rectangle bounds,
 
   Rectangle switchBounds = GetSwitchBounds(bounds);
 
+  float trackX = switchBounds.x;
+  if (!label) {
+    trackX += (switchBounds.width - trackWidth) / 2.0f;
+  }
+
   // Align track vertically in bounds
-  Rectangle trackRect = {switchBounds.x,
-                         switchBounds.y +
-                             (switchBounds.height - trackHeight) / 2.0f,
-                         trackWidth, trackHeight};
+  Rectangle trackRect = {
+      trackX, switchBounds.y + (switchBounds.height - trackHeight) / 2.0f,
+      trackWidth, trackHeight};
 
   bool isChecked = *checked;
   float currentThumbSize = isChecked ? thumbSizeChecked : thumbSizeUnchecked;
@@ -198,11 +202,14 @@ bool SwitchComponent::Render(const char *label, Rectangle bounds,
   // Interaction
   bool isVisible = Layout::IsRectVisibleInScrollContainer(bounds);
 #if RAYM3_USE_INPUT_LAYERS
-  bool canProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(bounds);
-  bool clicked = canProcessInput && CheckCollisionPointRec(GetMousePosition(), bounds) &&
+  bool canProcessInput =
+      isVisible && InputLayerManager::ShouldProcessMouseInput(bounds);
+  bool clicked = canProcessInput &&
+                 CheckCollisionPointRec(GetMousePosition(), bounds) &&
                  IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #else
-  bool clicked = isVisible && CheckCollisionPointRec(GetMousePosition(), bounds) &&
+  bool clicked = isVisible &&
+                 CheckCollisionPointRec(GetMousePosition(), bounds) &&
                  IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #endif
   if (!inputBlocked && clicked && state != ComponentState::Disabled) {
@@ -220,7 +227,8 @@ ComponentState SwitchComponent::GetState(Rectangle bounds) {
   Vector2 mousePos = GetMousePosition();
   bool isVisible = Layout::IsRectVisibleInScrollContainer(bounds);
 #if RAYM3_USE_INPUT_LAYERS
-  bool canProcessInput = isVisible && InputLayerManager::ShouldProcessMouseInput(bounds);
+  bool canProcessInput =
+      isVisible && InputLayerManager::ShouldProcessMouseInput(bounds);
   bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, bounds);
 #else
   bool isHovered = isVisible && CheckCollisionPointRec(mousePos, bounds);
