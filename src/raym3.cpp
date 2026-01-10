@@ -8,6 +8,7 @@
 #include "raym3/components/Slider.h"
 #include "raym3/components/Switch.h"
 #include "raym3/components/TextField.h"
+#include "raym3/components/Tooltip.h"
 #include "raym3/layout/Container.h"
 #include "raym3/styles/Theme.h"
 
@@ -68,6 +69,9 @@ void BeginFrame() {
 }
 
 void EndFrame() {
+  // Render any pending tooltips (deferred to ensure they're on top)
+  TooltipManager::Update();
+
 #if RAYM3_USE_INPUT_LAYERS
   RenderQueue::ExecuteRenderQueue();
   InputLayerManager::EndFrame();

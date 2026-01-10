@@ -5,6 +5,8 @@
 #include "raym3/components/RangeSlider.h"     // Include for RangeSlider
 #include "raym3/components/SegmentedButton.h" // Include for struct definition
 #include "raym3/components/Snackbar.h"
+#include "raym3/components/TabBar.h"          // Include for TabBar component
+#include "raym3/components/Tooltip.h"         // Include for Tooltip API
 #include "raym3/components/View3D.h" // Include for View3D class
 #include "raym3/styles/Theme.h"
 #include "raym3/types.h"

@@ -3,6 +3,7 @@
 #include "raym3/components/Card.h"
 #include "raym3/components/Text.h"
 #include "raym3/components/TextField.h"
+#include "raym3/components/Tooltip.h"
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
@@ -24,6 +25,7 @@ Rectangle ModalComponent::Begin(const char *title, const char *message,
                                 float width, float height) {
   if (!isOpen_) {
     isOpen_ = true;
+    TooltipManager::DismissAll(); // Dismiss any active tooltips when modal opens
   }
 
 #if RAYM3_USE_INPUT_LAYERS

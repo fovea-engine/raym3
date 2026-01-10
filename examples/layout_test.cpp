@@ -36,47 +36,77 @@ int main() {
     sidebarStyle.gap = 10;
     raym3::Layout::BeginScrollContainer(sidebarStyle, false, true);
 
-    raym3::Button("Dashboard",
-                  raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Tonal);
-    raym3::Button("Settings",
-                  raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Profile", raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Analytics",
-                  raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Reports", raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Users", raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Settings2",
-                  raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Help", raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Messages",
-                  raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Notifications",
-                  raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Calendar",
-                  raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Tasks", raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Documents",
-                  raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Projects",
-                  raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Team", raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Text);
-    raym3::Button("Logout", raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)),
-                  raym3::ButtonVariant::Outlined);
+    // Sidebar buttons with tooltips
+    Rectangle dashboardBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Dashboard", dashboardBounds, raym3::ButtonVariant::Tonal);
+    raym3::Tooltip(dashboardBounds, "View your dashboard");
+
+    Rectangle settingsBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Settings", settingsBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(settingsBounds, "Configure application settings");
+
+    Rectangle profileBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Profile", profileBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(profileBounds, "Edit your profile");
+
+    Rectangle analyticsBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Analytics", analyticsBounds, raym3::ButtonVariant::Text);
+    // Rich tooltip for analytics
+    raym3::TooltipOptions analyticsOpts;
+    analyticsOpts.title = "Analytics Dashboard";
+    raym3::Tooltip(analyticsBounds, "View detailed usage statistics and reports", analyticsOpts);
+
+    Rectangle reportsBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Reports", reportsBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(reportsBounds, "Generate and download reports");
+
+    Rectangle usersBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Users", usersBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(usersBounds, "Manage user accounts");
+
+    Rectangle helpBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Help", helpBounds, raym3::ButtonVariant::Text);
+    // Rich tooltip with action
+    raym3::TooltipOptions helpOpts;
+    helpOpts.title = "Need Help?";
+    helpOpts.actionText = "Open Docs";
+    helpOpts.onAction = []{ TraceLog(LOG_INFO, "Opening documentation..."); };
+    raym3::Tooltip(helpBounds, "Get help and documentation", helpOpts);
+
+    Rectangle messagesBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Messages", messagesBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(messagesBounds, "View your messages");
+
+    Rectangle notifBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Notifications", notifBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(notifBounds, "View notifications");
+
+    Rectangle calendarBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Calendar", calendarBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(calendarBounds, "View your calendar");
+
+    Rectangle tasksBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Tasks", tasksBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(tasksBounds, "Manage your tasks");
+
+    Rectangle docsBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Documents", docsBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(docsBounds, "Browse documents");
+
+    Rectangle projectsBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Projects", projectsBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(projectsBounds, "Manage projects");
+
+    Rectangle teamBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Team", teamBounds, raym3::ButtonVariant::Text);
+    raym3::Tooltip(teamBounds, "Team management");
+
+    Rectangle logoutBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40));
+    raym3::Button("Logout", logoutBounds, raym3::ButtonVariant::Outlined);
+    // Rich tooltip for logout
+    raym3::TooltipOptions logoutOpts;
+    logoutOpts.title = "Sign Out";
+    raym3::Tooltip(logoutBounds, "Sign out of your account", logoutOpts);
 
     EndScissorMode();
     raym3::Layout::EndContainer();
@@ -90,9 +120,10 @@ int main() {
                 raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 40)), 32,
                 scheme.onSurface, raym3::FontWeight::Bold);
 
-    raym3::TextField(textBuffer, sizeof(textBuffer),
-                     raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 56)),
+    Rectangle searchBounds = raym3::Layout::Alloc(raym3::Layout::Fixed(-1, 56));
+    raym3::TextField(textBuffer, sizeof(textBuffer), searchBounds,
                      "Search or enter text");
+    raym3::Tooltip(searchBounds, "Type to search");
 
     raym3::LayoutStyle cardsStyle = raym3::Layout::Row();
     cardsStyle.gap = 20;
