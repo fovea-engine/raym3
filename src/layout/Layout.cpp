@@ -45,13 +45,19 @@ struct Layout::Impl {
   // Scroll container stack
   std::vector<ScrollContainerState> scrollStack;
 
+  // ID stack for stable hashing
+  std::vector<uint32_t> idStack;
+  uint32_t currentSeed = 0;
+  int childCounter = 0;
+  std::vector<int> childCounterStack;
+
   // Persistent state (mapped by ID order for simplicity in immediate mode)
   // In a real immediate mode system, we might use a hash of the path or ID
   // stack. For this simple implementation, we'll assume deterministic call
   // order.
-  std::map<int, Rectangle> previousFrameBounds;
-  std::map<int, Rectangle> currentFrameBounds;
-  std::map<int, ScrollContainerState> scrollStates;
+  std::map<uint32_t, Rectangle> previousFrameBounds;
+  std::map<uint32_t, Rectangle> currentFrameBounds;
+  std::map<uint32_t, ScrollContainerState> scrollStates;
 
   Impl() {
     // Initialize config if needed
@@ -74,6 +80,12 @@ struct Layout::Impl {
     currentFrameBounds.clear();
     currentNodeId = 0;
     idOffset = 0; // Default to 0, call SetIdOffset after Begin if needed
+    
+    // Initialize ID stack
+    idStack.clear();
+    childCounterStack.clear();
+    currentSeed = 0;
+    childCounter = 0;
 
     // Create root
     root = YGNodeNew();
@@ -82,18 +94,17 @@ struct Layout::Impl {
 
     // Default root style?
     YGNodeStyleSetFlexDirection(root, YGFlexDirectionColumn);
-    YGNodeSetContext(root, (void*)(intptr_t)0);
+    
+    // Generate a stable ID for root
+    // Note: Use 1 instead of 0 to avoid null pointer issues
+    uint32_t rootId = 1;
+    YGNodeSetContext(root, (void*)(uintptr_t)rootId);
 
     nodeStack.push_back(root);
     nodeIsScrollContainer.push_back(false);
 
-    // Store root bounds as first entry
-    // NOTE: Begin is usually called for the root, so idOffset might be 0, 
-    // but if we support nested Begin calls or offset roots, we should use it.
-    // However, idOffset is usually set AFTER Begin. 
-    // If we assume Begin resets everything, we use 0.
-    currentFrameBounds[0] = rootBounds; 
-    currentNodeId++;
+    // Store root bounds
+    currentFrameBounds[rootId] = rootBounds;
   }
 
   void End() {
@@ -147,6 +158,33 @@ struct Layout::Impl {
   // We need to store the bounds *as we calculate them* at the end of the frame,
   // so they are ready for the *next* frame's Begin/Alloc calls.
   // The Begin/Alloc calls read from 'previousFrameBounds' using an index.
+  
+  // FNV-1a hash functions for stable ID generation
+  static uint32_t HashStr(const char* str, uint32_t seed) {
+    uint32_t hash = seed ^ 2166136261u;
+    while (*str) {
+      hash ^= (uint8_t)*str++;
+      hash *= 16777619u;
+    }
+    return hash;
+  }
+
+  static uint32_t HashInt(int val, uint32_t seed) {
+    uint32_t hash = seed ^ 2166136261u;
+    hash ^= (uint32_t)val;
+    hash *= 16777619u;
+    return hash;
+  }
+
+  uint32_t GenerateStableId() {
+    uint32_t hash = currentSeed;
+    hash = HashInt(childCounter++, hash);
+    // Apply idOffset for backward compatibility with tab isolation
+    if (idOffset != 0) {
+      hash = HashInt(idOffset, hash);
+    }
+    return hash;
+  }
 };
 
 // Static instance
@@ -233,8 +271,12 @@ static void ApplyStyle(YGNodeRef node, LayoutStyle style) {
 Rectangle Layout::BeginContainer(LayoutStyle style) {
   YGNodeRef node = YGNodeNew();
   ApplyStyle(node, style);
-  // Store idOffset in context for retrieval during traversal
-  YGNodeSetContext(node, (void*)(intptr_t)impl_->idOffset);
+  
+  // Generate stable ID
+  uint32_t id = impl_->GenerateStableId();
+  
+  // Store the ID in context for retrieval during traversal
+  YGNodeSetContext(node, (void*)(uintptr_t)id);
 
   // Add to current parent
   if (!impl_->nodeStack.empty()) {
@@ -244,9 +286,14 @@ Rectangle Layout::BeginContainer(LayoutStyle style) {
 
   impl_->nodeStack.push_back(node);
   impl_->nodeIsScrollContainer.push_back(false);
+  
+  // Push a new child scope so children hash relative to this container
+  impl_->idStack.push_back(impl_->currentSeed);
+  impl_->childCounterStack.push_back(impl_->childCounter);
+  impl_->currentSeed = id;
+  impl_->childCounter = 0;
 
   // Return bounds from previous frame
-  int id = impl_->currentNodeId++ + impl_->idOffset;
   if (impl_->previousFrameBounds.count(id)) {
     return impl_->previousFrameBounds[id];
   }
@@ -283,14 +330,28 @@ void Layout::EndContainer() {
     if (!impl_->nodeIsScrollContainer.empty()) {
       impl_->nodeIsScrollContainer.pop_back();
     }
+    
+    // Pop the child scope
+    if (!impl_->idStack.empty()) {
+      impl_->currentSeed = impl_->idStack.back();
+      impl_->idStack.pop_back();
+    }
+    if (!impl_->childCounterStack.empty()) {
+      impl_->childCounter = impl_->childCounterStack.back();
+      impl_->childCounterStack.pop_back();
+    }
   }
 }
 
 Rectangle Layout::Alloc(LayoutStyle style) {
   YGNodeRef node = YGNodeNew();
   ApplyStyle(node, style);
-  // Store idOffset in context for retrieval during traversal
-  YGNodeSetContext(node, (void*)(intptr_t)impl_->idOffset);
+  
+  // Generate stable ID
+  uint32_t id = impl_->GenerateStableId();
+  
+  // Store the ID in context for retrieval during traversal
+  YGNodeSetContext(node, (void*)(uintptr_t)id);
 
   if (!impl_->nodeStack.empty()) {
     YGNodeRef parent = impl_->nodeStack.back();
@@ -298,7 +359,6 @@ Rectangle Layout::Alloc(LayoutStyle style) {
   }
 
   // Return bounds
-  int id = impl_->currentNodeId++ + impl_->idOffset;
   if (impl_->previousFrameBounds.count(id)) {
     return impl_->previousFrameBounds[id];
   }
@@ -358,12 +418,8 @@ void Layout::End() {
 
   impl_->currentFrameBounds.clear();
 
-  // Track node index for matching with scroll states
-  int nodeIndex = 0;
-
   // Recursive lambda
-  auto traverse = [&](auto &&self, YGNodeRef node, float x, float y,
-                      int &idx) -> void {
+  auto traverse = [&](auto &&self, YGNodeRef node, float x, float y) -> void {
     float left = YGNodeLayoutGetLeft(node);
     float top = YGNodeLayoutGetTop(node);
     float width = YGNodeLayoutGetWidth(node);
@@ -372,16 +428,15 @@ void Layout::End() {
     float absX = x + left;
     float absY = y + top;
 
-    int offset = (int)(intptr_t)YGNodeGetContext(node);
-    int currentIdx = idx++ + offset;
-    impl_->currentFrameBounds[currentIdx] = {absX, absY, width, height};
+    uint32_t id = (uint32_t)(uintptr_t)YGNodeGetContext(node);
+    impl_->currentFrameBounds[id] = {absX, absY, width, height};
 
-    uint32_t count = YGNodeGetChildCount(node); // Moved declaration up
+    uint32_t count = YGNodeGetChildCount(node);
 
     // Check if this node is a scroll container
     Vector2 scrollOffset = {0, 0};
-    if (impl_->scrollStates.count(currentIdx)) {
-      auto &scrollState = impl_->scrollStates[currentIdx];
+    if (impl_->scrollStates.count(id)) {
+      auto &scrollState = impl_->scrollStates[id];
       scrollOffset = scrollState.scrollOffset;
 
       // Calculate content size by measuring children
@@ -435,12 +490,12 @@ void Layout::End() {
     for (uint32_t i = 0; i < count; ++i) {
       // Apply scroll offset to children
       self(self, YGNodeGetChild(node, i), absX + scrollOffset.x,
-           absY + scrollOffset.y, idx);
+           absY + scrollOffset.y);
     }
   };
 
   // Start traversal.
-  traverse(traverse, impl_->root, rootOffsetX, rootOffsetY, nodeIndex);
+  traverse(traverse, impl_->root, rootOffsetX, rootOffsetY);
 
   impl_->previousFrameBounds = impl_->currentFrameBounds;
 }
@@ -450,8 +505,12 @@ Rectangle Layout::BeginScrollContainer(LayoutStyle style, bool scrollX,
   // Create the container node
   YGNodeRef node = YGNodeNew();
   ApplyStyle(node, style);
-  // Store idOffset in context for retrieval during traversal
-  YGNodeSetContext(node, (void*)(intptr_t)impl_->idOffset);
+  
+  // Generate stable ID
+  uint32_t id = impl_->GenerateStableId();
+  
+  // Store the ID in context for retrieval during traversal
+  YGNodeSetContext(node, (void*)(uintptr_t)id);
 
   // For scroll containers, we need to allow content to overflow
   // So we don't constrain the height (let children determine it)
@@ -465,8 +524,12 @@ Rectangle Layout::BeginScrollContainer(LayoutStyle style, bool scrollX,
   }
 
   impl_->nodeStack.push_back(node);
-  // Determine ID for this scroll container
-  int id = impl_->currentNodeId++ + impl_->idOffset;
+  
+  // Push a new child scope so children hash relative to this container
+  impl_->idStack.push_back(impl_->currentSeed);
+  impl_->childCounterStack.push_back(impl_->childCounter);
+  impl_->currentSeed = id;
+  impl_->childCounter = 0;
 
   // Get bounds from previous frame (use map lookup, not vector indexing)
   Rectangle bounds = {0, 0, 0, 0};
@@ -641,7 +704,7 @@ void Layout::DrawDebug() {
   for (auto& [id, rect] : impl_->currentFrameBounds) {
     // Generate distinct color based on index
     // Using prime number steps to distribute colors across the hue spectrum
-    float hue = (float)((abs(id) * 67) % 360);
+    float hue = (float)((id * 67) % 360);
     Color baseColor = ColorFromHSV(hue, 0.8f, 0.9f);
 
     bool isHovered = CheckCollisionPointRec(mousePos, rect);
@@ -689,6 +752,35 @@ void Layout::InvalidatePreviousFrame() {
 void Layout::SetIdOffset(int offset) {
   if (impl_) {
     impl_->idOffset = offset;
+  }
+}
+
+void Layout::PushId(const char* str_id) {
+  if (!impl_)
+    return;
+  impl_->idStack.push_back(impl_->currentSeed);
+  impl_->childCounterStack.push_back(impl_->childCounter);
+  impl_->currentSeed = impl_->HashStr(str_id, impl_->currentSeed);
+  impl_->childCounter = 0;
+}
+
+void Layout::PushId(int int_id) {
+  if (!impl_)
+    return;
+  impl_->idStack.push_back(impl_->currentSeed);
+  impl_->childCounterStack.push_back(impl_->childCounter);
+  impl_->currentSeed = impl_->HashInt(int_id, impl_->currentSeed);
+  impl_->childCounter = 0;
+}
+
+void Layout::PopId() {
+  if (!impl_ || impl_->idStack.empty())
+    return;
+  impl_->currentSeed = impl_->idStack.back();
+  impl_->idStack.pop_back();
+  if (!impl_->childCounterStack.empty()) {
+    impl_->childCounter = impl_->childCounterStack.back();
+    impl_->childCounterStack.pop_back();
   }
 }
 

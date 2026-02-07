@@ -82,6 +82,11 @@ public:
   
   // Set ID offset for state isolation (e.g. active tab index * 1000)
   static void SetIdOffset(int offset);
+  
+  // Push/pop explicit IDs for stable layout identity
+  static void PushId(const char* str_id);
+  static void PushId(int int_id);
+  static void PopId();
 
 private:
   struct Impl;
