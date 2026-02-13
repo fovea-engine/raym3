@@ -3,6 +3,7 @@
 #include "raym3/components/Tooltip.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/ClipScope.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -287,10 +288,9 @@ RangeSliderComponent::Render(Rectangle bounds, const std::vector<float> &values,
     if (endX > startX) {
       float scissorWidth = endX - startX;
       if (scissorWidth > 0.0f && trackHeight > 0.0f) {
-        BeginScissorMode((int)startX, (int)trackBounds.y, (int)scissorWidth,
-                         (int)trackHeight);
+        PushClipRect({startX, trackBounds.y, scissorWidth, trackHeight});
         Renderer::DrawRoundedRectangle(trackBounds, cornerRadius, activeColor);
-        EndScissorMode();
+        PopClipRect();
       }
     }
   } else if (result.size() == 1) {
@@ -299,10 +299,10 @@ RangeSliderComponent::Render(Rectangle bounds, const std::vector<float> &values,
     if (norm > 0.0f) {
       float scissorWidth = trackBounds.width * norm;
       if (scissorWidth > 0.0f && trackHeight > 0.0f) {
-        BeginScissorMode((int)trackBounds.x, (int)trackBounds.y,
-                         (int)scissorWidth, (int)trackHeight);
+        PushClipRect(
+            {trackBounds.x, trackBounds.y, scissorWidth, trackHeight});
         Renderer::DrawRoundedRectangle(trackBounds, cornerRadius, activeColor);
-        EndScissorMode();
+        PopClipRect();
       }
     }
   }

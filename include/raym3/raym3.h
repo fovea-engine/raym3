@@ -23,6 +23,14 @@ void EndFrame();
 
 void RequestCursor(int cursor);
 
+void BeginScissor(Rectangle bounds);
+void PushScissor(Rectangle bounds);
+void PopScissor();
+Rectangle GetCurrentScissorBounds();
+bool IsVisible(Rectangle bounds);
+void SetScissorDebug(bool enabled);
+bool IsScissorDebug();
+
 #if RAYM3_USE_INPUT_LAYERS
 void PushLayer(int zOrder = 0);
 void PopLayer();

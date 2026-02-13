@@ -2,6 +2,7 @@
 #include "raym3/components/Icon.h"
 #include "raym3/components/IconButton.h"
 #include "raym3/components/Tooltip.h"
+#include "raym3/ClipScope.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
 #include <algorithm>
@@ -329,24 +330,20 @@ void TabContentBegin(Rectangle bounds, Color backgroundColor, bool clip) {
   
   // Begin scissor for content clipping (optional)
   if (s_tabContentClipEnabled) {
-    // Apply DPI Scaling (HighDPI support)
-    float scaleX = (float)GetRenderWidth() / (float)GetScreenWidth();
-    float scaleY = (float)GetRenderHeight() / (float)GetScreenHeight();
-    BeginScissorMode((int)(bounds.x * scaleX), (int)(bounds.y * scaleY), 
-                     (int)(bounds.width * scaleX), (int)(bounds.height * scaleY));
+    PushClipRect(bounds);
   }
 }
 
 void TabContentEnd() {
   if (s_tabContentClipEnabled) {
-    EndScissorMode();
+    PopClipRect();
     s_tabContentClipEnabled = false;
   }
 }
 
 Rectangle GetTabContentScissorBounds() {
   if (s_tabContentClipEnabled) {
-    return s_tabContentBounds;
+    return GetCurrentClipRect();
   }
   return {0, 0, (float)GetScreenWidth(), (float)GetScreenHeight()};
 }

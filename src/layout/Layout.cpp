@@ -7,6 +7,7 @@
 
 #if RAYM3_USE_YOGA
 #include <yoga/Yoga.h>
+#include "raym3/ClipScope.h"
 
 #if RAYM3_USE_INPUT_LAYERS
 #include "raym3/input/InputLayer.h"
@@ -185,6 +186,8 @@ struct Layout::Impl {
     }
     return hash;
   }
+
+  bool HasValidPreviousBounds() const { return !previousFrameBounds.empty(); }
 };
 
 // Static instance
@@ -305,24 +308,15 @@ void Layout::EndContainer() {
     // Check if this container was a scroll container
     if (!impl_->nodeIsScrollContainer.empty() &&
         impl_->nodeIsScrollContainer.back()) {
-      // End scissor mode if it was started for this scroll container
+      // End clip scope if it was started for this scroll container
       if (!impl_->scrollStack.empty()) {
         const ScrollContainerState& scrollState = impl_->scrollStack.back();
         if (scrollState.scissorStarted) {
-          EndScissorMode();
-          
-          // Restore TabContent scissor if it was active (Raylib scissor doesn't stack)
-          Rectangle tabScissor = GetTabContentScissorBounds();
-          if (tabScissor.width > 0 && tabScissor.height > 0 && 
-              (tabScissor.width != GetScreenWidth() || tabScissor.height != GetScreenHeight())) {
-            // Apply DPI Scaling (HighDPI support)
-            float scaleX = (float)GetRenderWidth() / (float)GetScreenWidth();
-            float scaleY = (float)GetRenderHeight() / (float)GetScreenHeight();
-            BeginScissorMode((int)(tabScissor.x * scaleX), (int)(tabScissor.y * scaleY), 
-                             (int)(tabScissor.width * scaleX), (int)(tabScissor.height * scaleY));
-          }
+          PopClipRect();
         }
         impl_->scrollStack.pop_back();
+      } else {
+        TraceLog(LOG_WARNING, "raym3 Layout::EndContainer scroll stack underflow");
       }
     }
 
@@ -542,11 +536,6 @@ Rectangle Layout::BeginScrollContainer(LayoutStyle style, bool scrollX,
 
   // Check if bounds are valid
   bool validBounds = (bounds.width > 0 && bounds.height > 0);
-  if (!validBounds) {
-    // Use minimal placeholder bounds on first frame
-    // Bounds will be corrected on next frame when layout is calculated
-    bounds = {0, 0, 1, 1};
-  }
 
   // Setup scroll state
   ScrollContainerState scrollState;
@@ -629,29 +618,26 @@ Rectangle Layout::BeginScrollContainer(LayoutStyle style, bool scrollX,
       scrollState.scrollOffset.y = 0;
   }
 
-  // Only begin scissor mode if we have valid bounds
-  // Intersect with parent scissor (e.g., TabContent) to avoid conflicts
+  // Only push clip if we have valid bounds.
   if (validBounds && bounds.width > 0 && bounds.height > 0) {
-    // Get TabContent scissor bounds if it's active
-    Rectangle parentScissor = GetTabContentScissorBounds();
-    
-    // Calculate intersection with parent scissor
-    float left = std::max(bounds.x, parentScissor.x);
-    float top = std::max(bounds.y, parentScissor.y);
-    float right = std::min(bounds.x + bounds.width, parentScissor.x + parentScissor.width);
-    float bottom = std::min(bounds.y + bounds.height, parentScissor.y + parentScissor.height);
-    
-    if (right > left && bottom > top) {
-      Rectangle scissorBounds = {left, top, right - left, bottom - top};
+    Rectangle activeClip = GetCurrentClipRect();
+    float clipX = std::max(bounds.x, activeClip.x);
+    float clipY = std::max(bounds.y, activeClip.y);
+    float clipRight = std::min(bounds.x + bounds.width, activeClip.x + activeClip.width);
+    float clipBottom = std::min(bounds.y + bounds.height, activeClip.y + activeClip.height);
+    clipY = std::max(activeClip.y, clipY - 2.0f);
+    Rectangle effectiveBounds = {clipX, clipY, clipRight - clipX, clipBottom - clipY};
+    if (effectiveBounds.width <= 0.0f || effectiveBounds.height <= 0.0f) {
+      impl_->scrollStack.push_back(scrollState);
+      impl_->scrollStates[id] = scrollState;
+      return bounds;
+    }
 
-      // Raylib's BeginScissorMode expects physical pixels if the backing store is scaled (HighDPI)
-      float scaleX = (float)GetRenderWidth() / (float)GetScreenWidth();
-      float scaleY = (float)GetRenderHeight() / (float)GetScreenHeight();
-
-      BeginScissorMode((int)(scissorBounds.x * scaleX), (int)(scissorBounds.y * scaleY), 
-                       (int)(scissorBounds.width * scaleX), (int)(scissorBounds.height * scaleY));
+    PushClipRect(effectiveBounds);
+    Rectangle effective = GetCurrentClipRect();
+    if (effective.width > 0 && effective.height > 0) {
       scrollState.scissorStarted = true;
-      scrollState.bounds = scissorBounds; // Store intersected bounds (Logical)
+      scrollState.bounds = effective;
     }
   }
 
@@ -677,17 +663,7 @@ void Layout::SetScrollOffset(Vector2 offset) {
 }
 
 bool Layout::IsRectVisibleInScrollContainer(Rectangle rect) {
-  if (impl_->scrollStack.empty()) {
-    // No scroll container active, element is always visible
-    return true;
-  }
-
-  // Get the current scroll container's bounds (scissor bounds)
-  const ScrollContainerState &scrollState = impl_->scrollStack.back();
-  Rectangle scissorBounds = scrollState.bounds;
-
-  // Check if rect intersects with scissor bounds
-  return CheckCollisionRecs(rect, scissorBounds);
+  return IsRectInClip(rect);
 }
 
 static bool debugEnabled = false;
@@ -749,6 +725,10 @@ void Layout::InvalidatePreviousFrame() {
   impl_->scrollStates.clear();
 }
 
+bool Layout::HasValidPreviousBounds() {
+  return impl_ && impl_->HasValidPreviousBounds();
+}
+
 void Layout::SetIdOffset(int offset) {
   if (impl_) {
     impl_->idOffset = offset;
@@ -785,28 +765,7 @@ void Layout::PopId() {
 }
 
 Rectangle Layout::GetActiveScissorBounds() {
-  // Start with TabContent scissor bounds (returns screen bounds if not clipping)
-  Rectangle result = GetTabContentScissorBounds();
-  
-  // If we have an active scroll container, intersect with its bounds
-  if (impl_ && !impl_->scrollStack.empty()) {
-    Rectangle scrollBounds = impl_->scrollStack.back().bounds;
-    
-    // Calculate intersection
-    float left = std::max(result.x, scrollBounds.x);
-    float top = std::max(result.y, scrollBounds.y);
-    float right = std::min(result.x + result.width, scrollBounds.x + scrollBounds.width);
-    float bottom = std::min(result.y + result.height, scrollBounds.y + scrollBounds.height);
-    
-    if (right > left && bottom > top) {
-      result = {left, top, right - left, bottom - top};
-    } else {
-      // No intersection, return empty rect
-      result = {0, 0, 0, 0};
-    }
-  }
-  
-  return result;
+  return GetCurrentClipRect();
 }
 
 } // namespace raym3
@@ -851,6 +810,8 @@ LayoutStyle Layout::Fixed(float width, float height) {
 }
 
 void Layout::InvalidatePreviousFrame() {}
+
+bool Layout::HasValidPreviousBounds() { return false; }
 
 } // namespace raym3
 

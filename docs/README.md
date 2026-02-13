@@ -6,6 +6,7 @@ This directory contains documentation for advanced raym3 features and systems.
 
 - **[Layout System](layout-system.md)** - Flexbox-based layout with Yoga
 - **[Input Layer System](input-layer-system.md)** - Z-ordering and input blocking
+- **[ClipScope System](clip-scope.md)** - Stack-based clipping, scissor, and SuspendClipScissor
 
 ## Combining Both Systems
 

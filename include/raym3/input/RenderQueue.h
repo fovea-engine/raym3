@@ -27,11 +27,13 @@ enum class ComponentType {
 struct RenderCommand {
   std::function<void()> renderFunc;
   Rectangle bounds;
+  Rectangle clipRect;
   int layerId;
   int zOrder;
   ComponentType type;
   bool consumesInput;
-  int registrationOrder;
+  unsigned long long registrationOrder;
+  bool culled = false;
 };
 
 class RenderQueue {
@@ -54,7 +56,7 @@ public:
       bool consumesInput = true);
   
   // Check if a bounds should receive input
-  static bool ShouldReceiveInput(Rectangle bounds, int layerId);
+  static bool ShouldReceiveInput(Rectangle bounds, Rectangle clipRect, int layerId);
 
 private:
   static std::vector<RenderCommand> renderQueue_;

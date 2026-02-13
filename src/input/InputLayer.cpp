@@ -2,6 +2,7 @@
 
 #if RAYM3_USE_INPUT_LAYERS
 
+#include "raym3/ClipScope.h"
 #include <algorithm>
 
 namespace raym3 {
@@ -135,9 +136,13 @@ void InputLayerManager::RegisterBlockingRegion(Rectangle bounds,
   }
   BlockingRegion region;
   region.bounds = bounds;
+  region.clipRect = GetCurrentClipRect();
   region.layerId = GetCurrentLayerId();
   region.registrationOrder = registrationOrder_++;
   region.blocksInput = blocksInput;
+  region.culled = (bounds.width <= 0 || bounds.height <= 0 ||
+                   region.clipRect.width <= 0 || region.clipRect.height <= 0 ||
+                   !CheckCollisionRecs(bounds, region.clipRect));
   blockingRegions_.push_back(region);
 }
 
@@ -248,6 +253,12 @@ void InputLayerManager::ReleaseCapture() { currentCapture_.isActive = false; }
 
 bool InputLayerManager::ShouldProcessMouseInput(Rectangle bounds, int layerId) {
   Vector2 mousePos = GetMousePosition();
+  if (!IsPointInClip(mousePos)) {
+    return false;
+  }
+  if (!IsRectInClip(bounds)) {
+    return false;
+  }
 
   if (!CheckCollisionPointRec(mousePos, bounds)) {
     return false;
@@ -255,16 +266,25 @@ bool InputLayerManager::ShouldProcessMouseInput(Rectangle bounds, int layerId) {
 
   int askingLayerId = (layerId >= 0) ? layerId : currentLayerId_;
 
-  // Check active blocking regions (from last frame)
+  int topLayer = askingLayerId;
+  int topOrder = -1;
   for (const auto &region : activeBlockingRegions_) {
-    if (!region.blocksInput)
+    if (!region.blocksInput || region.culled) {
       continue;
-    if (!CheckCollisionPointRec(mousePos, region.bounds))
-      continue;
-
-    if (region.layerId > askingLayerId) {
-      return false;
     }
+    if (!CheckCollisionPointRec(mousePos, region.bounds) ||
+        !CheckCollisionPointRec(mousePos, region.clipRect)) {
+      continue;
+    }
+    if (region.layerId > topLayer ||
+        (region.layerId == topLayer && region.registrationOrder > topOrder)) {
+      topLayer = region.layerId;
+      topOrder = region.registrationOrder;
+    }
+  }
+
+  if (topLayer > askingLayerId) {
+    return false;
   }
 
   return true;

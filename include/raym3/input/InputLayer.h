@@ -13,9 +13,11 @@ namespace raym3 {
 
 struct BlockingRegion {
   Rectangle bounds;
+  Rectangle clipRect;
   int layerId;
   int registrationOrder;
   bool blocksInput;
+  bool culled = false;
 };
 
 struct InputCapture {

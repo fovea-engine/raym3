@@ -1,6 +1,7 @@
 #include "raym3/components/TextField.h"
 #include "raym3/components/Dialog.h"
 #include "raym3/components/Icon.h"
+#include "raym3/ClipScope.h"
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
@@ -603,12 +604,13 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
 
   float currentScroll = fieldState.scrollOffset;
 
-  // Expand scissor by 1px on left to ensure cursor at position 0 is visible
-  int scissorWidth = (int)availableWidth + 1;
-  int scissorHeight = (int)inputBounds.height;
+  float scissorWidth = std::max(0.0f, availableWidthForScroll) + 2.0f;
+  if (scissorWidth < 8.0f && inputBounds.width > 8.0f)
+    scissorWidth = inputBounds.width;
+  float scissorHeight = inputBounds.height;
   bool scissorActive = false;
-  if (scissorWidth > 0 && scissorHeight > 0) {
-    BeginScissorMode((int)textStartX - 1, (int)inputBounds.y, scissorWidth, scissorHeight);
+  if (scissorWidth >= 8.0f && scissorHeight > 0.0f) {
+    PushClipRect({textStartX - 1.0f, inputBounds.y, scissorWidth, scissorHeight});
     scissorActive = true;
   }
 
@@ -1131,6 +1133,7 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
       fieldState.selectionStart = -1;
       fieldState.selectionEnd = -1;
       activeFieldId_ = -1;
+      if (scissorActive) PopClipRect();
       return false;
     }
 
@@ -1139,12 +1142,13 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
       activeFieldId_ = -1;
       fieldState.selectionStart = -1;
       fieldState.selectionEnd = -1;
+      if (scissorActive) PopClipRect();
       return true;
     }
   }
 
   if (scissorActive) {
-    EndScissorMode();
+    PopClipRect();
   }
 
   if (options.leadingIcon) {

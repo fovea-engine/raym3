@@ -79,6 +79,9 @@ public:
   
   // Invalidate previous frame bounds (call on tab switch to force fresh layout)
   static void InvalidatePreviousFrame();
+
+  // True after at least one full layout frame has run (used for first-frame warmup)
+  static bool HasValidPreviousBounds();
   
   // Set ID offset for state isolation (e.g. active tab index * 1000)
   static void SetIdOffset(int offset);

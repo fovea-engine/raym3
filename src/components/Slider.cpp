@@ -4,6 +4,7 @@
 #include "raym3/components/Tooltip.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/ClipScope.h"
 #include <algorithm>
 #include <cstdio>
 #include <map>
@@ -291,10 +292,10 @@ float SliderComponent::Render(Rectangle bounds, float value, float min,
   if (normalizedValue > 0.0f) {
     float scissorWidth = trackBounds.width * normalizedValue;
     if (scissorWidth > 0.0f && trackHeight > 0.0f) {
-      BeginScissorMode((int)trackBounds.x, (int)trackBounds.y,
-                       (int)scissorWidth, (int)trackHeight);
+      PushClipRect(
+          {trackBounds.x, trackBounds.y, scissorWidth, trackHeight});
       Renderer::DrawRoundedRectangle(trackBounds, cornerRadius, activeColor);
-      EndScissorMode();
+      PopClipRect();
     }
   }
 

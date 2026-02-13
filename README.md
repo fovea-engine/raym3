@@ -18,6 +18,7 @@ raym3 is a Material Design 3 inspired immediate-mode GUI library built on raylib
 - **Light and Dark Themes** - Full theme support with Material Design 3 color system
 - **SVG Icon Support** - Material Design icons with multiple variations (filled, outlined, round, sharp, two-tone)
 - **Zero External Dependencies** - Can be built as a standalone library (raylib is fetched automatically)
+- **ClipScope System** - Stack-based clipping with `SuspendClipScissor`/`ResumeClipScissor` for overlays that extend beyond scroll regions
 
 ## Components
 
@@ -178,6 +179,17 @@ The RangeSlider component provides multi-thumb range selection:
 - **Discrete Mode**: Supports `stepValue` and `showTickMarks` like Slider
 - **Value Indicators**: Show value bubbles for all thumbs when dragging
 - **Stop Indicators**: Display min/max position markers
+
+## ClipScope / Scissor API
+
+For scroll containers and overlays, raym3 provides a clip stack:
+
+- **`BeginScissor(bounds)`** / **`PushScissor(bounds)`** - Clip drawing to a region
+- **`PopScissor()`** - Restore previous clip
+- **`GetCurrentScissorBounds()`** - Current clip rectangle
+- **`IsVisible(bounds)`** - Test if a rect is visible in the current clip
+
+To draw overlays (dropdowns, tooltips) that extend beyond a scroll clip, use `SuspendClipScissor()` / `ResumeClipScissor()` from `raym3/ClipScope.h`. See [docs/clip-scope.md](docs/clip-scope.md) for details.
 
 ## Building
 
@@ -380,6 +392,13 @@ raym3 is an independent, self-contained project. All resources (icons and fonts)
 **Current Status:** Partial implementation of Material Design 3 components. The library is functional and ready to use, but many components from the full Material Design 3 specification are not yet implemented.
 
 ## Changelog
+
+### v1.5.0 - ClipScope and Scissor Refactor
+- **ClipScope System**: New `raym3/ClipScope.h` with `PushClipRect`, `PopClipRect`, `IsRectInClip`, `IsPointInClip`
+- **SuspendClipScissor/ResumeClipScissor**: Temporarily disable clipping for overlays that extend beyond scroll regions (dropdowns, tooltips)
+- **Scissor API**: `raym3.h` exposes `BeginScissor`, `PushScissor`, `PopScissor`, `GetCurrentScissorBounds`, `IsVisible`, `SetScissorDebug`
+- **Frame Validation**: Unbalanced clip stack and underflow detected at frame end with warning logs
+- **DPI-Aware**: Clip rects scaled correctly for high-DPI / retina displays
 
 ### v1.4.0 - Stable Layout IDs
 - **Layout Flicker Fix**: Eliminated UI flicker when layout structure changes (adding/removing elements, switching tabs) by implementing stable hash-based node IDs instead of sequential numbering.

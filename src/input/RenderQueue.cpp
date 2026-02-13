@@ -2,6 +2,7 @@
 
 #if RAYM3_USE_INPUT_LAYERS
 
+#include "raym3/ClipScope.h"
 #include "raym3/layout/Layout.h"
 #include <algorithm>
 
@@ -72,7 +73,11 @@ Rectangle RenderQueue::RegisterComponent(
   cmd.layerId = (layerId == 0) ? currentLayerId_ : layerId;
   cmd.zOrder = cmd.layerId;
   cmd.consumesInput = consumesInput;
-  cmd.registrationOrder = registrationCounter_++;
+  cmd.registrationOrder = (unsigned long long)registrationCounter_++;
+  cmd.clipRect = GetCurrentClipRect();
+  cmd.culled = (cmd.bounds.width <= 0 || cmd.bounds.height <= 0 ||
+                cmd.clipRect.width <= 0 || cmd.clipRect.height <= 0 ||
+                !CheckCollisionRecs(cmd.bounds, cmd.clipRect));
   cmd.renderFunc = [renderFunc, bounds]() {
     renderFunc(bounds);
   };
@@ -93,7 +98,16 @@ void RenderQueue::BuildInputBlockingMap() {
   
   for (size_t i = 0; i < renderQueue_.size(); i++) {
     const auto& cmd = renderQueue_[i];
-    if (cmd.consumesInput && CheckCollisionPointRec(mousePos, cmd.bounds)) {
+    if (!cmd.consumesInput || cmd.culled) {
+      continue;
+    }
+    if (!CheckCollisionPointRec(mousePos, cmd.bounds)) {
+      continue;
+    }
+    if (!CheckCollisionPointRec(mousePos, cmd.clipRect)) {
+      continue;
+    }
+    if (cmd.consumesInput) {
       if (topmostLayerUnderMouse == -1 || cmd.zOrder > topmostLayerUnderMouse) {
         topmostLayerUnderMouse = cmd.zOrder;
       }
@@ -110,28 +124,28 @@ void RenderQueue::BuildInputBlockingMap() {
   }
 }
 
-bool RenderQueue::ShouldReceiveInput(Rectangle bounds, int layerId) {
-  // Build the input blocking map if not already done this frame
-  if (inputBlockingLayers_.empty() && !renderQueue_.empty()) {
-    BuildInputBlockingMap();
-  }
-  
-  // Find this component in the queue
+bool RenderQueue::ShouldReceiveInput(Rectangle bounds, Rectangle clipRect,
+                                     int layerId) {
   Vector2 mousePos = GetMousePosition();
-  if (!CheckCollisionPointRec(mousePos, bounds)) {
+  if (!CheckCollisionPointRec(mousePos, bounds) ||
+      !CheckCollisionPointRec(mousePos, clipRect)) {
     return false;
   }
-  
-  // Check if blocked
-  for (size_t i = 0; i < renderQueue_.size(); i++) {
-    const auto& cmd = renderQueue_[i];
-    if (cmd.bounds.x == bounds.x && cmd.bounds.y == bounds.y &&
-        cmd.bounds.width == bounds.width && cmd.bounds.height == bounds.height &&
-        cmd.layerId == layerId) {
-      return inputBlockingLayers_[i] == -1;
+
+  for (const auto& cmd : renderQueue_) {
+    if (!cmd.consumesInput || cmd.culled) {
+      continue;
     }
+    if (cmd.zOrder <= layerId) {
+      continue;
+    }
+    if (!CheckCollisionPointRec(mousePos, cmd.bounds) ||
+        !CheckCollisionPointRec(mousePos, cmd.clipRect)) {
+      continue;
+    }
+    return false;
   }
-  
+
   return true;
 }
 
@@ -151,9 +165,14 @@ void RenderQueue::ExecuteRenderQueue() {
       return a.registrationOrder < b.registrationOrder;
     });
   
-  // Execute render commands in order
+  // Execute render commands in order with per-command clip
   for (auto& cmd : renderQueue_) {
+    if (cmd.culled) {
+      continue;
+    }
+    ApplyClipRectToGpu(cmd.clipRect);
     cmd.renderFunc();
+    ApplyClipRectToGpu(GetCurrentClipRect());
   }
 }
 

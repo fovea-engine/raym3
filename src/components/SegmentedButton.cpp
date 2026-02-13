@@ -3,6 +3,7 @@
 #include "raym3/components/Icon.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/ClipScope.h"
 #include <cmath>
 
 #if RAYM3_USE_INPUT_LAYERS

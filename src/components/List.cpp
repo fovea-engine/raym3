@@ -5,6 +5,7 @@
 #include "raym3/rendering/Renderer.h"
 #include "raym3/rendering/SvgRenderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/ClipScope.h"
 #include <raylib.h>
 #include <raymath.h>
 #include <vector>

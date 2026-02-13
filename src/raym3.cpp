@@ -12,6 +12,7 @@
 #include "raym3/layout/Container.h"
 #include "raym3/styles/Theme.h"
 #include "raym3/layout/Layout.h"
+#include "raym3/ClipScope.h"
 
 #include "raym3/components/Divider.h"
 #include "raym3/components/Icon.h"
@@ -21,6 +22,7 @@
 #include "raym3/components/SegmentedButton.h"
 #include "raym3/components/Text.h"
 #include "raym3/rendering/SvgRenderer.h"
+#include <raylib.h>
 
 #if RAYM3_USE_INPUT_LAYERS
 #include "raym3/input/InputLayer.h"
@@ -74,11 +76,11 @@ void BeginFrame() {
   InputLayerManager::BeginFrame();
   RenderQueue::BeginFrame();
 #endif
+  ClearClipUnderflowCount();
+  ClearClipDebugRects();
 }
 
 void EndFrame() {
-  SetMouseCursor(s_requestedCursor);
-
   // Render any pending tooltips (deferred to ensure they're on top)
   TooltipManager::Update();
 
@@ -86,45 +88,46 @@ void EndFrame() {
   RenderQueue::ExecuteRenderQueue();
   InputLayerManager::EndFrame();
 #endif
+
+  if (GetClipDepth() != 0) {
+    TraceLog(LOG_WARNING, "raym3 clip stack unbalanced at frame end: depth=%d",
+             GetClipDepth());
+    ClearClipStack();
+  }
+  if (GetClipUnderflowCount() > 0) {
+    TraceLog(LOG_WARNING, "raym3 clip stack underflow detected: count=%d",
+             GetClipUnderflowCount());
+    ClearClipUnderflowCount();
+  }
+
+  SetMouseCursor(s_requestedCursor);
 }
 
 #if RAYM3_USE_INPUT_LAYERS
 void PushLayer(int zOrder) {
   InputLayerManager::PushLayer(zOrder);
   RenderQueue::PushLayer(zOrder);
-  
-  // If we are pushing a layer above the base (layout) layer, we likely want to bypass
-  // the layout's clipping (scissor) region. E.g. for Menus, Tooltips, Dialogs.
-  if (zOrder > 0) {
-    EndScissorMode();
-  }
 }
 
 void PopLayer() {
   InputLayerManager::PopLayer();
   RenderQueue::PopLayer();
-  
-  // If we returned to the base layer (or if we need to restore layout clipping context)
-  // We check if there's an active layout scissor and restore it.
-  // Note: This logic assumes we mostly use Layers for Overlays on top of Layouts.
-  // If Layouts are nested in Layers, this might need refinement.
-  
-  // Only restore if we are back to a state where Layout clipping should apply.
-  // For simplicity, we restore whatever Layout thinks is active.
-  if (InputLayerManager::GetCurrentLayerId() <= 0) {
-    Rectangle s = Layout::GetActiveScissorBounds();
-    if (s.width > 0 && s.height > 0) {
-        // Apply DPI Scaling (HighDPI support)
-        // Match logic in Layout.cpp
-        float scaleX = (float)GetRenderWidth() / (float)GetScreenWidth();
-        float scaleY = (float)GetRenderHeight() / (float)GetScreenHeight();
-
-        BeginScissorMode((int)(s.x * scaleX), (int)(s.y * scaleY), 
-                         (int)(s.width * scaleX), (int)(s.height * scaleY)); 
-    }
-  }
 }
 #endif
+
+void BeginScissor(Rectangle bounds) { PushClipRect(bounds); }
+
+void PushScissor(Rectangle bounds) { PushClipRect(bounds); }
+
+void PopScissor() { PopClipRect(); }
+
+Rectangle GetCurrentScissorBounds() { return GetCurrentClipRect(); }
+
+bool IsVisible(Rectangle bounds) { return IsRectInClip(bounds); }
+
+void SetScissorDebug(bool enabled) { SetClipDebug(enabled); }
+
+bool IsScissorDebug() { return IsClipDebug(); }
 
 void SetTheme(bool isDarkMode) {
   darkMode = isDarkMode;

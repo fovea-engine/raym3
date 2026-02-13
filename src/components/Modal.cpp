@@ -7,6 +7,7 @@
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/ClipScope.h"
 #include <cstring>
 #include <raylib.h>
 
