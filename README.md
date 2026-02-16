@@ -14,7 +14,7 @@ raym3 is a Material Design 3 inspired immediate-mode GUI library built on raylib
 - **Immediate-Mode API** - Simple, intuitive API similar to raygui
 - **Automatic Resource Management** - Icons and fonts are automatically discovered or can be embedded
 - **Optional Yoga Layout** - Flexbox layout support for advanced UI composition
-- **Roboto Font Support** - Embedded Roboto fonts with custom font loading
+- **Roboto Font Support** - Roboto v3 (from roboto-3-classic); can be loaded from disk or embedded for portable deployment
 - **Light and Dark Themes** - Full theme support with Material Design 3 color system
 - **SVG Icon Support** - Material Design icons with multiple variations (filled, outlined, round, sharp, two-tone)
 - **Zero External Dependencies** - Can be built as a standalone library (raylib is fetched automatically)
@@ -198,6 +198,19 @@ add_subdirectory(raym3)
 target_link_libraries(your_target raym3)
 ```
 
+### Font Configuration (Project-Agnostic)
+
+raym3 uses Roboto v3.015 from [roboto-3-classic](https://github.com/googlefonts/roboto-3-classic). The setup works for any project using raym3 (submodule or standalone) on macOS, Windows, Linux, Android, and Web/WASM:
+
+- **Default**: Fonts are downloaded at configure time to the build directory and loaded from disk at runtime.
+- **Embedded** (recommended for packaged apps): Set `RAYM3_EMBED_FONTS=ON` to embed Roboto into the binary—no font files needed at runtime.
+- **Offline/Override**: Set `ROBOTO_FONTS_DIR` to a path with `Roboto-Regular.ttf` and `Roboto-Bold.ttf` to use pre-downloaded fonts.
+
+```cmake
+set(RAYM3_EMBED_FONTS ON CACHE BOOL "" FORCE)  # For portable deployment
+add_subdirectory(raym3)
+```
+
 ### With Input Layers Support
 
 To enable the layer-based input system with automatic input blocking and capture:
@@ -308,6 +321,20 @@ resources/
       ...
 ```
 
+## Icon List & Autocomplete
+
+The `material-design-icons` submodule does not ship a metadata index. raym3 provides a script to generate one for IDE autocomplete and validation:
+
+```bash
+cd raym3 && python3 tools/generate_icon_list.py
+```
+
+Outputs:
+- `generated/icons.json` - Array of all available icon names (~2170)
+- `generated/icons.schema.json` - JSON Schema with enum for completion
+
+**Using in your project:** Copy `generated/icons.schema.json` into your editor's schema directory (e.g. `.vscode/schemas/`) and reference it where icon name strings are used. For VSCode YAML, add `"icon": { "$ref": "icons.schema.json" }` to schemas that have icon fields. The JSON array can also drive custom completion providers or UI pickers.
+
 ## Dependencies
 
 - **raylib** (required) - Automatically fetched via CMake FetchContent
@@ -340,10 +367,10 @@ raym3 is built using the following excellent open-source projects:
   - Copyright (c) Google LLC
   - Over 10,000 SVG icons included in multiple variations (filled, outlined, round, sharp, two-tone)
 
-- **[Roboto Font Family](https://github.com/google/roboto)** - Material Design typeface
+- **[Roboto Font Family](https://github.com/googlefonts/roboto-3-classic)** (v3.015) - Material Design typeface
   - License: Apache License 2.0
   - Copyright (c) Google LLC
-  - Embedded font files for consistent typography
+  - Downloaded at configure time or embedded via `RAYM3_EMBED_FONTS`
 
 ### Design System
 
@@ -381,7 +408,7 @@ If you find raym3 useful and would like to support its development, you can:
 
 ## Project Status
 
-raym3 is an independent, self-contained project. All resources (icons and fonts) are included in the repository, making it easy to use in any project without external dependencies.
+raym3 is an independent, self-contained project. Icons come from the material-design-icons submodule. Fonts (Roboto) are auto-downloaded at configure time or can be embedded—no manual setup required for any platform.
 
 **Current Status:** Partial implementation of Material Design 3 components. The library is functional and ready to use, but many components from the full Material Design 3 specification are not yet implemented.
 
@@ -393,6 +420,7 @@ raym3 is an independent, self-contained project. All resources (icons and fonts)
 - **Overlay Layer Threshold**: Input layers with `zOrder >= 100` bypass layout scissor (menus, tooltips, dialogs render above clipped content).
 - **Emscripten**: Automatic `GRAPHICS_API_OPENGL_ES3` for WebAssembly builds.
 - **Layout**: Scroll containers and `GetActiveScissorBounds` now use the shared scissor stack.
+- **Slider, TextField, RangeSlider**: Use `PushClipRect`/`PopClipRect` to restore parent clip. For custom content in scroll containers, call `PushScissor(Layout::GetActiveScissorBounds())` and `PopScissor()`.
 
 ### v1.4.0 - Stable Layout IDs
 - **Layout Flicker Fix**: Eliminated UI flicker when layout structure changes (adding/removing elements, switching tabs) by implementing stable hash-based node IDs instead of sequential numbering.

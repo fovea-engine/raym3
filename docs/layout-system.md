@@ -100,8 +100,40 @@ for (int i = 0; i < 20; i++) {
     raym3::Button(("Item " + std::to_string(i)).c_str(), itemBounds);
 }
 
-// End scroll container (automatically handles scissor mode)
-EndScissorMode();
+raym3::Layout::EndContainer();  // End scroll container (handles scissor internally)
+```
+
+When rendering custom content (not using Layout::Alloc) inside a scroll container, push the scroll bounds first so nested components (Slider, TextField, etc.) properly restore the clip:
+
+```cpp
+raym3::Layout::BeginScrollContainer(scrollStyle, false, true);
+
+Rectangle scrollBounds = raym3::Layout::GetActiveScissorBounds();
+if (scrollBounds.width > 0 && scrollBounds.height > 0) {
+    raym3::PushScissor(scrollBounds);
+}
+// ... draw your custom content (sliders, text fields, etc.) ...
+raym3::PopScissor();
+
+raym3::Layout::EndContainer();
+```
+
+Example: inspector with sliders (custom layout, not Layout::Alloc):
+
+```cpp
+raym3::Layout::BeginScrollContainer(inspStyle, false, true);
+Rectangle scrollBounds = raym3::Layout::GetActiveScissorBounds();
+if (scrollBounds.width > 0 && scrollBounds.height > 0)
+    raym3::PushScissor(scrollBounds);
+
+float y = 0;
+for (int i = 0; i < 5; i++) {
+    Rectangle r = {10, y, 200, 40};  // local coords within scroll
+    val[i] = raym3::Slider(r, val[i], 0, 100, "Prop");
+    y += 50;
+}
+
+raym3::PopScissor();
 raym3::Layout::EndContainer();
 ```
 
@@ -130,7 +162,6 @@ for (int i = 0; i < 10; i++) {
     raym3::Button(("Menu " + std::to_string(i)).c_str(), btnBounds);
 }
 
-EndScissorMode();
 raym3::Layout::EndContainer();
 
 // Content area (flexible, takes remaining space)
@@ -163,7 +194,6 @@ for (int i = 0; i < 10; i++) {
     raym3::LayoutCard::EndCard();
 }
 
-EndScissorMode();
 raym3::Layout::EndContainer();
 ```
 
@@ -256,7 +286,7 @@ if (IsKeyPressed(KEY_F3)) {
 
 2. **Deterministic Order**: The layout system relies on components being declared in the same order each frame. Changing the order will cause incorrect layouts.
 
-3. **Scissor Mode**: Scroll containers automatically enable scissor mode. You must call `EndScissorMode()` after ending a scroll container if you've manually enabled scissor mode.
+3. **Scissor Mode**: Scroll containers enable scissor for clipping. Components (Slider, TextField, RangeSlider) use `PushClipRect`/`PopClipRect` to restore the parent clip. When drawing custom content inside a scroll container (e.g. inspector panels), call `PushScissor(Layout::GetActiveScissorBounds())` at the start and `PopScissor()` when done.
 
 4. **Yoga Required**: The Layout System requires Yoga to be enabled. Set `RAYM3_USE_YOGA=ON` in CMake.
 
