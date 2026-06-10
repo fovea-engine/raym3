@@ -215,6 +215,7 @@ static bool NodeWithinSubtree(const Node *node, const Node *ancestor) {
 // bottom sheets) or user z-index layers to content painted underneath.
 static bool NodeOccludesInput(const Node &node, const Style &style) {
   if (node.capturesInput || node.hasScrim || node.onPress ||
+      node.onDragStart || node.onDragMove || node.onDragEnd ||
       node.kind == NodeKind::TextInput || node.kind == NodeKind::Button ||
       IsControlKind(node.kind))
     return true;
@@ -561,10 +562,22 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
   if (style.columnGap)
     YGNodeStyleSetGap(ygNode, YGGutterColumn, *style.columnGap);
 
-  YGNodeStyleSetMargin(ygNode, YGEdgeTop, style.margin.Top());
-  YGNodeStyleSetMargin(ygNode, YGEdgeRight, style.margin.Right());
-  YGNodeStyleSetMargin(ygNode, YGEdgeBottom, style.margin.Bottom());
-  YGNodeStyleSetMargin(ygNode, YGEdgeLeft, style.margin.Left());
+  if (style.margin.TopIsAuto())
+    YGNodeStyleSetMarginAuto(ygNode, YGEdgeTop);
+  else
+    YGNodeStyleSetMargin(ygNode, YGEdgeTop, style.margin.Top());
+  if (style.margin.RightIsAuto())
+    YGNodeStyleSetMarginAuto(ygNode, YGEdgeRight);
+  else
+    YGNodeStyleSetMargin(ygNode, YGEdgeRight, style.margin.Right());
+  if (style.margin.BottomIsAuto())
+    YGNodeStyleSetMarginAuto(ygNode, YGEdgeBottom);
+  else
+    YGNodeStyleSetMargin(ygNode, YGEdgeBottom, style.margin.Bottom());
+  if (style.margin.LeftIsAuto())
+    YGNodeStyleSetMarginAuto(ygNode, YGEdgeLeft);
+  else
+    YGNodeStyleSetMargin(ygNode, YGEdgeLeft, style.margin.Left());
   YGNodeStyleSetPadding(ygNode, YGEdgeTop, style.padding.Top());
   YGNodeStyleSetPadding(ygNode, YGEdgeRight, style.padding.Right());
   YGNodeStyleSetPadding(ygNode, YGEdgeBottom, style.padding.Bottom());
@@ -2031,6 +2044,10 @@ static bool NeedsImmediateCapture(const Node &node, bool isScrim) {
     return true;
   if (node.onValueChange)
     return true;
+  // Pan/drag handlers (e.g. time-picker dial) must capture on press so
+  // onDragMove fires while the pointer is down.
+  if (node.onDragStart || node.onDragMove || node.onDragEnd)
+    return true;
   return false;
 }
 
@@ -2322,11 +2339,8 @@ static void DriveControlDrag(Node &n, Vector2 pt) {
     if (st.step > 0.0f)
       nv = st.minValue + std::round((nv - st.minValue) / st.step) * st.step;
     nv = std::clamp(nv, st.minValue, st.maxValue);
-    if (nv != st.value) {
+    if (nv != st.value)
       st.value = nv;
-      if (n.onValueChange)
-        n.onValueChange(nv);
-    }
     st.dragging = true;
   } else if (n.kind == NodeKind::RangeSlider) {
     float n01 = frac;
@@ -2336,18 +2350,12 @@ static void DriveControlDrag(Node &n, Vector2 pt) {
     float minGap = st.step > 0.0f ? st.step : 0.0f;
     if (st.draggingThumb == 0) {
       float next = std::clamp(std::min(n01, st.endValue - minGap), 0.0f, 1.0f);
-      if (next != st.startValue) {
+      if (next != st.startValue)
         st.startValue = next;
-        if (n.onValueChange)
-          n.onValueChange(st.startValue);
-      }
     } else if (st.draggingThumb == 1) {
       float next = std::clamp(std::max(n01, st.startValue + minGap), 0.0f, 1.0f);
-      if (next != st.endValue) {
+      if (next != st.endValue)
         st.endValue = next;
-        if (n.onValueChange)
-          n.onValueChange(st.endValue);
-      }
     }
     st.dragging = true;
   }
@@ -2392,6 +2400,14 @@ static void ReleaseActive(Node *an, Vector2 pt, const Node *releaseTarget) {
   bool over = (releaseTarget == an);
 
   if (an->kind == NodeKind::Slider || an->kind == NodeKind::RangeSlider) {
+    if (an->onValueChange) {
+      if (an->kind == NodeKind::Slider)
+        an->onValueChange(an->control.value);
+      else if (an->control.draggingThumb == 0)
+        an->onValueChange(an->control.startValue);
+      else if (an->control.draggingThumb == 1)
+        an->onValueChange(an->control.endValue);
+    }
     an->control.dragging = false;
     an->control.draggingThumb = -1;
     return;
@@ -2472,6 +2488,9 @@ void ResolveInput(const NodePtr &root) {
     } else {
       if (!Ctx().activeIsScrim)
         StartRippleFadeOut(activeId);
+      const float travel = PointerTravel(GetDragOrigin(), pt);
+      if (an->kind != NodeKind::TextInput)
+        DismissTextInputIfNeeded(nullptr, Ctx().scroll.engaged, travel);
       ReleaseActive(an, pt, target.get());
       SetActiveId(0);
       Ctx().activeIsScrim = false;
@@ -2497,6 +2516,18 @@ void ResolveInput(const NodePtr &root) {
 
   if (p.pressed) {
     ClearPendingPress();
+    Ctx().input.dismissTapActive = false;
+    if (NodeId fid = GetFocusedId()) {
+      auto *fn = reinterpret_cast<Node *>(fid);
+      if (fn && fn->kind == NodeKind::TextInput) {
+        const bool onTextInput =
+            target && target->kind == NodeKind::TextInput;
+        if (!onTextInput) {
+          Ctx().input.dismissTapActive = true;
+          Ctx().input.dismissTapOrigin = pt;
+        }
+      }
+    }
     NodePtr sheet = FindBottomSheetRoot(owner);
     if (sheet && !sheet->disabled && PointInBottomSheetHandle(*sheet, pt)) {
       SetActiveId(IdOf(sheet));
@@ -2517,18 +2548,6 @@ void ResolveInput(const NodePtr &root) {
         SetPendingPressId(IdOf(target));
         TrySpawnRipple(target, pt);
       }
-    } else {
-      // Keep TextInput focus when starting a scroll on non-interactive content
-      // (padding, labels, etc.) — scrolling must not dismiss the keyboard.
-      bool preserveFocus = false;
-      if (GetFocusedId() != 0) {
-        auto *fn = reinterpret_cast<Node *>(GetFocusedId());
-        if (fn && fn->kind == NodeKind::TextInput &&
-            FindScrollableForInput(root, pt))
-          preserveFocus = true;
-      }
-      if (!preserveFocus)
-        Blur();
     }
     return;
   }
@@ -2539,16 +2558,32 @@ void ResolveInput(const NodePtr &root) {
     FinishPendingPress();
     if (PointerTravel(pressOrigin, pt) <= kTouchSlop &&
         InteractiveTargetFrom(InputOwnerAt(pt)) == pending) {
-      if (pending->kind == NodeKind::TextInput)
-        RequestFocus(pending);
-      else if (pending->onPress)
-        pending->onPress();
+      if (pending->kind == NodeKind::TextInput) {
+        if (GetFocusedId() == IdOf(pending)) {
+          if (pending->textInput.onFocus)
+            pending->textInput.onFocus();
+        } else {
+          RequestFocus(pending);
+        }
+      } else {
+        if (pending->onPress)
+          pending->onPress();
+        DismissTextInputIfNeeded(nullptr, false,
+                                 PointerTravel(pressOrigin, pt));
+      }
     }
     return;
   }
 
-  if (p.released)
+  if (p.released) {
+    if (Ctx().input.dismissTapActive && !Ctx().scroll.engaged) {
+      const float travel =
+          PointerTravel(Ctx().input.dismissTapOrigin, pt);
+      DismissTextInputIfNeeded(nullptr, false, travel);
+    }
+    Ctx().input.dismissTapActive = false;
     FinishPendingPress();
+  }
 }
 
 RenderStats GetLastRenderStats() { return Ctx().lastStats; }

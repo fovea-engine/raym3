@@ -90,6 +90,10 @@ struct InputState {
   NodeId focused = 0;
   NodeId pendingPress = 0;
   Vector2 dragOrigin = {0, 0};
+  // Release-time outside tap: press outside TextField, dismiss on release if
+  // the finger didn't scroll and stayed within touch slop.
+  bool dismissTapActive = false;
+  Vector2 dismissTapOrigin = {0, 0};
 };
 
 struct RenderContext {

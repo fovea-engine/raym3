@@ -711,33 +711,41 @@ void ResolveTextInput(const NodePtr &root) {
   NodeId focused = GetFocusedId();
 
   if (focused != Ctx().lastFocusedTextInput) {
-    if (Ctx().lastFocusedTextInput != 0) {
-      NodePtr prev = FindNodeById(root, Ctx().lastFocusedTextInput);
-      if (prev && prev->kind == NodeKind::TextInput) {
-        if (prev->textInput.onBlur)
-          prev->textInput.onBlur();
-        prev->textEdit.wasFocused = false;
-      }
-    }
-    if (focused != 0) {
-      NodePtr next = FindNodeById(root, focused);
-      if (next && next->kind == NodeKind::TextInput) {
-        if (!next->textEdit.wasFocused && next->textInput.onFocus)
-          next->textInput.onFocus();
-        next->textEdit.wasFocused = true;
-        char *buffer = TextBuffer(*next);
-        if (buffer) {
-          int len = static_cast<int>(std::strlen(buffer));
-          if (next->textEdit.cursor > len)
-            next->textEdit.cursor = len;
-          TextInputUndoState &u = Ctx().textInputUndo[IdOf(next)];
-          if (u.history.empty()) {
-            u.history.push_back(buffer);
-            u.index = 0;
-          }
+    NodePtr prev = Ctx().lastFocusedTextInput != 0
+                       ? FindNodeById(root, Ctx().lastFocusedTextInput)
+                       : nullptr;
+    NodePtr next =
+        focused != 0 ? FindNodeById(root, focused) : nullptr;
+
+    const bool switchingField =
+        prev && prev->kind == NodeKind::TextInput && next &&
+        next->kind == NodeKind::TextInput && IdOf(prev) != IdOf(next);
+
+    // Gain focus (and IME switch) before blur so onBlur can see the new field.
+    if (next && next->kind == NodeKind::TextInput) {
+      if ((!next->textEdit.wasFocused || switchingField) &&
+          next->textInput.onFocus)
+        next->textInput.onFocus();
+      next->textEdit.wasFocused = true;
+      char *buffer = TextBuffer(*next);
+      if (buffer) {
+        int len = static_cast<int>(std::strlen(buffer));
+        if (next->textEdit.cursor > len)
+          next->textEdit.cursor = len;
+        TextInputUndoState &u = Ctx().textInputUndo[IdOf(next)];
+        if (u.history.empty()) {
+          u.history.push_back(buffer);
+          u.index = 0;
         }
       }
     }
+
+    if (prev && prev->kind == NodeKind::TextInput) {
+      if (prev->textInput.onBlur)
+        prev->textInput.onBlur();
+      prev->textEdit.wasFocused = false;
+    }
+
     Ctx().lastFocusedTextInput = focused;
   }
 

@@ -37,10 +37,22 @@ struct EdgeValues {
   std::optional<float> bottom;
   std::optional<float> left;
 
+  std::optional<bool> allAuto;
+  std::optional<bool> horizontalAuto;
+  std::optional<bool> verticalAuto;
+  std::optional<bool> topAuto;
+  std::optional<bool> rightAuto;
+  std::optional<bool> bottomAuto;
+  std::optional<bool> leftAuto;
+
   float Top(float fallback = 0.0f) const;
   float Right(float fallback = 0.0f) const;
   float Bottom(float fallback = 0.0f) const;
   float Left(float fallback = 0.0f) const;
+  bool TopIsAuto() const;
+  bool RightIsAuto() const;
+  bool BottomIsAuto() const;
+  bool LeftIsAuto() const;
 };
 
 struct TextStyle {

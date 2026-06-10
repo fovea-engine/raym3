@@ -56,4 +56,27 @@ void SetFocusedNode(const NodePtr &node) {
 void RequestFocus(const NodePtr &node) { SetFocusedNode(node); }
 void Blur() { Ctx().input.focused = 0; }
 
+bool ShouldKeepTextInputFocused(const NodePtr &tapTarget, bool scrollEngaged,
+                                float pointerTravel) {
+  if (GetFocusedId() == 0)
+    return true;
+  auto *fn = reinterpret_cast<Node *>(GetFocusedId());
+  if (!fn || fn->kind != NodeKind::TextInput)
+    return true;
+  if (scrollEngaged)
+    return true;
+  if (tapTarget && tapTarget->kind == NodeKind::TextInput)
+    return true;
+  if (pointerTravel > kTouchSlop)
+    return true;
+  return false;
+}
+
+void DismissTextInputIfNeeded(const NodePtr &tapTarget, bool scrollEngaged,
+                              float pointerTravel) {
+  if (ShouldKeepTextInputFocused(tapTarget, scrollEngaged, pointerTravel))
+    return;
+  Blur();
+}
+
 } // namespace raym3::v2

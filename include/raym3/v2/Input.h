@@ -77,6 +77,12 @@ void SetFocusedNode(const NodePtr &node);
 void RequestFocus(const NodePtr &node);
 void Blur();
 
+// TextField keyboard policy: keep focus unless the user taps outside (not scroll/drag).
+bool ShouldKeepTextInputFocused(const NodePtr &tapTarget, bool scrollEngaged,
+                                float pointerTravel);
+void DismissTextInputIfNeeded(const NodePtr &tapTarget, bool scrollEngaged,
+                              float pointerTravel);
+
 inline NodeId IdOf(const Node *n) { return reinterpret_cast<NodeId>(n); }
 inline NodeId IdOf(const NodePtr &n) { return reinterpret_cast<NodeId>(n.get()); }
 

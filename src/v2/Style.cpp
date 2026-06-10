@@ -42,23 +42,104 @@ float EdgeValues::Left(float fallback) const {
   return fallback;
 }
 
+static bool edgeAutoFlag(const std::optional<bool> &specific,
+                         const std::optional<bool> &axis,
+                         const std::optional<bool> &all) {
+  if (specific)
+    return *specific;
+  if (axis)
+    return *axis;
+  if (all)
+    return *all;
+  return false;
+}
+
+bool EdgeValues::TopIsAuto() const {
+  return edgeAutoFlag(topAuto, verticalAuto, allAuto);
+}
+
+bool EdgeValues::RightIsAuto() const {
+  return edgeAutoFlag(rightAuto, horizontalAuto, allAuto);
+}
+
+bool EdgeValues::BottomIsAuto() const {
+  return edgeAutoFlag(bottomAuto, verticalAuto, allAuto);
+}
+
+bool EdgeValues::LeftIsAuto() const {
+  return edgeAutoFlag(leftAuto, horizontalAuto, allAuto);
+}
+
+static void mergeEdgeAuto(EdgeValues &result, const EdgeValues &overrideStyle) {
+  if (overrideStyle.allAuto) {
+    result.allAuto = overrideStyle.allAuto;
+    if (*overrideStyle.allAuto)
+      result.all = std::nullopt;
+  }
+  if (overrideStyle.horizontalAuto) {
+    result.horizontalAuto = overrideStyle.horizontalAuto;
+    if (*overrideStyle.horizontalAuto)
+      result.horizontal = std::nullopt;
+  }
+  if (overrideStyle.verticalAuto) {
+    result.verticalAuto = overrideStyle.verticalAuto;
+    if (*overrideStyle.verticalAuto)
+      result.vertical = std::nullopt;
+  }
+  if (overrideStyle.topAuto) {
+    result.topAuto = overrideStyle.topAuto;
+    if (*overrideStyle.topAuto)
+      result.top = std::nullopt;
+  }
+  if (overrideStyle.rightAuto) {
+    result.rightAuto = overrideStyle.rightAuto;
+    if (*overrideStyle.rightAuto)
+      result.right = std::nullopt;
+  }
+  if (overrideStyle.bottomAuto) {
+    result.bottomAuto = overrideStyle.bottomAuto;
+    if (*overrideStyle.bottomAuto)
+      result.bottom = std::nullopt;
+  }
+  if (overrideStyle.leftAuto) {
+    result.leftAuto = overrideStyle.leftAuto;
+    if (*overrideStyle.leftAuto)
+      result.left = std::nullopt;
+  }
+}
+
 static EdgeValues MergeEdges(const EdgeValues &base,
                              const EdgeValues &overrideStyle) {
   EdgeValues result = base;
-  if (overrideStyle.all)
+  mergeEdgeAuto(result, overrideStyle);
+  if (overrideStyle.all) {
     result.all = overrideStyle.all;
-  if (overrideStyle.horizontal)
+    result.allAuto = false;
+  }
+  if (overrideStyle.horizontal) {
     result.horizontal = overrideStyle.horizontal;
-  if (overrideStyle.vertical)
+    result.horizontalAuto = false;
+  }
+  if (overrideStyle.vertical) {
     result.vertical = overrideStyle.vertical;
-  if (overrideStyle.top)
+    result.verticalAuto = false;
+  }
+  if (overrideStyle.top) {
     result.top = overrideStyle.top;
-  if (overrideStyle.right)
+    result.topAuto = false;
+  }
+  if (overrideStyle.right) {
     result.right = overrideStyle.right;
-  if (overrideStyle.bottom)
+    result.rightAuto = false;
+  }
+  if (overrideStyle.bottom) {
     result.bottom = overrideStyle.bottom;
-  if (overrideStyle.left)
+    result.bottomAuto = false;
+  }
+  if (overrideStyle.left) {
     result.left = overrideStyle.left;
+    result.leftAuto = false;
+  }
   return result;
 }
 
