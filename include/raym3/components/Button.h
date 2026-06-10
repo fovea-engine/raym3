@@ -8,6 +8,7 @@ namespace raym3 {
 
 class ButtonComponent {
 public:
+  static void ResetIds();
   static bool Render(const char *text, Rectangle bounds,
                      ButtonVariant variant = ButtonVariant::Filled,
                      const ButtonOptions &options = ButtonOptions{});

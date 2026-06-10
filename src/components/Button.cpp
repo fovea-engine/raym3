@@ -16,6 +16,8 @@ namespace raym3 {
 static int focusedButtonId_ = -1;
 static int currentButtonId_ = 0;
 
+void ButtonComponent::ResetIds() { currentButtonId_ = 0; }
+
 bool ButtonComponent::Render(const char *text, Rectangle bounds,
                              ButtonVariant variant,
                              const ButtonOptions &options) {

@@ -16,6 +16,8 @@ namespace raym3 {
 static int focusedIconButtonId_ = -1;
 static int currentIconButtonId_ = 0;
 
+void IconButtonComponent::ResetIds() { currentIconButtonId_ = 0; }
+
 bool IconButtonComponent::Render(const char *iconName, Rectangle bounds,
                                  ButtonVariant variant,
                                  IconVariation iconVariation,

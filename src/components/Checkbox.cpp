@@ -4,7 +4,9 @@
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/IconRenderer.h"
 #include <raylib.h>
+#include <algorithm>
 #include <map>
 
 #if RAYM3_USE_INPUT_LAYERS
@@ -16,6 +18,8 @@ namespace raym3 {
 static int focusedCheckboxId_ = -1;
 static int currentCheckboxId_ = 0;
 static std::map<int, Rectangle> checkboxBounds_;
+
+void CheckboxComponent::ResetIds() { currentCheckboxId_ = 0; }
 
 bool CheckboxComponent::Render(const char *label, Rectangle bounds,
                                bool *checked, const CheckboxOptions* options) {
@@ -45,10 +49,8 @@ bool CheckboxComponent::Render(const char *label, Rectangle bounds,
   checkboxBounds.height = size;
   checkboxBounds.y = bounds.y + (bounds.height - size) / 2.0f;
 
-  // State Layer (Halo)
-  // User requested "only 3 px bigger than the checkbox".
-  // Assuming 3px padding on all sides -> size + 6.
-  float stateLayerSize = size + 6.0f;
+  // MD3 state layer is 40dp, while the minimum touch target is 48dp.
+  float stateLayerSize = 40.0f;
   if (state != ComponentState::Default) {
     Rectangle stateLayerRect = {
         checkboxBounds.x + checkboxBounds.width / 2.0f - stateLayerSize / 2.0f,
@@ -59,36 +61,22 @@ bool CheckboxComponent::Render(const char *label, Rectangle bounds,
                              scheme.onPrimary, state);
   }
 
-  if (*checked) {
-    // Filled
-    Renderer::DrawRoundedRectangle(checkboxBounds, cornerRadius,
-                                   scheme.primary);
+  // Animation progress: 0 = unchecked, 1 = checked.
+  float t = (options && options->animProgress >= 0.0f) ? options->animProgress
+                                                       : (*checked ? 1.0f : 0.0f);
+  // Outline is always present; the primary fill scales in from the center as t
+  // rises so the box "fills" rather than popping.
+  Renderer::DrawRoundedRectangleEx(checkboxBounds, cornerRadius,
+                                   scheme.onSurfaceVariant, 2.0f);
+  if (t > 0.01f) {
+    float fillSize = size * t;
+    Rectangle fill = {checkboxBounds.x + (size - fillSize) / 2.0f,
+                      checkboxBounds.y + (size - fillSize) / 2.0f, fillSize,
+                      fillSize};
+    Renderer::DrawRoundedRectangle(fill, cornerRadius * t, scheme.primary);
 
-    // Checkmark
-    // Icon area is 24x24 usually scaled to 18x18.
-    // Simple checkmark:
-    float thickness = 2.0f;
-    Vector2 center = {checkboxBounds.x + size / 2.0f,
-                      checkboxBounds.y + size / 2.0f};
-
-    // Points relative to center
-    Vector2 p1 = {center.x - 5.0f, center.y - 1.0f};
-    Vector2 p2 = {center.x - 1.0f, center.y + 3.0f};
-    Vector2 p3 = {center.x + 5.0f, center.y - 3.0f};
-
-    // Adjust for 18px size (smaller than 24px icon space)
-    // Scale by 18/24 = 0.75
-    p1 = {center.x - 4.0f, center.y - 0.5f};
-    p2 = {center.x - 1.0f, center.y + 2.5f};
-    p3 = {center.x + 3.5f, center.y - 3.0f};
-
-    DrawLineEx(p1, p2, thickness, scheme.onPrimary);
-    DrawLineEx(p2, p3, thickness, scheme.onPrimary);
-  } else {
-    // Outline
-    // MD3 Unchecked: onSurfaceVariant border
-    Renderer::DrawRoundedRectangleEx(checkboxBounds, cornerRadius,
-                                     scheme.onSurfaceVariant, 2.0f);
+    raym3::v2::DrawMaterialIcon(0xe5ca, checkboxBounds,
+                                ColorAlpha(scheme.onPrimary, t), 18, true);
   }
 
   if (label) {
@@ -116,20 +104,20 @@ bool CheckboxComponent::Render(const char *label, Rectangle bounds,
     isVisible = true;
 
   bool canProcessInput =
-      isVisible && InputLayerManager::ShouldProcessMouseInput(bounds, layerId);
+      isVisible && InputLayerManager::ShouldProcessMouseInput(touchTarget, layerId);
   bool clicked = canProcessInput &&
-                 CheckCollisionPointRec(GetMousePosition(), bounds) &&
+                 CheckCollisionPointRec(GetMousePosition(), touchTarget) &&
                  IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #else
   bool clicked = isVisible &&
-                 CheckCollisionPointRec(GetMousePosition(), bounds) &&
+                 CheckCollisionPointRec(GetMousePosition(), touchTarget) &&
                  IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #endif
   
   int thisId = currentCheckboxId_++;
   checkboxBounds_[thisId] = bounds;
   bool isFocused = (focusedCheckboxId_ == thisId);
-  bool isHovered = CheckCollisionPointRec(GetMousePosition(), bounds);
+  bool isHovered = CheckCollisionPointRec(GetMousePosition(), touchTarget);
   
   // Keyboard navigation
   if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -141,12 +129,12 @@ bool CheckboxComponent::Render(const char *label, Rectangle bounds,
     clicked = true;
   }
   
-  if (CheckCollisionPointRec(GetMousePosition(), bounds) && !inputBlocked) {
+  if (CheckCollisionPointRec(GetMousePosition(), touchTarget) && !inputBlocked) {
     RequestCursor(MOUSE_CURSOR_POINTING_HAND);
   }
   
   // Lose focus when clicking anywhere outside (raw check, bypass input layers)
-  if (isFocused && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !CheckCollisionPointRec(GetMousePosition(), bounds)) {
+  if (isFocused && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !CheckCollisionPointRec(GetMousePosition(), touchTarget)) {
     focusedCheckboxId_ = -1;
     isFocused = false;
   }
@@ -172,6 +160,10 @@ bool CheckboxComponent::Render(const char *label, Rectangle bounds,
 ComponentState CheckboxComponent::GetState(Rectangle bounds) {
   Vector2 mousePos = GetMousePosition();
   bool isVisible = Layout::IsRectVisibleInScrollContainer(bounds);
+  Rectangle checkboxBounds = GetCheckboxBounds(bounds);
+  Rectangle touchTarget = {checkboxBounds.x + checkboxBounds.width / 2.0f - 24.0f,
+                           checkboxBounds.y + checkboxBounds.height / 2.0f - 24.0f, 48.0f,
+                           48.0f};
 #if RAYM3_USE_INPUT_LAYERS
   int layerId = InputLayerManager::GetCurrentLayerId();
   // High-layer overlays bypass scroll container clipping
@@ -180,9 +172,9 @@ ComponentState CheckboxComponent::GetState(Rectangle bounds) {
 
   bool canProcessInput =
       isVisible && InputLayerManager::ShouldProcessMouseInput(bounds, layerId);
-  bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, bounds);
+  bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, touchTarget);
 #else
-  bool isHovered = isVisible && CheckCollisionPointRec(mousePos, bounds);
+  bool isHovered = isVisible && CheckCollisionPointRec(mousePos, touchTarget);
 #endif
   bool isPressed = isHovered && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
 
@@ -195,7 +187,9 @@ ComponentState CheckboxComponent::GetState(Rectangle bounds) {
 
 Rectangle CheckboxComponent::GetCheckboxBounds(Rectangle bounds) {
   float size = 18.0f;
-  return {bounds.x, bounds.y + (bounds.height - size) / 2.0f, size, size};
+  float visualSlot = std::min(48.0f, std::max(size, bounds.width));
+  return {bounds.x + (visualSlot - size) / 2.0f,
+          bounds.y + (bounds.height - size) / 2.0f, size, size};
 }
 
 } // namespace raym3

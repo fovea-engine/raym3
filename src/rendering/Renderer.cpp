@@ -1,9 +1,17 @@
 #include "raym3/rendering/Renderer.h"
 #include "raym3/fonts/FontManager.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/EmojiFont.h"
 #include <cmath>
 
 namespace raym3 {
+namespace {
+#ifdef PLATFORM_ANDROID
+constexpr int kRoundedRectSegments = 10;
+#else
+constexpr int kRoundedRectSegments = 16;
+#endif
+} // namespace
 
 void Renderer::DrawRoundedRectangle(Rectangle bounds, float cornerRadius,
                                     Color color) {
@@ -12,8 +20,7 @@ void Renderer::DrawRoundedRectangle(Rectangle bounds, float cornerRadius,
   // So we need to normalize cornerRadius against minDim/2.
   float roundness = (minDim > 0) ? (2.0f * cornerRadius) / minDim : 0.0f;
   roundness = std::clamp(roundness, 0.0f, 1.0f);
-  DrawRectangleRounded(bounds, roundness, 16,
-                       color); // Increased segments for smoothness
+  DrawRectangleRounded(bounds, roundness, kRoundedRectSegments, color);
 }
 
 void Renderer::DrawRoundedRectangleEx(Rectangle bounds, float cornerRadius,
@@ -22,9 +29,10 @@ void Renderer::DrawRoundedRectangleEx(Rectangle bounds, float cornerRadius,
   float roundness = (minDim > 0) ? (2.0f * cornerRadius) / minDim : 0.0f;
   roundness = std::clamp(roundness, 0.0f, 1.0f);
 #ifdef PLATFORM_ANDROID
-  DrawRectangleRoundedLinesEx(bounds, roundness, 16, lineWidth, color);
+  DrawRectangleRoundedLinesEx(bounds, roundness, kRoundedRectSegments, lineWidth,
+                              color);
 #else
-  DrawRectangleRoundedLines(bounds, roundness, 16, color);
+  DrawRectangleRoundedLines(bounds, roundness, kRoundedRectSegments, color);
 #endif
 }
 
@@ -75,25 +83,25 @@ void Renderer::DrawStateLayer(Rectangle bounds, float cornerRadius,
 void Renderer::DrawText(const char *text, Vector2 position, float fontSize,
                         Color color, FontWeight weight) {
   Font font = Theme::GetFont(fontSize, weight);
-  DrawTextEx(font, text, position, fontSize, 0, color);
+  v2::DrawTextWithEmoji(font, text ? text : "", position, fontSize, 0, color);
 }
 
 void Renderer::DrawTextCentered(const char *text, Rectangle bounds,
                                 float fontSize, Color color,
                                 FontWeight weight) {
   Font font = Theme::GetFont(fontSize, weight);
-  Vector2 textSize = MeasureTextEx(font, text, fontSize, 0);
+  Vector2 textSize = v2::MeasureTextWithEmoji(font, text ? text : "", fontSize, 0);
 
   Vector2 position = {bounds.x + (bounds.width - textSize.x) / 2.0f,
                       bounds.y + (bounds.height - textSize.y) / 2.0f};
 
-  DrawTextEx(font, text, position, fontSize, 0, color);
+  v2::DrawTextWithEmoji(font, text ? text : "", position, fontSize, 0, color);
 }
 
 Vector2 Renderer::MeasureText(const char *text, float fontSize,
                               FontWeight weight) {
   Font font = Theme::GetFont(fontSize, weight);
-  return MeasureTextEx(font, text, fontSize, 0);
+  return v2::MeasureTextWithEmoji(font, text ? text : "", fontSize, 0);
 }
 
 } // namespace raym3

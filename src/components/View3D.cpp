@@ -155,7 +155,7 @@ void View3D::LoadRoundedShader() {
   if (shaderLoaded_)
     return;
 
-#ifdef __EMSCRIPTEN__
+#if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
   shader_ = LoadShaderFromMemory(vertShader300es, fragShader300es);
   if (shader_.id == rlGetShaderIdDefault()) {
     shader_ = LoadShaderFromMemory(vertShader100, fragShader100);

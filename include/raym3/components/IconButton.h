@@ -12,6 +12,7 @@ struct IconButtonOptions {
 
 class IconButtonComponent {
 public:
+  static void ResetIds();
   static bool Render(const char *iconName, Rectangle bounds,
                      ButtonVariant variant = ButtonVariant::Text,
                      IconVariation iconVariation = IconVariation::Filled,

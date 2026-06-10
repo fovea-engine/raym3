@@ -4,9 +4,10 @@
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/IconRenderer.h"
 #include <algorithm>
-#include <raylib.h>
 #include <map>
+#include <raylib.h>
 
 #if RAYM3_USE_INPUT_LAYERS
 #include "raym3/input/InputLayer.h"
@@ -16,6 +17,8 @@ namespace raym3 {
 
 static int focusedSwitchId_ = -1;
 static int currentSwitchId_ = 0;
+
+void SwitchComponent::ResetIds() { currentSwitchId_ = 0; }
 
 bool SwitchComponent::Render(const char *label, Rectangle bounds,
                              bool *checked, const SwitchOptions* options) {
@@ -32,8 +35,8 @@ bool SwitchComponent::Render(const char *label, Rectangle bounds,
 
   ColorScheme &scheme = Theme::GetColorScheme();
 
-  // MD3 Dimensions (Scaled to 75% per user request)
-  float scale = 0.75f;
+  // MD3 dimensions: 52dp track, 32dp height, 24dp handle, 28dp pressed handle.
+  float scale = 1.0f;
   float trackWidth = 52.0f * scale;
   float trackHeight = 32.0f * scale;
   float thumbSizeChecked = 24.0f * scale;
@@ -52,50 +55,51 @@ bool SwitchComponent::Render(const char *label, Rectangle bounds,
       trackX, switchBounds.y + (switchBounds.height - trackHeight) / 2.0f,
       trackWidth, trackHeight};
 
-  bool isChecked = *checked;
-  float currentThumbSize = isChecked ? thumbSizeChecked : thumbSizeUnchecked;
+  // Animation progress: 0 = off, 1 = on. Snaps when animProgress < 0.
+  float t = (options && options->animProgress >= 0.0f)
+                ? options->animProgress
+                : (*checked ? 1.0f : 0.0f);
+  bool isChecked = t >= 0.5f;
+  // M3: unchecked thumb 16dp, checked 24dp — grows as it slides on.
+  thumbSizeUnchecked = 16.0f * scale;
+  float currentThumbSize =
+      thumbSizeUnchecked + (thumbSizeChecked - thumbSizeUnchecked) * t;
 
   // Handle Pressed State Scaling
   if (state == ComponentState::Pressed) {
     currentThumbSize = thumbSizePressed;
   }
 
-  // Colors
+  // Colors — cross-fade between off and on palettes by t (M3 motion).
+  auto lerp = [](Color a, Color b, float f) {
+    return Color{(unsigned char)(a.r + (b.r - a.r) * f),
+                 (unsigned char)(a.g + (b.g - a.g) * f),
+                 (unsigned char)(a.b + (b.b - a.b) * f),
+                 (unsigned char)(a.a + (b.a - a.a) * f)};
+  };
   Color trackColor;
   Color thumbColor;
-  Color outlineColor;
+  Color outlineColor = scheme.outline;
   Color iconColor;
-  bool hasOutline = false;
+  bool hasOutline = t < 0.5f;
 
-  if (isChecked) {
-    // Checked: Track Primary, Thumb OnPrimary, Icon Primary (if on thumb)
-    // Actually MD3 spec:
-    // Thumb: OnPrimary. Icon: OnPrimaryContainer (or Primary if high contrast
-    // needed). Track: Primary.
-    trackColor = scheme.primary;
-    thumbColor = scheme.onPrimary;
-    iconColor = scheme.onPrimaryContainer; // Darker color on white thumb
-
-    if (state == ComponentState::Disabled) {
+  if (state == ComponentState::Disabled) {
+    if (isChecked) {
       trackColor = ColorAlpha(scheme.onSurface, 0.12f);
       thumbColor = scheme.surface;
       iconColor = ColorAlpha(scheme.onSurface, 0.38f);
-    }
-  } else {
-    // Unchecked: Track SurfaceContainerHighest, Border Outline.
-    // Thumb: Outline. Icon: SurfaceContainerHighest.
-    trackColor = scheme.surfaceContainerHighest;
-    outlineColor = scheme.outline;
-    hasOutline = true;
-    thumbColor = scheme.outline;
-    iconColor = scheme.surfaceContainerHighest;
-
-    if (state == ComponentState::Disabled) {
+      hasOutline = false;
+    } else {
       trackColor = ColorAlpha(scheme.surfaceVariant, 0.12f);
       outlineColor = ColorAlpha(scheme.onSurface, 0.12f);
       thumbColor = ColorAlpha(scheme.onSurface, 0.38f);
       iconColor = ColorAlpha(scheme.onSurface, 0.38f);
     }
+  } else {
+    trackColor = lerp(scheme.surfaceContainerHighest, scheme.primary, t);
+    thumbColor = lerp(scheme.outline, scheme.onPrimary, t);
+    iconColor = isChecked ? scheme.onPrimaryContainer
+                          : scheme.surfaceContainerHighest;
   }
 
   // Draw Track
@@ -105,89 +109,30 @@ bool SwitchComponent::Render(const char *label, Rectangle bounds,
                                      outlineColor, 2.0f);
   }
 
-  // Draw Thumb
-  // Unchecked: Thumb is smaller (if 16) or same (if 24).
-  // Padding calculation needs to handle the visual centering.
-  float padding = (trackHeight - currentThumbSize) / 2.0f;
+  // Draw Thumb — center travels from the left inset to the right inset; the
+  // thumb both slides and grows (16→24dp) with t.
+  float thumbSize = (state == ComponentState::Pressed) ? thumbSizePressed
+                                                       : currentThumbSize;
+  float cy = trackRect.y + trackHeight / 2.0f;
+  float centerOff = trackRect.x + trackHeight / 2.0f;
+  float centerOn = trackRect.x + trackRect.width - trackHeight / 2.0f;
+  float cx = centerOff + (centerOn - centerOff) * t;
+  Rectangle thumbRect = {cx - thumbSize / 2.0f, cy - thumbSize / 2.0f, thumbSize,
+                         thumbSize};
 
-  // MD3: Unchecked thumb is usually offset more to the left?
-  // No, just centered vertically, and padded from left.
-  // If unchecked thumb is 16dp, padding is (32-16)/2 = 8.
-  // If checked thumb is 24dp, padding is (32-24)/2 = 4.
-
-  float thumbX;
-  if (isChecked) {
-    thumbX = trackRect.x + trackRect.width - currentThumbSize -
-             4.0f * scale; // 4dp padding from right
-  } else {
-    thumbX = trackRect.x + 4.0f * scale; // 4dp padding from left?
-    // If thumb is 24dp, 4dp padding makes it touch the border (32 height - 24
-    // thumb = 8 space total, 4 top 4 bottom). If we want 4dp from left edge:
-    // track x + 4.
-
-    // Wait, if unchecked thumb is 24dp (with icon), it should be same padding
-    // as checked. If unchecked thumb is 16dp (no icon), it has more padding.
-    // Let's stick to calculated padding based on size for vertical centering,
-    // but horizontal position needs to be explicit.
-
-    // Let's use the calculated padding for X as well to keep it
-    // circular/consistent? Or fixed margins? MD3 spec usually has fixed
-    // margins. Let's use the calculated padding for now as it centers it in the
-    // available height.
-    thumbX = trackRect.x + padding;
-
-    // Correction: If thumb is 24dp, padding is 4. So x + 4.
-    // If thumb is 16dp, padding is 8. So x + 8.
-  }
-
-  // Override for Pressed state to ensure it expands from center
-  if (state == ComponentState::Pressed) {
-    // Center of where the thumb WOULD be
-    float normalSize = isChecked ? thumbSizeChecked : thumbSizeUnchecked;
-    float normalPadding = (trackHeight - normalSize) / 2.0f;
-    float normalX =
-        isChecked ? (trackRect.x + trackRect.width - normalSize - normalPadding)
-                  : (trackRect.x + normalPadding);
-    float centerX = normalX + normalSize / 2.0f;
-
-    thumbX = centerX - currentThumbSize / 2.0f;
-    padding = (trackHeight - currentThumbSize) / 2.0f; // Vertical centering
-  }
-
-  Rectangle thumbRect = {thumbX, trackRect.y + padding, currentThumbSize,
-                         currentThumbSize};
-
-  Renderer::DrawRoundedRectangle(thumbRect, currentThumbSize / 2.0f,
-                                 thumbColor);
+  Renderer::DrawRoundedRectangle(thumbRect, thumbSize / 2.0f, thumbColor);
 
   // Draw Icon
   Vector2 center = {thumbRect.x + thumbRect.width / 2.0f,
                     thumbRect.y + thumbRect.height / 2.0f};
   float iconSize = 16.0f * scale;
 
-  if (isChecked) {
-    // Checkmark Geometry
-    Vector2 p1 = {center.x - 4.0f * scale, center.y};
-    Vector2 p2 = {center.x - 1.0f * scale, center.y + 3.0f * scale};
-    Vector2 p3 = {center.x + 5.0f * scale, center.y - 5.0f * scale};
-
-    DrawLineEx(p1, p2, 2.0f * scale, iconColor);
-    DrawLineEx(p2, p3, 2.0f * scale, iconColor);
-  } else {
-    // 'X' Icon
-    float half = 4.0f * scale;
-    Vector2 p1 = {center.x - half, center.y - half};
-    Vector2 p2 = {center.x + half, center.y + half};
-    Vector2 p3 = {center.x - half, center.y + half};
-    Vector2 p4 = {center.x + half, center.y - half};
-
-    DrawLineEx(p1, p2, 2.0f * scale, iconColor);
-    DrawLineEx(p3, p4, 2.0f * scale, iconColor);
-  }
+  raym3::v2::DrawMaterialIcon(isChecked ? 0xe5ca : 0xe5cd, thumbRect,
+                              iconColor, (int)iconSize, true);
 
   // Draw State Layer
   if (state != ComponentState::Default && state != ComponentState::Disabled) {
-    float stateLayerSize = 40.0f * scale; // Standard touch target size scaled
+    float stateLayerSize = 40.0f * scale;
     Rectangle stateLayerRect = {center.x - stateLayerSize / 2.0f,
                                 center.y - stateLayerSize / 2.0f,
                                 stateLayerSize, stateLayerSize};

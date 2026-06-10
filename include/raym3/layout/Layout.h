@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <raylib.h>
+#include <functional>
 #include <vector>
 
 // Forward declare Yoga types to avoid exposing Yoga headers in our public API
@@ -33,6 +34,12 @@ public:
 
   // Finalize layout calculation for the current frame
   static void End();
+
+  // Run a legacy immediate-mode layout in two passes: first to compute current
+  // frame bounds, then again to render with those bounds. Components should
+  // only render when renderPass is true.
+  static void Frame(Rectangle rootBounds,
+                    const std::function<void(bool renderPass)> &callback);
 
   // Start a new container node (Row/Column)
   // Returns the bounds calculated from the PREVIOUS frame (or 0 if first time)

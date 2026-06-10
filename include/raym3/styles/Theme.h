@@ -7,13 +7,19 @@
 
 namespace raym3 {
 
+enum class ColorSchemePreference { System, Light, Dark };
+
 class Theme {
 public:
     static void Initialize();
     static void Shutdown();
-    
+
+    static void SetColorSchemePreference(ColorSchemePreference preference);
+    static ColorSchemePreference GetColorSchemePreference();
+
     static void SetDarkMode(bool darkMode);
     static bool IsDarkMode();
+    static void ApplyEffectiveColorScheme();
     
     static ColorScheme& GetColorScheme();
     static TypographyScale& GetTypographyScale();
@@ -32,6 +38,7 @@ private:
     static TypographyScale typographyScale_;
     static ShapeTokens shapeTokens_;
     static bool darkMode_;
+    static ColorSchemePreference preference_;
     static bool initialized_;
     
     static void InitializeTypographyScale();

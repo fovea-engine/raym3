@@ -7,6 +7,8 @@ This directory contains documentation for advanced raym3 features and systems.
 - **[Layout System](layout-system.md)** - Flexbox-based layout with Yoga, scroll containers, and ClipScope usage
 - **[Input Layer System](input-layer-system.md)** - Z-ordering and input blocking
 - **[Scissor System](scissor-system.md)** - Stack-based clipping regions
+- **[v2 Native UI Upgrade](v2-upgrade.md)** - Retained/composable v2 API, same-frame layout, dependency, icon, and text-engine foundation
+- **[M3 Component Browser Audit](m3-component-browser-audit.md)** - Browser-reviewed Material 3 component and motion checklist
 
 ## Combining Layout, Input Layers, and Scissor
 
@@ -53,4 +55,3 @@ raym3::EndFrame();
 ```
 
 This combination allows you to create responsive layouts with proper input handling and clipping for overlays and modals.
-

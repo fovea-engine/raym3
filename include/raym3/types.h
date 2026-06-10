@@ -41,9 +41,27 @@ enum class ComponentState { Default, Hovered, Pressed, Focused, Disabled };
 
 enum class CardVariant { Elevated, Filled, Outlined };
 
-enum class TextFieldVariant { Filled, Outlined };
+enum class TextFieldVariant { Filled, Outlined, Underline };
 
 enum class IconVariation { Filled, Outlined, Round, Sharp, TwoTone };
+
+enum class ChipVariant { Assist, Filter, Input, Suggestion };
+
+enum class FabSize { Regular, Medium, Large };
+
+enum class FabColor {
+  PrimaryContainer,
+  Primary,
+  SecondaryContainer,
+  Secondary,
+  TertiaryContainer,
+  Tertiary,
+  Surface
+};
+
+enum class BadgeAlignment { TopEnd, TopStart };
+
+enum class AppBarVariant { Small, CenterAligned, Medium, Large };
 
 struct TypographyScale {
   float displayLarge;
@@ -65,10 +83,12 @@ struct TypographyScale {
 
 struct ShapeTokens {
   float cornerNone;
+  float cornerExtraSmall;
   float cornerSmall;
   float cornerMedium;
   float cornerLarge;
   float cornerExtraLarge;
+  float cornerFull;
 };
 
 struct ButtonOptions {
@@ -99,6 +119,13 @@ struct TextFieldOptions {
   Color iconColor = {0, 0, 0, 0};       // If alpha > 0, use as icon color
   bool drawOutline = true;
   bool drawBackground = true;
+  // When false, the borderless field paints no self state layer (hover/focus
+  // highlight). Used when an interactive parent (e.g. a search bar) owns the
+  // single highlight that should span the whole element.
+  bool drawStateLayer = true;
+  float borderRadius = -1.0f;           // If >= 0, overrides theme cornerRadius
+  std::function<void()> onFocus;
+  std::function<void()> onBlur;
 };
 
 struct SliderOptions {

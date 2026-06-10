@@ -1,12 +1,34 @@
 #include "raym3/styles/Theme.h"
+#include "raym3/platform/SystemAppearance.h"
 
 namespace raym3 {
 
 ColorScheme Theme::colorScheme_ = ColorScheme::Light();
-TypographyScale Theme::typographyScale_;
-ShapeTokens Theme::shapeTokens_;
+TypographyScale Theme::typographyScale_ = {
+    57.0f, 45.0f, 36.0f, 32.0f, 28.0f, 24.0f, 22.0f,
+    16.0f, 14.0f, 14.0f, 12.0f, 11.0f, 16.0f, 14.0f, 12.0f};
+ShapeTokens Theme::shapeTokens_ = {0.0f, 4.0f, 8.0f, 12.0f,
+                                   16.0f, 28.0f, 9999.0f};
 bool Theme::darkMode_ = false;
+ColorSchemePreference Theme::preference_ = ColorSchemePreference::System;
 bool Theme::initialized_ = false;
+
+void Theme::ApplyEffectiveColorScheme() {
+  bool isDark = false;
+  switch (preference_) {
+  case ColorSchemePreference::System:
+    isDark = SystemAppearance::IsDarkMode();
+    break;
+  case ColorSchemePreference::Light:
+    isDark = false;
+    break;
+  case ColorSchemePreference::Dark:
+    isDark = true;
+    break;
+  }
+  darkMode_ = isDark;
+  colorScheme_ = isDark ? ColorScheme::Dark() : ColorScheme::Light();
+}
 
 void Theme::Initialize() {
   if (initialized_)
@@ -15,7 +37,8 @@ void Theme::Initialize() {
   FontManager::Initialize();
   InitializeTypographyScale();
   InitializeShapeTokens();
-  SetDarkMode(false);
+  preference_ = ColorSchemePreference::System;
+  ApplyEffectiveColorScheme();
 
   initialized_ = true;
 }
@@ -28,9 +51,16 @@ void Theme::Shutdown() {
   initialized_ = false;
 }
 
+void Theme::SetColorSchemePreference(ColorSchemePreference preference) {
+  preference_ = preference;
+  ApplyEffectiveColorScheme();
+}
+
+ColorSchemePreference Theme::GetColorSchemePreference() { return preference_; }
+
 void Theme::SetDarkMode(bool isDarkMode) {
-  darkMode_ = isDarkMode;
-  colorScheme_ = isDarkMode ? ColorScheme::Dark() : ColorScheme::Light();
+  SetColorSchemePreference(isDarkMode ? ColorSchemePreference::Dark
+                                       : ColorSchemePreference::Light);
 }
 
 bool Theme::IsDarkMode() { return darkMode_; }
@@ -161,10 +191,12 @@ void Theme::InitializeTypographyScale() {
 
 void Theme::InitializeShapeTokens() {
   shapeTokens_.cornerNone = 0.0f;
-  shapeTokens_.cornerSmall = 12.0f;
-  shapeTokens_.cornerMedium = 16.0f;
-  shapeTokens_.cornerLarge = 20.0f;
+  shapeTokens_.cornerExtraSmall = 4.0f;
+  shapeTokens_.cornerSmall = 8.0f;
+  shapeTokens_.cornerMedium = 12.0f;
+  shapeTokens_.cornerLarge = 16.0f;
   shapeTokens_.cornerExtraLarge = 28.0f;
+  shapeTokens_.cornerFull = 9999.0f;
 }
 
 } // namespace raym3

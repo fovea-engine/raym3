@@ -11,6 +11,7 @@ raym3 is a Material Design 3 inspired immediate-mode GUI library built on raylib
 ## Features
 
 - **Material Design 3 Inspired** - Implements Material Design 3 design principles and components
+- **v2 Composable API Foundation** - Retained `raym3::v2` View tree with style objects, same-frame layout, and Material component catalog entry points
 - **Immediate-Mode API** - Simple, intuitive API similar to raygui
 - **Automatic Resource Management** - Icons and fonts are automatically discovered or can be embedded
 - **Optional Yoga Layout** - Flexbox layout support for advanced UI composition
@@ -28,18 +29,24 @@ raym3 currently implements the following Material Design 3 components:
 - **Button** - Text, Filled, Outlined, Tonal, Elevated variants with keyboard activation and optional tooltips
 - **IconButton** - Buttons with Material Design icons, keyboard activation, and optional tooltips
 - **TextField** - Single-line text input with word/line navigation, drag selection, triple-click select all, Escape to revert, and I-beam cursor
+- **SearchBar** - M3 contained search input with leading/trailing icon slots
 - **Checkbox** - Standard checkbox with label, keyboard activation (Space/Enter), pointer cursor, and optional tooltips
 - **Switch** - Toggle switch with keyboard activation (Space/Enter), pointer cursor, and optional tooltips
 - **RadioButton** - Radio button with label, keyboard activation (Space/Enter), pointer cursor, and optional tooltips
 - **Slider** - Value slider with keyboard navigation (Arrow/Page/Home/End), mouse wheel, focus ring, pointer/resize cursors, and optional tooltips
 - **RangeSlider** - Multi-thumb range slider with Tab key thumb cycling, keyboard navigation, focus ring, and optional tooltips
+- **Chip** - Assist, filter, input, and suggestion chips with M3 selection and state layers
+- **FloatingActionButton** - FAB and extended FAB with regular/medium/large M3 Expressive sizes and color roles
 
 ### Display Components
+- **AppBar** - Small, center-aligned, medium, and large app bars with navigation/actions
+- **Badge** - Small status dots and large labeled badges for icons/navigation
 - **Card** - Elevated surface container with multiple variants
 - **Dialog** - Modal dialog with customizable buttons
 - **Modal** - Full-screen modal component with backdrop and text input support
 - **Menu** - Dropdown menu with leading/trailing icons, dividers, gaps, icon-only mode, disabled items, pointer cursor, and per-item tooltips
 - **List** - Material Design list component with keyboard navigation (Arrow/Page/Home/End), Shift multi-select, Ctrl+A select all, typeahead search, drag reorder, pointer cursor, and per-item tooltips
+- **NavigationBar / NavigationRail** - M3 destination navigation with active indicators, labels, and badges
 - **SegmentedButton** - Segmented button groups
 - **ProgressIndicator** - Circular and linear progress indicators
 - **Divider** - Horizontal and vertical dividers
@@ -55,7 +62,7 @@ raym3 currently implements the following Material Design 3 components:
 - **Snackbar** - Temporary notification messages
 - **TabBar** - Browser-style tab bar with closeable tabs, drag reorder, icons, and tooltips
 
-**Note:** This is a partial implementation of Material Design 3. Many components from the full specification (such as AppBar, BottomNavigation, NavigationDrawer, Chips, DataTables, FloatingActionButton, BottomSheet, Date/Time Pickers, etc.) are not yet implemented.
+**Note:** This is a partial implementation of Material Design 3. Some components from the full specification (such as NavigationDrawer, DataTables, BottomSheet, SideSheet, Carousel, Date/Time Pickers, etc.) are not yet implemented as first-class immediate-mode components.
 
 ## Quick Start
 
@@ -279,7 +286,7 @@ add_subdirectory(raym3)
 target_link_libraries(your_target raym3)
 ```
 
-**Icon Optimization:** By default, when `RAYM3_EMBED_RESOURCES=ON`, only icons that are actually used in your code are embedded. This significantly reduces the library size. If you need all icons embedded (e.g., for dynamic icon loading), set:
+**Icon Optimization:** By default, when `RAYM3_EMBED_RESOURCES=ON`, raym3 embeds the lightweight manifest in `resources/icons/core-icons.txt`, or a custom newline-delimited manifest provided with `RAYM3_ICON_MANIFEST`. This avoids embedding the full 10,000+ SVG catalog. If you need all icons embedded (e.g., for dynamic icon loading), set:
 
 ```cmake
 set(RAYM3_EMBED_RESOURCES ON CACHE BOOL "" FORCE)
@@ -321,24 +328,28 @@ resources/
       ...
 ```
 
-## Icon List & Autocomplete
+## Icon Manifests & Autocomplete
 
-The `material-design-icons` submodule does not ship a metadata index. raym3 provides a script to generate one for IDE autocomplete and validation:
+raym3 embeds and installs a lightweight icon subset by default. To generate an app-specific manifest from source usage:
 
 ```bash
-cd raym3 && python3 tools/generate_icon_list.py
+cd raym3 && python3 tools/generate_icon_manifest.py --root ../your-app --output resources/icons/app-icons.txt
 ```
 
-Outputs:
-- `generated/icons.json` - Array of all available icon names (~2170)
-- `generated/icons.schema.json` - JSON Schema with enum for completion
+Then configure with:
 
-**Using in your project:** Copy `generated/icons.schema.json` into your editor's schema directory (e.g. `.vscode/schemas/`) and reference it where icon name strings are used. For VSCode YAML, add `"icon": { "$ref": "icons.schema.json" }` to schemas that have icon fields. The JSON array can also drive custom completion providers or UI pickers.
+```cmake
+set(RAYM3_ICON_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/raym3/resources/icons/app-icons.txt" CACHE FILEPATH "" FORCE)
+```
+
+Use `RAYM3_EMBED_ALL_ICONS=ON` or `RAYM3_INSTALL_ALL_ICONS=ON` only when dynamic icon names require the full catalog.
 
 ## Dependencies
 
-- **raylib** (required) - Automatically fetched via CMake FetchContent
-- **yoga** (optional) - Flexbox layout engine, enabled via `RAYM3_USE_YOGA`
+- **raylib** (required) - Automatically fetched via CMake FetchContent, default tag `6.0`
+- **yoga** (optional) - Flexbox layout engine, enabled via `RAYM3_USE_YOGA`, default tag `v3.2.1`
+
+See `docs/v2-upgrade.md` for the new v2 API, same-frame layout, dependency, and icon manifest details.
 
 ## Credits and Acknowledgments
 
@@ -391,13 +402,11 @@ See [LICENSE](LICENSE) file for full license text.
 Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
 
 We're particularly interested in contributions that add more Material Design 3 components to expand the library's functionality. Some high-priority components that would be valuable additions include:
-- AppBar/TopAppBar
-- BottomNavigation
 - NavigationDrawer
-- Chips
 - DataTables
-- FloatingActionButton (FAB)
 - BottomSheet
+- SideSheet
+- Carousel
 - Date/Time Pickers
 
 ## Support

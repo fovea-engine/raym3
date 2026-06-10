@@ -1,0 +1,32 @@
+# Default lightweight raym3 icon manifest.
+# Applications can provide RAYM3_ICON_MANIFEST for a custom subset or enable
+# RAYM3_EMBED_ALL_ICONS/RAYM3_INSTALL_ALL_ICONS for the full catalog.
+add
+check
+close
+content_copy
+content_cut
+content_paste
+delete
+edit
+expand_less
+expand_more
+favorite
+format_bold
+format_italic
+format_underlined
+group
+help
+home
+label
+movie
+person
+redo
+restaurant
+school
+search
+settings
+star
+undo
+volume_mute
+volume_up

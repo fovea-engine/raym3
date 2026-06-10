@@ -490,6 +490,17 @@ void Layout::End() {
   impl_->previousFrameBounds = impl_->currentFrameBounds;
 }
 
+void Layout::Frame(Rectangle rootBounds,
+                   const std::function<void(bool renderPass)> &callback) {
+  Begin(rootBounds);
+  callback(false);
+  End();
+
+  Begin(rootBounds);
+  callback(true);
+  End();
+}
+
 Rectangle Layout::BeginScrollContainer(LayoutStyle style, bool scrollX,
                                        bool scrollY) {
   // Create the container node
@@ -787,6 +798,10 @@ void Layout::Begin(Rectangle) {}
 
 void Layout::End() {}
 
+void Layout::Frame(Rectangle, const std::function<void(bool)> &callback) {
+  callback(true);
+}
+
 Rectangle Layout::BeginContainer(LayoutStyle) { return {0, 0, 0, 0}; }
 
 void Layout::EndContainer() {}
@@ -803,6 +818,8 @@ void Layout::SetScrollOffset(Vector2) {}
 
 bool Layout::IsRectVisibleInScrollContainer(Rectangle) { return true; }
 
+Rectangle Layout::GetActiveScissorBounds() { return GetCurrentScissorBounds(); }
+
 LayoutStyle Layout::Row() { return LayoutStyle{.direction = 0}; }
 
 LayoutStyle Layout::Column() { return LayoutStyle{.direction = 1}; }
@@ -815,6 +832,20 @@ LayoutStyle Layout::Fixed(float width, float height) {
 }
 
 void Layout::InvalidatePreviousFrame() {}
+
+void Layout::SetDebug(bool) {}
+
+void Layout::DrawDebug() {}
+
+void Layout::RegisterDebugRect(Rectangle) {}
+
+void Layout::SetIdOffset(int) {}
+
+void Layout::PushId(const char *) {}
+
+void Layout::PushId(int) {}
+
+void Layout::PopId() {}
 
 } // namespace raym3
 

@@ -46,6 +46,7 @@ struct TextFieldState {
 
   int lastActiveFrame = -1;
   bool wasFocused = false;
+  float labelAnim = 0.0f; // 0 = resting inside field, 1 = floated to top border
 };
 
 static int activeFieldId_ = -1;
@@ -270,7 +271,11 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
   bool isFocused = (activeFieldId_ == fieldId);
 
   bool justBlurred = fieldState.wasFocused && !isFocused;
+  bool justFocused = !fieldState.wasFocused && isFocused;
   fieldState.wasFocused = isFocused;
+
+  if (justBlurred && options.onBlur) options.onBlur();
+  if (justFocused && options.onFocus) options.onFocus();
 
   if (options.disabled) {
     activeFieldId_ = -1;
@@ -531,11 +536,29 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
   }
 
   ColorScheme &scheme = Theme::GetColorScheme();
-  float cornerRadius = Theme::GetShapeTokens().cornerMedium;
+  float cornerRadius = (options.borderRadius >= 0.0f)
+                           ? options.borderRadius
+                           : Theme::GetShapeTokens().cornerMedium;
 
   if (label) {
-    Vector2 labelPos = {bounds.x, bounds.y};
-    Renderer::DrawText(label, labelPos, 12.0f, scheme.onSurfaceVariant,
+    // M3 floating label: rests inside the field (16sp, muted) when empty and
+    // unfocused, floats to the top border (12sp, primary when focused) once the
+    // field is focused or has content. labelAnim eases the transition.
+    bool hasContent = buffer && strlen(buffer) > 0;
+    float target = (isFocused || hasContent) ? 1.0f : 0.0f;
+    float dtl = GetFrameTime();
+    if (dtl <= 0.0f || dtl > 0.1f)
+      dtl = 0.016f;
+    fieldState.labelAnim +=
+        (target - fieldState.labelAnim) * std::min(1.0f, dtl * 16.0f);
+    float a = fieldState.labelAnim;
+    float restY = inputBounds.y + (inputBounds.height - 16.0f) / 2.0f;
+    float ly = restY + (bounds.y - restY) * a;
+    float restX = inputBounds.x + basePadding;
+    float lx = restX + (bounds.x - restX) * a;
+    float fontSize = 16.0f + (12.0f - 16.0f) * a;
+    Color labelColor = isFocused ? scheme.primary : scheme.onSurfaceVariant;
+    Renderer::DrawText(label, {lx, ly}, fontSize, labelColor,
                        FontWeight::Regular);
   }
 
@@ -551,6 +574,14 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
                         ? options.backgroundColor
                         : scheme.surfaceContainerHighest;
     Renderer::DrawRoundedRectangle(inputBounds, cornerRadius, bgColor);
+    // M3 filled text field: only the TOP corners are rounded. Square off the
+    // bottom by overdrawing a plain band of height cornerRadius.
+    if (cornerRadius > 0.0f) {
+      DrawRectangleRec({inputBounds.x,
+                        inputBounds.y + inputBounds.height - cornerRadius,
+                        inputBounds.width, cornerRadius},
+                       bgColor);
+    }
   }
 
   Color outlineColor =
@@ -564,10 +595,16 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
   }
 
   if (options.drawOutline) {
-    // Both Driven and Outlined use full rounded border
-    Renderer::DrawRoundedRectangleEx(inputBounds, cornerRadius, outlineColor,
-                                     outlineWidth);
-  } else {
+    if (options.variant == TextFieldVariant::Outlined) {
+      Renderer::DrawRoundedRectangleEx(inputBounds, cornerRadius, outlineColor,
+                                       outlineWidth);
+    } else {
+      // Filled and Underline: bottom indicator line only.
+      DrawRectangleRec({inputBounds.x, inputBounds.y + inputBounds.height - outlineWidth,
+                        inputBounds.width, outlineWidth},
+                       outlineColor);
+    }
+  } else if (options.drawStateLayer) {
     Renderer::DrawStateLayer(inputBounds, cornerRadius,
                              ColorAlpha(scheme.surface, 0.0f), state);
   }
@@ -627,7 +664,9 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
   }
 
   bool isEmpty = !buffer || strlen(buffer) == 0;
-  bool showPlaceholder = isEmpty && options.placeholder;
+  // When a label is present it doubles as the resting placeholder, so don't
+  // draw a separate placeholder underneath the floating label.
+  bool showPlaceholder = isEmpty && options.placeholder && !label;
 
   // Only render raym3 text/cursor/selection if native input is NOT active FOR
   // THIS FIELD When native input is active, the NSTextField handles all visual

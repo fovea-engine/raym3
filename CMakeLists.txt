@@ -1,11 +1,22 @@
 cmake_minimum_required(VERSION 3.20)
 project(raym3 VERSION 1.0.0 LANGUAGES CXX)
 
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(RAYM3_USE_YOGA "Enable Yoga layout support" ON)
+option(RAYM3_FETCH_DEPS "Fetch raym3 third-party dependencies when targets are not provided" ON)
+option(RAYM3_BUILD_EXAMPLES "Build raym3 example applications" ON)
+option(RAYM3_BUILD_TESTS "Build raym3 tests" OFF)
+set(RAYM3_RAYLIB_TAG "6.0" CACHE STRING "raylib git tag/branch/commit to fetch when raylib target is not provided")
+set(RAYM3_YOGA_TAG "v3.2.1" CACHE STRING "Yoga git tag/branch/commit to fetch when yogacore target is not provided")
+set(RAYM3_ICON_MANIFEST "" CACHE FILEPATH "Optional newline-delimited icon manifest to embed/install when not embedding all icons")
+option(RAYM3_INSTALL_ALL_ICONS "Install the full Material icon SVG catalog instead of the core manifest subset" OFF)
 set(YOGA_DIR "" CACHE PATH "Path to Yoga directory (auto-detected if not set and yoga is a sibling directory)")
     option(RAYM3_USE_INPUT_LAYERS "Enable layered input system with render queue" ON)
 
@@ -17,11 +28,16 @@ set(YOGA_DIR "" CACHE PATH "Path to Yoga directory (auto-detected if not set and
 option(RAYM3_EMBED_ALL_ICONS "Embed all icons instead of only used ones (ignored if RAYM3_EMBED_RESOURCES is OFF)" OFF)
 
 
-file(GLOB_RECURSE RAYM3_SOURCES
+file(GLOB_RECURSE RAYM3_SOURCES CONFIGURE_DEPENDS
     "src/*.cpp"
 )
 
-file(GLOB_RECURSE RAYM3_HEADERS
+if(APPLE)
+    list(APPEND RAYM3_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/SystemAppearance.mm")
+    list(APPEND RAYM3_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/v2/EmojiRasterizerApple.mm")
+endif()
+
+file(GLOB_RECURSE RAYM3_HEADERS CONFIGURE_DEPENDS
     "include/raym3/*.h"
 )
 
@@ -36,15 +52,16 @@ target_include_directories(raym3 PUBLIC
 
 target_include_directories(raym3 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty
 )
 
 include(FetchContent)
 
-if(NOT TARGET raylib)
+if(NOT TARGET raylib AND RAYM3_FETCH_DEPS)
     FetchContent_Declare(
         raylib
         GIT_REPOSITORY https://github.com/raysan5/raylib.git
-        GIT_TAG master
+        GIT_TAG ${RAYM3_RAYLIB_TAG}
     )
     FetchContent_MakeAvailable(raylib)
 endif()
@@ -55,7 +72,7 @@ else()
     message(FATAL_ERROR "raylib target not found. raym3 requires raylib.")
 endif()
 
-if(NOT ANDROID)
+if(RAYM3_BUILD_EXAMPLES AND NOT ANDROID)
     add_executable(example_test
         examples/test.cpp
     )
@@ -74,8 +91,13 @@ if(NOT ANDROID)
     )
     target_link_libraries(example_input_layers PRIVATE raym3)
 
+    add_executable(example_v2_demo
+        examples/v2_demo.cpp
+    )
+    target_link_libraries(example_v2_demo PRIVATE raym3)
+
     add_custom_target(examples
-        DEPENDS example_test example_layout example_input_layers
+        DEPENDS example_test example_layout example_input_layers example_v2_demo
     )
 endif()
 
@@ -91,17 +113,28 @@ if(RAYM3_USE_YOGA)
         
         if(EXISTS "${YOGA_DIR}/CMakeLists.txt")
             add_subdirectory(${YOGA_DIR} ${CMAKE_BINARY_DIR}/yoga EXCLUDE_FROM_ALL)
+        elseif(RAYM3_FETCH_DEPS)
+            FetchContent_Declare(
+                yoga
+                GIT_REPOSITORY https://github.com/facebook/yoga.git
+                GIT_TAG ${RAYM3_YOGA_TAG}
+                SOURCE_SUBDIR yoga
+            )
+            FetchContent_MakeAvailable(yoga)
         endif()
         
         if(TARGET yogacore)
             target_link_libraries(raym3 PUBLIC yogacore)
             target_include_directories(raym3 PRIVATE ${YOGA_DIR})
             target_compile_definitions(raym3 PUBLIC RAYM3_USE_YOGA=1)
-            message(STATUS "Yoga support enabled (found at ${YOGA_DIR})")
+            message(STATUS "Yoga support enabled")
         else()
-            message(WARNING "yogacore target not found. Building raym3 without Yoga support.")
-            message(WARNING "  Set YOGA_DIR to the yoga directory, or ensure yoga is added as a subdirectory before raym3.")
-            target_compile_definitions(raym3 PUBLIC RAYM3_USE_YOGA=0)
+            if(RAYM3_FETCH_DEPS)
+                message(FATAL_ERROR "RAYM3_USE_YOGA=ON but yogacore target was not created. Set YOGA_DIR, provide a yogacore target, or set RAYM3_USE_YOGA=OFF.")
+            else()
+                message(WARNING "RAYM3_USE_YOGA=ON but RAYM3_FETCH_DEPS=OFF and yogacore target was not found. Building without Yoga support.")
+                target_compile_definitions(raym3 PUBLIC RAYM3_USE_YOGA=0)
+            endif()
         endif()
     endif()
 else()
@@ -119,8 +152,16 @@ else()
     target_compile_definitions(raym3 PUBLIC RAYM3_USE_INPUT_LAYERS=0)
 endif()
 
-
-
+if(APPLE)
+    find_library(RAYM3_APPKIT_FRAMEWORK AppKit REQUIRED)
+    find_library(RAYM3_CORETEXT_FRAMEWORK CoreText REQUIRED)
+    find_library(RAYM3_COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
+    target_link_libraries(raym3 PRIVATE
+        ${RAYM3_APPKIT_FRAMEWORK}
+        ${RAYM3_CORETEXT_FRAMEWORK}
+        ${RAYM3_COREGRAPHICS_FRAMEWORK}
+    )
+endif()
 
 set_target_properties(raym3 PROPERTIES
     CXX_STANDARD 20
@@ -138,15 +179,6 @@ target_include_directories(raym3 PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/include
 )
 
-if(RAYM3_EMBED_RESOURCES AND NOT RAYM3_EMBED_ALL_ICONS)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ExtractUsedIcons.cmake")
-        include(cmake/ExtractUsedIcons.cmake)
-    else()
-        message(WARNING "ExtractUsedIcons.cmake not found. Will embed all icons instead.")
-        set(RAYM3_EMBED_ALL_ICONS ON)
-    endif()
-endif()
-
 if(RAYM3_EMBED_RESOURCES)
     if(RAYM3_EMBED_ALL_ICONS)
         message(STATUS "Embedding all icons (RAYM3_EMBED_ALL_ICONS=ON)")
@@ -160,33 +192,19 @@ if(RAYM3_EMBED_RESOURCES)
         list(LENGTH USED_ICON_NAMES ICON_COUNT)
         message(STATUS "Will embed all ${ICON_COUNT} unique icons")
     else()
-        if(COMMAND extract_used_icons)
-            extract_used_icons("${CMAKE_CURRENT_SOURCE_DIR}/src" USED_ICON_NAMES)
-            extract_used_icons("${CMAKE_CURRENT_SOURCE_DIR}/include" USED_ICON_NAMES_INCLUDE)
-            list(APPEND USED_ICON_NAMES ${USED_ICON_NAMES_INCLUDE})
+        set(EFFECTIVE_ICON_MANIFEST "${RAYM3_ICON_MANIFEST}")
+        if(NOT EFFECTIVE_ICON_MANIFEST)
+            set(EFFECTIVE_ICON_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/core-icons.txt")
+        endif()
+        if(EXISTS "${EFFECTIVE_ICON_MANIFEST}")
+            file(STRINGS "${EFFECTIVE_ICON_MANIFEST}" USED_ICON_NAMES)
+            list(FILTER USED_ICON_NAMES EXCLUDE REGEX "^[ \t]*($|#)")
+            list(TRANSFORM USED_ICON_NAMES STRIP)
             list(REMOVE_DUPLICATES USED_ICON_NAMES)
-            
-            if(USED_ICON_NAMES)
-                list(LENGTH USED_ICON_NAMES ICON_COUNT)
-                message(STATUS "Found ${ICON_COUNT} unique icons used in code")
-                message(STATUS "Icons to embed: ${USED_ICON_NAMES}")
-            else()
-                message(WARNING "No icons found in source code. Embedding all icons.")
-                file(GLOB_RECURSE ALL_SVG_FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/*/*.svg")
-                foreach(svg_file ${ALL_SVG_FILES})
-                    get_filename_component(icon_name "${svg_file}" NAME_WE)
-                    list(APPEND USED_ICON_NAMES "${icon_name}")
-                endforeach()
-                list(REMOVE_DUPLICATES USED_ICON_NAMES)
-            endif()
+            list(LENGTH USED_ICON_NAMES ICON_COUNT)
+            message(STATUS "Embedding ${ICON_COUNT} icons from ${EFFECTIVE_ICON_MANIFEST}")
         else()
-            message(WARNING "extract_used_icons function not available. Embedding all icons.")
-            file(GLOB_RECURSE ALL_SVG_FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/*/*.svg")
-            foreach(svg_file ${ALL_SVG_FILES})
-                get_filename_component(icon_name "${svg_file}" NAME_WE)
-                list(APPEND USED_ICON_NAMES "${icon_name}")
-            endforeach()
-            list(REMOVE_DUPLICATES USED_ICON_NAMES)
+            message(FATAL_ERROR "Icon manifest not found: ${EFFECTIVE_ICON_MANIFEST}. Set RAYM3_ICON_MANIFEST or enable RAYM3_EMBED_ALL_ICONS.")
         endif()
     endif()
     
@@ -210,6 +228,8 @@ if(RAYM3_EMBED_RESOURCES)
                     file(READ "${svg_file}" svg_content)
                     string(REPLACE "\\" "\\\\" escaped_content "${svg_content}")
                     string(REPLACE "\"" "\\\"" escaped_content "${escaped_content}")
+                    string(REGEX REPLACE ">[ \t\r\n]+<" "><" escaped_content "${escaped_content}")
+                    string(REGEX REPLACE "[ \t\r\n]+" " " escaped_content "${escaped_content}")
                     string(REPLACE "\n" "\\n" escaped_content "${escaped_content}")
                     string(REPLACE "\r" "" escaped_content "${escaped_content}")
                     
@@ -235,11 +255,38 @@ else()
     target_compile_definitions(raym3 PRIVATE RAYM3_EMBED_RESOURCES=0)
 endif()
 
-install(DIRECTORY resources/
+install(DIRECTORY resources/fonts
     DESTINATION share/raym3/resources
-    FILES_MATCHING PATTERN "*.ttf" PATTERN "*.svg"
+    FILES_MATCHING PATTERN "*.ttf"
 )
 
-
-
-
+if(RAYM3_INSTALL_ALL_ICONS)
+    install(DIRECTORY resources/icons
+        DESTINATION share/raym3/resources
+        FILES_MATCHING PATTERN "*.svg" PATTERN "*.txt"
+    )
+else()
+    set(EFFECTIVE_INSTALL_ICON_MANIFEST "${RAYM3_ICON_MANIFEST}")
+    if(NOT EFFECTIVE_INSTALL_ICON_MANIFEST)
+        set(EFFECTIVE_INSTALL_ICON_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/core-icons.txt")
+    endif()
+    if(EXISTS "${EFFECTIVE_INSTALL_ICON_MANIFEST}")
+        install(FILES "${EFFECTIVE_INSTALL_ICON_MANIFEST}"
+                DESTINATION share/raym3/resources/icons
+                RENAME core-icons.txt)
+        file(STRINGS "${EFFECTIVE_INSTALL_ICON_MANIFEST}" INSTALL_ICON_NAMES)
+        list(FILTER INSTALL_ICON_NAMES EXCLUDE REGEX "^[ \t]*($|#)")
+        list(TRANSFORM INSTALL_ICON_NAMES STRIP)
+        list(REMOVE_DUPLICATES INSTALL_ICON_NAMES)
+        set(ICON_VARIATIONS filled outlined round sharp two-tone)
+        foreach(icon_name ${INSTALL_ICON_NAMES})
+            foreach(variation ${ICON_VARIATIONS})
+                set(icon_file "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/${variation}/${icon_name}.svg")
+                if(EXISTS "${icon_file}")
+                    install(FILES "${icon_file}"
+                            DESTINATION "share/raym3/resources/icons/${variation}")
+                endif()
+            endforeach()
+        endforeach()
+    endif()
+endif()

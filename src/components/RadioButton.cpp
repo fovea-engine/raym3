@@ -4,6 +4,7 @@
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/IconRenderer.h"
 #include "raymath.h"
 #include <map>
 
@@ -15,6 +16,8 @@ namespace raym3 {
 
 static int focusedRadioId_ = -1;
 static int currentRadioId_ = 0;
+
+void RadioButtonComponent::ResetIds() { currentRadioId_ = 0; }
 
 bool RadioButtonComponent::Render(const char *label, Rectangle bounds,
                                   bool selected, const RadioButtonOptions* options) {
@@ -82,16 +85,24 @@ bool RadioButtonComponent::Render(const char *label, Rectangle bounds,
     state = isPressed ? ComponentState::Pressed : ComponentState::Hovered;
   }
 
-  // Colors
-  Color outerColor = selected ? scheme.primary : scheme.onSurfaceVariant;
+  // Animation progress: 0 = unselected, 1 = selected.
+  float t = (options && options->animProgress >= 0.0f) ? options->animProgress
+                                                       : (selected ? 1.0f : 0.0f);
+  auto lerpColor = [](Color a, Color b, float f) {
+    return Color{(unsigned char)(a.r + (b.r - a.r) * f),
+                 (unsigned char)(a.g + (b.g - a.g) * f),
+                 (unsigned char)(a.b + (b.b - a.b) * f),
+                 (unsigned char)(a.a + (b.a - a.a) * f)};
+  };
+  // Colors — outer ring cross-fades onSurfaceVariant→primary with t.
+  Color outerColor = lerpColor(scheme.onSurfaceVariant, scheme.primary, t);
   Color innerColor = scheme.primary;
   Color stateLayerColor = selected ? scheme.primary : scheme.onSurfaceVariant;
 
   // Layout
   // Layout
   float iconSize = 20.0f;
-  // Make hover subtle like checkbox (size + padding)
-  float stateLayerSize = iconSize + 8.0f;
+  float stateLayerSize = 40.0f;
 
   // Center vertically
   float centerY = bounds.y + bounds.height / 2.0f;
@@ -115,27 +126,15 @@ bool RadioButtonComponent::Render(const char *label, Rectangle bounds,
                              stateLayerColor, state);
   }
 
-  // Draw Outer Ring
-  float outerRadius = iconSize / 2.0f;
-  float strokeWidth = 2.0f;
-
-  if (selected) {
-    // Selected: Outer ring is primary, filled with primary?
-    // MD3: Selected = Outer ring primary (2dp), Inner dot primary (10dp).
-    // Actually, looking at specs:
-    // Selected: Outer stroke 2dp Primary. Inner dot 10dp Primary.
-    // Unselected: Outer stroke 2dp OnSurfaceVariant. No inner dot.
-
-    DrawRing(center, outerRadius - strokeWidth, outerRadius, 0, 360, 32,
-             outerColor);
-
-    // Inner dot
-    float dotRadius = 5.0f; // 10dp diameter
-    DrawCircleV(center, dotRadius, innerColor);
-  } else {
-    // Unselected
-    DrawRing(center, outerRadius - strokeWidth, outerRadius, 0, 360, 32,
-             outerColor);
+  Rectangle iconBounds = {center.x - iconSize / 2.0f,
+                          center.y - iconSize / 2.0f, iconSize, iconSize};
+  if (t < 0.99f) {
+    raym3::v2::DrawMaterialIcon(0xe836, iconBounds,
+                                ColorAlpha(outerColor, 1.0f - t), 20, true);
+  }
+  if (t > 0.01f) {
+    raym3::v2::DrawMaterialIcon(0xe837, iconBounds,
+                                ColorAlpha(innerColor, t), 20, true);
   }
 
   // Draw Label

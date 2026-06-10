@@ -1,9 +1,12 @@
 #include "raym3/rendering/SvgRenderer.h"
+#include "raym3/fonts/FontManager.h"
 #include "raym3/rendering/SvgModel.h"
 #include "raym3/config.h"
 #ifndef __EMSCRIPTEN__
 #include <filesystem>
 #endif
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <vector>
 #include <cstring>
@@ -204,8 +207,9 @@ Texture2D SvgRenderer::LoadSvgTexture(const char *name, IconVariation variation,
 
 void SvgRenderer::DrawIcon(const char *name, Rectangle bounds,
                            IconVariation variation, Color color) {
-  int width = (int)bounds.width;
-  int height = (int)bounds.height;
+  float dpiScale = FontManager::GetDpiScale();
+  int width = std::max(1, (int)std::round(bounds.width * dpiScale));
+  int height = std::max(1, (int)std::round(bounds.height * dpiScale));
 
   if (width <= 0 || height <= 0)
     return;
@@ -224,7 +228,9 @@ void SvgRenderer::DrawIcon(const char *name, Rectangle bounds,
   }
 
   if (texture.id != 0) {
-    DrawTexture(texture, (int)bounds.x, (int)bounds.y, color);
+    Rectangle source = {0.0f, 0.0f, (float)texture.width,
+                        (float)texture.height};
+    DrawTexturePro(texture, source, bounds, {0.0f, 0.0f}, 0.0f, color);
   }
 }
 

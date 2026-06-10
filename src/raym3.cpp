@@ -1,10 +1,62 @@
 #include "raym3/raym3.h"
+#include "raym3/v2/EmojiFont.h"
+#include <rlgl.h>
+
+// Raw OpenGL for stencil operations (not wrapped by rlgl)
+#if defined(RAYLIB_USE_RLVK)
+  // rlvk implements stencil via rlgl (see rlvk.h)
+  #define RAYM3_GL_STENCIL_TEST           0x0B90
+  #define RAYM3_GL_EQUAL                  0x0202
+  #define RAYM3_GL_KEEP                   0x1E00
+  #define RAYM3_GL_INCR                   0x1E02
+  #define RAYM3_GL_DECR                   0x1E03
+  #define RAYM3_GL_TRUE                   1
+  #define RAYM3_GL_FALSE                  0
+  #define raym3_glEnable(x)               do { if ((x) == RAYM3_GL_STENCIL_TEST) rlEnableStencilTest(); } while(0)
+  #define raym3_glDisable(x)              do { if ((x) == RAYM3_GL_STENCIL_TEST) rlDisableStencilTest(); } while(0)
+  #define raym3_glStencilMask(m)          rlStencilMask(m)
+  #define raym3_glStencilFunc(f,r,m)     rlStencilFunc(f,r,m)
+  #define raym3_glStencilOp(f,d,p)        rlStencilOp(f,d,p)
+  #define raym3_glColorMask(r,g,b,a)      rlColorMask(r,g,b,a)
+  #define raym3_glDepthMask(m)            do { if (m) rlEnableDepthMask(); else rlDisableDepthMask(); } while(0)
+  #define raym3_glClear(x)                do { if ((x) & 0x400) rlClearStencilBuffer(0); } while(0)
+  #define GL_STENCIL_TEST                   RAYM3_GL_STENCIL_TEST
+  #define GL_EQUAL                          RAYM3_GL_EQUAL
+  #define GL_KEEP                           RAYM3_GL_KEEP
+  #define GL_INCR                           RAYM3_GL_INCR
+  #define GL_DECR                           RAYM3_GL_DECR
+  #define GL_TRUE                           RAYM3_GL_TRUE
+  #define GL_FALSE                          RAYM3_GL_FALSE
+  #define GL_STENCIL_BUFFER_BIT             0x400
+  #define glEnable                          raym3_glEnable
+  #define glDisable                         raym3_glDisable
+  #define glStencilMask                     raym3_glStencilMask
+  #define glStencilFunc                     raym3_glStencilFunc
+  #define glStencilOp                       raym3_glStencilOp
+  #define glColorMask                       raym3_glColorMask
+  #define glDepthMask                       raym3_glDepthMask
+  #define glClear                           raym3_glClear
+#elif defined(__ANDROID__)
+  #include <GLES3/gl3.h>
+  #include <GLES2/gl2ext.h>
+#elif defined(__APPLE__)
+  #define GL_SILENCE_DEPRECATION
+  #include <OpenGL/gl3.h>
+#else
+  #include <GL/gl.h>
+  #include <GL/glext.h>
+#endif
+
 #include "raym3/components/Button.h"
 #include "raym3/components/Card.h"
 #include "raym3/components/Checkbox.h"
+#include "raym3/components/Chip.h"
 #include "raym3/components/Dialog.h"
+#include "raym3/components/FloatingActionButton.h"
 #include "raym3/components/Menu.h"
+#include "raym3/components/Navigation.h"
 #include "raym3/components/RangeSlider.h"
+#include "raym3/components/SearchBar.h"
 #include "raym3/components/Slider.h"
 #include "raym3/components/Switch.h"
 #include "raym3/components/TextField.h"
@@ -14,10 +66,13 @@
 #include "raym3/layout/Layout.h"
 
 #include "raym3/components/Divider.h"
+#include "raym3/components/AppBar.h"
+#include "raym3/components/Badge.h"
 #include "raym3/components/Icon.h"
 #include "raym3/components/IconButton.h"
 #include "raym3/components/ProgressIndicator.h"
 #include "raym3/components/RadioButton.h"
+#include "raym3/components/ButtonGroup.h"
 #include "raym3/components/SegmentedButton.h"
 #include "raym3/components/Text.h"
 #include "raym3/rendering/SvgRenderer.h"
@@ -37,6 +92,9 @@ static bool initialized = false;
 static std::vector<Rectangle> s_scissorStack;
 static bool s_scissorDebugEnabled = false;
 static std::vector<Rectangle> s_scissorDebugRects;
+
+struct StencilEntry { Rectangle bounds; float radius; };
+static std::vector<StencilEntry> s_stencilStack;
 
 static Rectangle IntersectAndClampScissor(Rectangle requested, Rectangle current) {
   float left = std::max(requested.x, current.x);
@@ -87,6 +145,74 @@ void PopScissor() {
   BeginScissorMode((int)prev.x, (int)prev.y, (int)prev.width, (int)prev.height);
 }
 
+void PushRoundedStencil(Rectangle bounds, float radius) {
+  rlDrawRenderBatchActive(); // flush pending draws before touching GL state
+
+  int parentLevel = (int)s_stencilStack.size();
+  int newLevel    = parentLevel + 1;
+
+  glEnable(GL_STENCIL_TEST);
+  glStencilMask(0xFF);
+
+  // Write into stencil only where the parent clip already passes
+  glStencilFunc(GL_EQUAL, parentLevel, 0xFF);
+  glStencilOp(GL_KEEP, GL_KEEP, GL_INCR); // increment on pass
+
+  // Draw rounded rect into stencil only (no colour output)
+  glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+  glDepthMask(GL_FALSE);
+
+  float minDim    = std::min(bounds.width, bounds.height);
+  float roundness = (minDim > 0.0f) ? std::min(1.0f, (radius * 2.0f) / minDim) : 0.0f;
+  DrawRectangleRounded(bounds, roundness, 32, WHITE);
+  rlDrawRenderBatchActive();
+
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glDepthMask(GL_TRUE);
+
+  // Subsequent draws pass only inside the new rounded clip
+  glStencilFunc(GL_EQUAL, newLevel, 0xFF);
+  glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+  glStencilMask(0x00); // lock stencil during normal rendering
+
+  s_stencilStack.push_back({bounds, radius});
+}
+
+void PopRoundedStencil() {
+  if (s_stencilStack.empty()) return;
+  StencilEntry entry = s_stencilStack.back();
+  s_stencilStack.pop_back();
+
+  rlDrawRenderBatchActive();
+
+  int currentLevel = (int)s_stencilStack.size() + 1; // level we're leaving
+  int parentLevel  = (int)s_stencilStack.size();
+
+  glStencilMask(0xFF);
+  glStencilFunc(GL_EQUAL, currentLevel, 0xFF);
+  glStencilOp(GL_KEEP, GL_KEEP, GL_DECR); // undo the increment
+
+  glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+  glDepthMask(GL_FALSE);
+
+  float minDim    = std::min(entry.bounds.width, entry.bounds.height);
+  float roundness = (minDim > 0.0f) ? std::min(1.0f, (entry.radius * 2.0f) / minDim) : 0.0f;
+  DrawRectangleRounded(entry.bounds, roundness, 32, WHITE);
+  rlDrawRenderBatchActive();
+
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glDepthMask(GL_TRUE);
+
+  if (s_stencilStack.empty()) {
+    glDisable(GL_STENCIL_TEST);
+    glStencilMask(0xFF);
+  } else {
+    glStencilFunc(GL_EQUAL, parentLevel, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    glStencilMask(0x00);
+  }
+}
+
 Rectangle GetCurrentScissorBounds() {
   if (s_scissorStack.empty()) {
     int w = std::max(1, GetScreenWidth());
@@ -110,6 +236,11 @@ void Initialize() {
 
   Theme::Initialize();
   SvgRenderer::Initialize(nullptr); // Auto-detect resource path
+
+#if defined(__APPLE__)
+  // Wire the OS emoji rasterizer on Apple platforms (macOS now; iOS future).
+  raym3::v2::EmojiFont::Instance().SetRasterizer(raym3::v2::PlatformRasterizeEmoji);
+#endif
 
 #if RAYM3_USE_INPUT_LAYERS
   InputLayerManager::Initialize();
@@ -137,9 +268,21 @@ void BeginFrame() {
     Initialize();
   s_requestedCursor = MOUSE_CURSOR_DEFAULT;
   s_scissorDebugRects.clear();
+  s_stencilStack.clear();
+  // Clear stencil buffer at frame start so rounded clips from previous frame don't leak
+  glClear(GL_STENCIL_BUFFER_BIT);
   TextFieldComponent::ResetFieldId();
   SliderComponent::ResetFieldId();
   RangeSliderComponent::ResetFieldId();
+  ButtonComponent::ResetIds();
+  ButtonGroupComponent::ResetIds();
+  SegmentedButtonComponent::ResetIds();
+  IconButtonComponent::ResetIds();
+  CheckboxComponent::ResetIds();
+  SwitchComponent::ResetIds();
+  RadioButtonComponent::ResetIds();
+  ChipComponent::ResetIds();
+  FloatingActionButtonComponent::ResetIds();
 
 #if RAYM3_USE_INPUT_LAYERS
   InputLayerManager::BeginFrame();
@@ -165,6 +308,11 @@ void EndFrame() {
   SetMouseCursor(s_requestedCursor);
 
   TooltipManager::Update();
+
+  while (!s_scissorStack.empty()) {
+    s_scissorStack.pop_back();
+  }
+  EndScissorMode();
 
 #if RAYM3_USE_INPUT_LAYERS
   RenderQueue::ExecuteRenderQueue();
@@ -222,6 +370,55 @@ bool Button(const char *text, Rectangle bounds, ButtonVariant variant) {
 bool IconButton(const char *iconName, Rectangle bounds, ButtonVariant variant,
                 IconVariation iconVariation) {
   return IconButtonComponent::Render(iconName, bounds, variant, iconVariation);
+}
+
+void Badge(Rectangle anchorBounds, const char *label,
+           const BadgeOptions &options) {
+  BadgeComponent::Render(anchorBounds, label, options);
+}
+
+bool Chip(const char *label, Rectangle bounds, const ChipOptions &options) {
+  return ChipComponent::Render(label, bounds, options);
+}
+
+bool Chip(const char *label, Rectangle bounds, bool *selected,
+          const ChipOptions &options) {
+  return ChipComponent::Render(label, bounds, selected, options);
+}
+
+bool FloatingActionButton(const char *iconName, Rectangle bounds,
+                          const FabOptions &options) {
+  return FloatingActionButtonComponent::Render(iconName, bounds, options);
+}
+
+bool ExtendedFloatingActionButton(const char *label, const char *iconName,
+                                  Rectangle bounds,
+                                  const FabOptions &options) {
+  return FloatingActionButtonComponent::RenderExtended(label, iconName, bounds,
+                                                       options);
+}
+
+int AppBar(Rectangle bounds, const char *title,
+           const AppBarOptions &options) {
+  return AppBarComponent::Render(bounds, title, options);
+}
+
+bool SearchBar(char *buffer, int bufferSize, Rectangle bounds,
+               const char *placeholder, const SearchBarOptions &options) {
+  return SearchBarComponent::Render(buffer, bufferSize, bounds, placeholder,
+                                    options);
+}
+
+bool NavigationBar(Rectangle bounds, const NavigationItem *items, int itemCount,
+                   int *selectedIndex, const NavigationOptions &options) {
+  return NavigationComponent::Bar(bounds, items, itemCount, selectedIndex,
+                                  options);
+}
+
+bool NavigationRail(Rectangle bounds, const NavigationItem *items, int itemCount,
+                    int *selectedIndex, const NavigationOptions &options) {
+  return NavigationComponent::Rail(bounds, items, itemCount, selectedIndex,
+                                   options);
 }
 
 bool TextField(char *buffer, int bufferSize, Rectangle bounds,
@@ -301,9 +498,14 @@ void Menu(Rectangle bounds, const MenuItem *items, int itemCount,
 }
 
 bool SegmentedButton(Rectangle bounds, const SegmentedButtonItem *items,
-                     int itemCount, int *selectedIndex) {
+                     int itemCount, int *selectedIndex, bool multiSelect) {
   return SegmentedButtonComponent::Render(bounds, items, itemCount,
-                                          selectedIndex);
+                                          selectedIndex, multiSelect);
+}
+
+int ButtonGroup(Rectangle bounds, const ButtonGroupItem *items, int count,
+                ButtonVariant variant) {
+  return ButtonGroupComponent::Render(bounds, items, count, variant);
 }
 
 void Divider(Rectangle bounds, DividerVariant variant) {

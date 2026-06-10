@@ -1,8 +1,15 @@
 #pragma once
 
+#include "raym3/components/AppBar.h"
+#include "raym3/components/Badge.h"
 #include "raym3/components/Divider.h"         // Include for enum definition
+#include "raym3/components/Chip.h"
+#include "raym3/components/FloatingActionButton.h"
 #include "raym3/components/List.h"            // Include for List component
+#include "raym3/components/Navigation.h"
 #include "raym3/components/RangeSlider.h"     // Include for RangeSlider
+#include "raym3/components/SearchBar.h"
+#include "raym3/components/ButtonGroup.h"
 #include "raym3/components/SegmentedButton.h" // Include for struct definition
 #include "raym3/components/Snackbar.h"
 #include "raym3/components/TabBar.h"          // Include for TabBar component
@@ -10,6 +17,7 @@
 #include "raym3/components/View3D.h" // Include for View3D class
 #include "raym3/styles/Theme.h"
 #include "raym3/types.h"
+#include "raym3/v2.h"
 #include <raylib.h>
 #include <vector>
 
@@ -21,6 +29,8 @@ void Shutdown();
 void BeginScissor(Rectangle bounds);
 void PushScissor(Rectangle bounds);
 void PopScissor();
+void PushRoundedStencil(Rectangle bounds, float radius);
+void PopRoundedStencil();
 Rectangle GetCurrentScissorBounds();
 
 void SetScissorDebug(bool enabled);
@@ -51,6 +61,29 @@ bool Button(const char *text, Rectangle bounds,
 bool IconButton(const char *iconName, Rectangle bounds,
                 ButtonVariant variant = ButtonVariant::Text,
                 IconVariation iconVariation = IconVariation::Filled);
+
+void Badge(Rectangle anchorBounds, const char *label = nullptr,
+           const BadgeOptions &options = BadgeOptions{});
+bool Chip(const char *label, Rectangle bounds,
+          const ChipOptions &options = ChipOptions{});
+bool Chip(const char *label, Rectangle bounds, bool *selected,
+          const ChipOptions &options = ChipOptions{});
+bool FloatingActionButton(const char *iconName, Rectangle bounds,
+                          const FabOptions &options = FabOptions{});
+bool ExtendedFloatingActionButton(const char *label, const char *iconName,
+                                  Rectangle bounds,
+                                  const FabOptions &options = FabOptions{});
+int AppBar(Rectangle bounds, const char *title,
+           const AppBarOptions &options = AppBarOptions{});
+bool SearchBar(char *buffer, int bufferSize, Rectangle bounds,
+               const char *placeholder = "Search",
+               const SearchBarOptions &options = SearchBarOptions{});
+bool NavigationBar(Rectangle bounds, const NavigationItem *items, int itemCount,
+                   int *selectedIndex,
+                   const NavigationOptions &options = NavigationOptions{});
+bool NavigationRail(Rectangle bounds, const NavigationItem *items, int itemCount,
+                    int *selectedIndex,
+                    const NavigationOptions &options = NavigationOptions{});
 
 bool TextField(char *buffer, int bufferSize, Rectangle bounds,
                const char *label = nullptr);
@@ -105,7 +138,12 @@ void Menu(Rectangle bounds, const MenuItem *items, int itemCount,
 
 struct SegmentedButtonItem; // Forward declaration
 bool SegmentedButton(Rectangle bounds, const SegmentedButtonItem *items,
-                     int itemCount, int *selectedIndex);
+                     int itemCount, int *selectedIndex,
+                     bool multiSelect = false);
+
+struct ButtonGroupItem; // Forward declaration
+int ButtonGroup(Rectangle bounds, const ButtonGroupItem *items, int count,
+                ButtonVariant variant = ButtonVariant::Outlined);
 
 void Divider(Rectangle bounds,
              DividerVariant variant = DividerVariant::Horizontal);
