@@ -1756,6 +1756,32 @@ bool NeedsAnotherFrame(const NodePtr &root) {
   return NodeNeedsAnotherFrame(root);
 }
 
+void SetIdleSkipEnabled(bool enabled) { Ctx().idleSkipEnabled = enabled; }
+
+bool ShouldSkipRender(const NodePtr &root) {
+  if (!Ctx().idleSkipEnabled || Ctx().forceRender)
+    return false;
+  if (NeedsAnotherFrame(root))
+    return false;
+  if (!GetDirtyRects().empty())
+    return false;
+  return true;
+}
+
+void MarkDirtyRect(Rectangle rect) {
+  if (rect.width <= 0 || rect.height <= 0)
+    return;
+  Ctx().dirtyRects.push_back(rect);
+  Ctx().forceRender = true;
+}
+
+void ClearDirtyRects() {
+  Ctx().dirtyRects.clear();
+  Ctx().forceRender = false;
+}
+
+const std::vector<Rectangle> &GetDirtyRects() { return Ctx().dirtyRects; }
+
 static bool IsClippedByAncestors(const NodePtr &node, Vector2 point, const std::unordered_map<Node *, NodePtr> &parentMap) {
   Node *curr = node.get();
   while (curr) {

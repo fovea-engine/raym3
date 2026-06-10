@@ -21,6 +21,12 @@ bool CapturesPoint(Vector2 point);
 bool OwnsInput(const NodePtr &node, Vector2 point);
 RenderStats GetLastRenderStats();
 
+void SetIdleSkipEnabled(bool enabled);
+bool ShouldSkipRender(const NodePtr &root);
+void MarkDirtyRect(Rectangle rect);
+void ClearDirtyRects();
+const std::vector<Rectangle> &GetDirtyRects();
+
 bool HasModalOverlay();
 NodePtr TopmostModalNode();
 std::vector<NodePtr> GetFixedOverlayNodes();

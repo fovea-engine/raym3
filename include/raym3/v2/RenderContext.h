@@ -126,6 +126,11 @@ struct RenderContext {
   std::unordered_map<NodeId, TextInputUndoState> textInputUndo;
   NodeId lastFocusedTextInput = 0;
   bool ibeamCursorActive = false;
+
+  // Idle-skip + damage tracking (Phase 2 render perf).
+  bool forceRender = true;
+  bool idleSkipEnabled = true;
+  std::vector<Rectangle> dirtyRects;
 };
 
 // Current context. Defaults to a process-wide instance so existing

@@ -3,7 +3,7 @@
 namespace raym3::v2 {
 
 static RenderContext s_defaultContext;
-static RenderContext *s_currentContext = &s_defaultContext;
+static thread_local RenderContext *s_currentContext = &s_defaultContext;
 
 RenderContext &Ctx() { return *s_currentContext; }
 

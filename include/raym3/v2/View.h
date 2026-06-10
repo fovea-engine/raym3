@@ -259,6 +259,11 @@ public:
   bool hovered = false;
   Rectangle reportedLayout = {0, 0, 0, 0};
   bool reportedLayoutValid = false;
+
+  // Layer cache for static subtrees (render-to-texture).
+  bool layerCacheValid = false;
+  RenderTexture layerCache{};
+  Rectangle layerCacheBounds = {0, 0, 0, 0};
 };
 
 NodePtr View(const ViewProps &props, std::vector<NodePtr> children = {});
