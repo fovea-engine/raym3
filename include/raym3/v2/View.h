@@ -68,6 +68,10 @@ struct TextInputProps {
   std::string label;
   std::string placeholder;
   bool passwordMode = false;
+  bool secure = false;
+  bool autocorrect = false;
+  std::string inputType = "text";
+  std::string imeAction = "done";
   bool readOnly = false;
   bool disabled = false;
   TextFieldVariant variant = TextFieldVariant::Outlined;
@@ -130,6 +134,8 @@ struct TextEditState {
   int cursor = 0;
   int selectionStart = -1;
   int selectionEnd = -1;
+  int composingStart = -1;
+  int composingEnd = -1;
   float scrollOffsetX = 0.0f;
   float labelAnim = 0.0f;
   float lastBlinkTime = 0.0f;
@@ -146,6 +152,15 @@ struct TextEditState {
   int clickCount = 0;
   double lastClickTime = 0.0;
   int lastClickPos = -1;
+  bool handlesVisible = false;
+  bool toolbarVisible = false;
+  int activeHandle = -1;
+  bool longPressActive = false;
+  bool longPressSelectionActive = false;
+  bool longPressHapticSent = false;
+  double longPressStartTime = 0.0;
+  Vector2 longPressOrigin = {0, 0};
+  int longPressAnchor = -1;
 };
 
 class Node;
@@ -206,6 +221,9 @@ public:
   // Continuously time-driven paint (indeterminate/wavy progress, loading
   // spinners): the frame scheduler must keep rendering while this node exists.
   bool alwaysAnimates = false;
+  // In-flight CSS transitions (see Transitions.h). Ticked by TickTransitions
+  // each rendered frame; pruned on completion. Small N — linear scans.
+  std::vector<ActiveTransition> activeTransitions;
   ComponentState state = ComponentState::Default;
   std::vector<NodePtr> children;
 

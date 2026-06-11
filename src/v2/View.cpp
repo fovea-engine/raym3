@@ -56,6 +56,7 @@ NodePtr TextInput(const TextInputProps &props) {
   node->motion = props.motion;
   node->disabled = props.disabled;
   node->textInput = props;
+  node->textInput.passwordMode = props.passwordMode || props.secure;
   if (props.value) {
     node->inputScratch = *props.value;
     node->inputBuffer.assign(1024, '\0');

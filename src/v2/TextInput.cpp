@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <raylib.h>
+#include <utility>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -25,6 +26,21 @@ constexpr float kLabelRestSize = 16.0f;
 constexpr float kLabelFloatSize = 12.0f;
 constexpr float kBasePadding = 8.0f;
 constexpr int kMaxUndoHistory = 32;
+
+static TextInputHostHooks &HostHooks() {
+  static TextInputHostHooks hooks{
+      []() -> std::string {
+        const char *clip = ::GetClipboardText();
+        return clip ? std::string(clip) : std::string{};
+      },
+      [](const std::string &text) { ::SetClipboardText(text.c_str()); }, []() {}};
+  return hooks;
+}
+
+static std::function<void(NodeId, const TextInputEditingState &)> &StateCallback() {
+  static std::function<void(NodeId, const TextInputEditingState &)> cb;
+  return cb;
+}
 
 static NodePtr FindNodeById(const NodePtr &root, NodeId id) {
   if (!root || id == 0)
@@ -48,6 +64,78 @@ static void NormalizeSelection(int &start, int &end) {
     std::swap(start, end);
 }
 
+static bool IsUtf8ContinuationByte(unsigned char c) { return (c & 0xC0) == 0x80; }
+
+static int Utf8SequenceLength(unsigned char lead) {
+  if ((lead & 0x80) == 0x00)
+    return 1;
+  if ((lead & 0xE0) == 0xC0)
+    return 2;
+  if ((lead & 0xF0) == 0xE0)
+    return 3;
+  if ((lead & 0xF8) == 0xF0)
+    return 4;
+  return 1;
+}
+
+static int Utf8Prev(const std::string &text, int pos) {
+  if (pos <= 0)
+    return 0;
+  pos = std::min(pos, static_cast<int>(text.size()));
+  do {
+    --pos;
+  } while (pos > 0 && IsUtf8ContinuationByte(static_cast<unsigned char>(text[pos])));
+  return pos;
+}
+
+static int Utf8Next(const std::string &text, int pos) {
+  if (pos < 0)
+    return 0;
+  if (pos >= static_cast<int>(text.size()))
+    return static_cast<int>(text.size());
+  unsigned char lead = static_cast<unsigned char>(text[pos]);
+  int len = Utf8SequenceLength(lead);
+  return std::min(static_cast<int>(text.size()), pos + std::max(1, len));
+}
+
+static void Utf8AppendCodepoint(std::string &out, int codepoint) {
+  if (codepoint < 0)
+    return;
+  if (codepoint <= 0x7F) {
+    out.push_back(static_cast<char>(codepoint));
+  } else if (codepoint <= 0x7FF) {
+    out.push_back(static_cast<char>(0xC0 | ((codepoint >> 6) & 0x1F)));
+    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+  } else if (codepoint <= 0xFFFF) {
+    out.push_back(static_cast<char>(0xE0 | ((codepoint >> 12) & 0x0F)));
+    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+  } else {
+    out.push_back(static_cast<char>(0xF0 | ((codepoint >> 18) & 0x07)));
+    out.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+  }
+}
+
+static int Utf8CodepointCount(const std::string &text) {
+  int count = 0;
+  for (int i = 0; i < static_cast<int>(text.size()); i = Utf8Next(text, i))
+    ++count;
+  return count;
+}
+
+static bool IsWordByte(unsigned char c) {
+  return c >= 0x80 || (!std::isspace(c) && !std::ispunct(c));
+}
+
+static int ClampUtf8Boundary(const std::string &text, int pos) {
+  pos = std::clamp(pos, 0, static_cast<int>(text.size()));
+  while (pos > 0 && IsUtf8ContinuationByte(static_cast<unsigned char>(text[pos])))
+    --pos;
+  return pos;
+}
+
 static char *TextBuffer(Node &node) {
   if (node.textInput.buffer)
     return node.textInput.buffer;
@@ -65,56 +153,117 @@ static std::string DisplayText(const char *buffer, bool passwordMode) {
     return {};
   if (!passwordMode)
     return buffer;
-  return std::string(std::strlen(buffer), '*');
+  std::string text = buffer;
+  std::string masked;
+  for (int i = 0; i < static_cast<int>(text.size()); i = Utf8Next(text, i))
+    masked.push_back('*');
+  return masked;
+}
+
+static std::string DisplayPrefix(const char *buffer, int bytePos,
+                                 bool passwordMode) {
+  if (!buffer)
+    return {};
+  std::string text = buffer;
+  bytePos = ClampUtf8Boundary(text, bytePos);
+  if (!passwordMode)
+    return text.substr(0, bytePos);
+  int count = 0;
+  for (int i = 0; i < bytePos; i = Utf8Next(text, i))
+    ++count;
+  return std::string(static_cast<size_t>(count), '*');
 }
 
 static int GetPrevWordPos(const char *text, int pos) {
   if (pos <= 0 || !text)
     return 0;
-  int i = pos - 1;
-  while (i > 0 && std::isspace(static_cast<unsigned char>(text[i])))
-    i--;
-  while (i > 0 && !std::isspace(static_cast<unsigned char>(text[i])) &&
-         !std::ispunct(static_cast<unsigned char>(text[i])))
-    i--;
-  if (std::isspace(static_cast<unsigned char>(text[i])) ||
-      std::ispunct(static_cast<unsigned char>(text[i])))
-    return i + 1;
+  std::string s = text;
+  pos = ClampUtf8Boundary(s, pos);
+  int i = Utf8Prev(s, pos);
+  while (i > 0 && !IsWordByte(static_cast<unsigned char>(s[i])))
+    i = Utf8Prev(s, i);
+  while (i > 0 && IsWordByte(static_cast<unsigned char>(s[Utf8Prev(s, i)])))
+    i = Utf8Prev(s, i);
   return i;
 }
 
 static int GetNextWordPos(const char *text, int pos) {
   if (!text)
     return 0;
-  int len = static_cast<int>(std::strlen(text));
+  std::string s = text;
+  int len = static_cast<int>(s.size());
   if (pos >= len)
     return len;
-  int i = pos;
-  while (i < len && !std::isspace(static_cast<unsigned char>(text[i])) &&
-         !std::ispunct(static_cast<unsigned char>(text[i])))
-    i++;
-  while (i < len && std::isspace(static_cast<unsigned char>(text[i])))
-    i++;
+  int i = ClampUtf8Boundary(s, pos);
+  while (i < len && IsWordByte(static_cast<unsigned char>(s[i])))
+    i = Utf8Next(s, i);
+  while (i < len && !IsWordByte(static_cast<unsigned char>(s[i])))
+    i = Utf8Next(s, i);
   return i;
 }
 
 static bool IsWordChar(char c) {
   unsigned char u = static_cast<unsigned char>(c);
-  return !std::isspace(u) && !std::ispunct(u);
+  return u >= 0x80 || (!std::isspace(u) && !std::ispunct(u));
 }
 
 static void FindWordBoundaries(const char *text, int pos, int &start,
                                int &end) {
   int len = text ? static_cast<int>(std::strlen(text)) : 0;
   pos = std::clamp(pos, 0, len);
+  std::string s = text ? text : "";
+  pos = ClampUtf8Boundary(s, pos);
   start = pos;
   while (start > 0 && IsWordChar(text[start - 1]))
-    start--;
+    start = Utf8Prev(s, start);
   end = pos;
   while (end < len && IsWordChar(text[end]))
-    end++;
+    end = Utf8Next(s, end);
   if (start == end && pos < len)
-    end = pos + 1;
+    end = Utf8Next(s, pos);
+}
+
+static TextInputEditingState SnapshotEditingState(const Node &node) {
+  const TextEditState &edit = node.textEdit;
+  const char *buffer = node.textInput.buffer ? node.textInput.buffer
+                                            : node.inputBuffer.data();
+  TextInputEditingState state;
+  state.text = buffer ? std::string(buffer) : std::string{};
+  state.selectionStart = edit.selectionStart;
+  state.selectionEnd = edit.selectionEnd;
+  state.composingStart = edit.composingStart;
+  state.composingEnd = edit.composingEnd;
+  return state;
+}
+
+static void NotifyTextInputState(Node &node, bool textChanged) {
+  if (!StateCallback())
+    return;
+  NodeId id = IdOf(&node);
+  TextInputEditingState next = SnapshotEditingState(node);
+  next.textChanged = textChanged;
+  auto &last = Ctx().lastNotifiedTextInputState[id];
+  if (!textChanged && last.text == next.text && last.selectionStart == next.selectionStart &&
+      last.selectionEnd == next.selectionEnd && last.composingStart == next.composingStart &&
+      last.composingEnd == next.composingEnd)
+    return;
+  last.text = next.text;
+  last.selectionStart = next.selectionStart;
+  last.selectionEnd = next.selectionEnd;
+  last.composingStart = next.composingStart;
+  last.composingEnd = next.composingEnd;
+  StateCallback()(id, next);
+}
+
+static void ResetCaretBlink(Node &node) {
+  node.textEdit.lastBlinkTime = static_cast<float>(GetTime());
+}
+
+static void HideSelectionOverlay(Node &node) {
+  node.textEdit.handlesVisible = false;
+  node.textEdit.toolbarVisible = false;
+  node.textEdit.activeHandle = -1;
+  node.textEdit.longPressSelectionActive = false;
 }
 
 static void SaveToHistory(NodeId id, const std::string &text) {
@@ -136,11 +285,13 @@ static int HitTestCaret(const char *buffer, float clickRelativeX,
                         bool passwordMode) {
   int len = buffer ? static_cast<int>(std::strlen(buffer)) : 0;
   int clickPosition = len;
-  std::string display = DisplayText(buffer, passwordMode);
+  std::string source = buffer ? buffer : "";
   if (len > 0) {
     float closestDiff = 10000.0f;
-    for (int i = 0; i <= len; ++i) {
-      std::string sub = display.substr(0, i);
+    int displayCount = 0;
+    for (int i = 0;; i = Utf8Next(source, i)) {
+      std::string sub = passwordMode ? std::string(static_cast<size_t>(displayCount), '*')
+                                      : source.substr(0, i);
       Vector2 size = raym3::Renderer::MeasureText(
           sub.c_str(), kFieldFontSize, FontWeight::Regular);
       float diff = std::fabs(size.x - clickRelativeX);
@@ -148,19 +299,23 @@ static int HitTestCaret(const char *buffer, float clickRelativeX,
         closestDiff = diff;
         clickPosition = i;
       }
+      if (i >= len)
+        break;
+      ++displayCount;
     }
   }
   return clickPosition;
 }
 
 static void DrawSelection(Rectangle inputBounds, const char *text, int start,
-                          int end, float scrollOffset, float textStartX) {
+                          int end, float scrollOffset, float textStartX,
+                          bool passwordMode) {
   if (start == -1 || end == -1 || start == end || !text)
     return;
   NormalizeSelection(start, end);
   ColorScheme &scheme = Theme::GetColorScheme();
-  std::string beforeStart(text, start);
-  std::string beforeEnd(text, end);
+  std::string beforeStart = DisplayPrefix(text, start, passwordMode);
+  std::string beforeEnd = DisplayPrefix(text, end, passwordMode);
   Vector2 startSize = raym3::Renderer::MeasureText(
       beforeStart.c_str(), kFieldFontSize, FontWeight::Regular);
   Vector2 endSize = raym3::Renderer::MeasureText(
@@ -173,6 +328,28 @@ static void DrawSelection(Rectangle inputBounds, const char *text, int start,
   selectionColor.a = 76;
   DrawRectangleRec({selectionX, selectionY, selectionWidth, kFieldFontSize},
                    selectionColor);
+}
+
+static void DrawComposingUnderline(Rectangle inputBounds, const char *text,
+                                   int start, int end, float scrollOffset,
+                                   float textStartX, bool passwordMode) {
+  if (start == -1 || end == -1 || start == end || !text)
+    return;
+  NormalizeSelection(start, end);
+  std::string beforeStart = DisplayPrefix(text, start, passwordMode);
+  std::string beforeEnd = DisplayPrefix(text, end, passwordMode);
+  Vector2 startSize = raym3::Renderer::MeasureText(
+      beforeStart.c_str(), kFieldFontSize, FontWeight::Regular);
+  Vector2 endSize = raym3::Renderer::MeasureText(
+      beforeEnd.c_str(), kFieldFontSize, FontWeight::Regular);
+  float x = inputBounds.x + textStartX - scrollOffset + startSize.x;
+  float width = std::max(1.0f, endSize.x - startSize.x);
+  float y = inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f +
+            kFieldFontSize - 2.0f;
+  ColorScheme &scheme = Theme::GetColorScheme();
+  Color underline = scheme.primary;
+  underline.a = 255;
+  DrawLineEx({x, y}, {x + width, y}, 2.0f, underline);
 }
 
 static void DrawCursor(Rectangle inputBounds, const char *text, int position,
@@ -190,7 +367,7 @@ static void DrawCursor(Rectangle inputBounds, const char *text, int position,
     int textLen = static_cast<int>(std::strlen(text));
     int pos = std::min(position, textLen);
     if (pos > 0) {
-      std::string before = DisplayText(text, passwordMode).substr(0, pos);
+      std::string before = DisplayPrefix(text, pos, passwordMode);
       Vector2 textSize = raym3::Renderer::MeasureText(
           before.c_str(), kFieldFontSize, FontWeight::Regular);
       cursorX += textSize.x;
@@ -213,7 +390,7 @@ static void SyncScrollForCaret(Node &node, char *buffer, float textStartX,
                                float textEndX, bool passwordMode) {
   TextEditState &edit = node.textEdit;
   float availableWidth = textEndX - textStartX;
-  std::string before = DisplayText(buffer, passwordMode).substr(0, edit.cursor);
+  std::string before = DisplayPrefix(buffer, edit.cursor, passwordMode);
   Vector2 cursorSize = raym3::Renderer::MeasureText(
       before.c_str(), kFieldFontSize, FontWeight::Regular);
   float cursorX = cursorSize.x;
@@ -221,7 +398,7 @@ static void SyncScrollForCaret(Node &node, char *buffer, float textStartX,
     edit.scrollOffsetX = cursorX - availableWidth;
   else if (cursorX - edit.scrollOffsetX < 0.0f)
     edit.scrollOffsetX = cursorX;
-  std::string display = DisplayText(buffer, passwordMode);
+    std::string display = DisplayText(buffer, passwordMode);
   Vector2 totalSize = raym3::Renderer::MeasureText(
       display.c_str(), kFieldFontSize, FontWeight::Regular);
   float maxScroll = std::max(0.0f, totalSize.x - availableWidth);
@@ -247,10 +424,13 @@ static void DeleteSelection(Node &node, char *buffer) {
   if (sStart == -1 || sEnd == -1)
     return;
   int currentLen = static_cast<int>(std::strlen(buffer));
+  sStart = ClampUtf8Boundary(buffer, sStart);
+  sEnd = ClampUtf8Boundary(buffer, sEnd);
   std::memmove(&buffer[sStart], &buffer[sEnd],
                static_cast<size_t>(currentLen - sEnd + 1));
   edit.cursor = sStart;
   edit.selectionStart = edit.selectionEnd = -1;
+  edit.composingStart = edit.composingEnd = -1;
 }
 
 static void CommitBuffer(Node &node, char *buffer) {
@@ -259,17 +439,11 @@ static void CommitBuffer(Node &node, char *buffer) {
     if (node.textInput.onChange)
       node.textInput.onChange(*node.textInput.value);
   }
+  NotifyTextInputState(node, true);
 }
 
 constexpr double kMultiClickWindow = 0.35;
 constexpr float kSelectionAutoScrollSpeed = 600.0f; // px/s past field edges
-
-static std::function<void(NodeId, int)> s_cursorCallback;
-
-static void NotifyCursorMoved(Node &node, int prevCursor) {
-  if (s_cursorCallback && node.textEdit.cursor != prevCursor)
-    s_cursorCallback(IdOf(&node), node.textEdit.cursor);
-}
 
 static void HandlePointer(Node &node, const PointerInput &p) {
   if (node.disabled || node.textInput.disabled || node.textInput.readOnly)
@@ -292,6 +466,9 @@ static void HandlePointer(Node &node, const PointerInput &p) {
   if (p.pressed) {
     if (!CheckCollisionPointRec(p.pos, inputBounds)) {
       edit.isSelecting = false;
+      edit.longPressActive = false;
+      edit.longPressSelectionActive = false;
+      edit.longPressHapticSent = false;
       return;
     }
     double now = GetTime();
@@ -338,6 +515,16 @@ static void HandlePointer(Node &node, const PointerInput &p) {
     }
     edit.lastClickTime = now;
     edit.lastBlinkTime = static_cast<float>(GetTime());
+    edit.longPressActive = true;
+    edit.longPressSelectionActive = false;
+    edit.longPressHapticSent = false;
+    edit.longPressStartTime = now;
+    edit.longPressOrigin = p.pos;
+    edit.longPressAnchor = pos;
+    edit.handlesVisible = false;
+    edit.toolbarVisible = false;
+    edit.composingStart = edit.composingEnd = -1;
+    NotifyTextInputState(node, false);
     return;
   }
 
@@ -358,7 +545,22 @@ static void HandlePointer(Node &node, const PointerInput &p) {
           maxScroll, edit.scrollOffsetX + kSelectionAutoScrollSpeed * dt);
     }
     int pos = caretAt(std::clamp(p.pos.x, textStartX, textEndX));
-    if (pos != edit.selectionAnchor || edit.selectionStart != -1) {
+    if (edit.longPressActive && GetTime() - edit.longPressStartTime > 0.45) {
+      int start = 0;
+      int end = 0;
+      FindWordBoundaries(buffer, edit.longPressAnchor, start, end);
+      int pressStart = start;
+      FindWordBoundaries(buffer, pos, start, end);
+      edit.selectionStart = pressStart;
+      edit.selectionEnd = end;
+      edit.handlesVisible = true;
+      edit.toolbarVisible = true;
+      edit.longPressSelectionActive = true;
+      if (!edit.longPressHapticSent && HostHooks().hapticFeedback) {
+        HostHooks().hapticFeedback();
+        edit.longPressHapticSent = true;
+      }
+    } else if (pos != edit.selectionAnchor || edit.selectionStart != -1) {
       edit.selectionStart = edit.selectionAnchor;
       edit.selectionEnd = pos;
     }
@@ -366,11 +568,22 @@ static void HandlePointer(Node &node, const PointerInput &p) {
       edit.cursor = pos;
       edit.lastBlinkTime = static_cast<float>(GetTime());
     }
+    NotifyTextInputState(node, false);
     return;
   }
 
-  if (p.released)
+  if (p.released) {
+    const bool keepToolbar = edit.longPressSelectionActive;
     edit.isSelecting = false;
+    edit.longPressActive = false;
+    edit.longPressSelectionActive = false;
+    edit.longPressHapticSent = false;
+    if (edit.selectionStart != -1 && edit.selectionEnd != -1)
+      edit.handlesVisible = true;
+    if (keepToolbar)
+      edit.toolbarVisible = true;
+    NotifyTextInputState(node, false);
+  }
 }
 
 static void ProcessKeyboard(Node &node) {
@@ -408,14 +621,19 @@ static void ProcessKeyboard(Node &node) {
     edit.selectionEnd = len;
     edit.cursor = len;
     edit.lastBlinkTime = static_cast<float>(GetTime());
+    NotifyTextInputState(node, false);
     return;
   }
 
   if (cmd && IsKeyPressed(KEY_C)) {
     int s = edit.selectionStart, e = edit.selectionEnd;
     NormalizeSelection(s, e);
-    if (s != -1 && e != -1)
-      SetClipboardText(std::string(buffer + s, e - s).c_str());
+    if (s != -1 && e != -1) {
+      if (HostHooks().setClipboardText)
+        HostHooks().setClipboardText(std::string(buffer + s, e - s));
+      else
+        SetClipboardText(std::string(buffer + s, e - s).c_str());
+    }
     return;
   }
 
@@ -423,7 +641,10 @@ static void ProcessKeyboard(Node &node) {
     int s = edit.selectionStart, e = edit.selectionEnd;
     NormalizeSelection(s, e);
     if (s != -1 && e != -1) {
-      SetClipboardText(std::string(buffer + s, e - s).c_str());
+      if (HostHooks().setClipboardText)
+        HostHooks().setClipboardText(std::string(buffer + s, e - s));
+      else
+        SetClipboardText(std::string(buffer + s, e - s).c_str());
       SaveToHistory(id, buffer);
       DeleteSelection(node, buffer);
       notify();
@@ -432,15 +653,17 @@ static void ProcessKeyboard(Node &node) {
   }
 
   if (cmd && IsKeyPressed(KEY_V)) {
-    const char *clip = GetClipboardText();
-    if (clip && clip[0]) {
+    std::string clip = HostHooks().getClipboardText ? HostHooks().getClipboardText()
+                                                    : std::string(GetClipboardText() ? GetClipboardText() : "");
+    const char *clipText = clip.c_str();
+    if (clipText && clipText[0]) {
       SaveToHistory(id, buffer);
       int s = edit.selectionStart, e = edit.selectionEnd;
       NormalizeSelection(s, e);
       if (s != -1 && e != -1)
         DeleteSelection(node, buffer);
       int len = static_cast<int>(std::strlen(buffer));
-      int clipLen = static_cast<int>(std::strlen(clip));
+      int clipLen = static_cast<int>(std::strlen(clipText));
       int avail = bufferSize - 1 - len;
       int toCopy = std::min(clipLen, avail);
       if (toCopy > 0) {
@@ -448,7 +671,7 @@ static void ProcessKeyboard(Node &node) {
         if (edit.cursor < len)
           std::memmove(&buffer[edit.cursor + toCopy], &buffer[edit.cursor],
                        static_cast<size_t>(len - edit.cursor + 1));
-        std::memcpy(&buffer[edit.cursor], clip, static_cast<size_t>(toCopy));
+        std::memcpy(&buffer[edit.cursor], clipText, static_cast<size_t>(toCopy));
         edit.cursor += toCopy;
         edit.selectionStart = edit.selectionEnd = -1;
         edit.lastBlinkTime = static_cast<float>(GetTime());
@@ -525,7 +748,7 @@ static void ProcessKeyboard(Node &node) {
         else if (alt)
           target = GetPrevWordPos(buffer, target);
         else if (target > 0)
-          target--;
+          target = Utf8Prev(buffer, target);
         if (shift) {
           if (edit.selectionStart == -1)
             edit.selectionStart = edit.cursor;
@@ -535,6 +758,9 @@ static void ProcessKeyboard(Node &node) {
         }
       }
       edit.cursor = target;
+      edit.composingStart = edit.composingEnd = -1;
+      HideSelectionOverlay(node);
+      NotifyTextInputState(node, false);
       return;
     }
   }
@@ -560,7 +786,7 @@ static void ProcessKeyboard(Node &node) {
         else if (alt)
           target = GetNextWordPos(buffer, target);
         else if (target < len)
-          target++;
+          target = Utf8Next(buffer, target);
         if (shift) {
           if (edit.selectionStart == -1)
             edit.selectionStart = edit.cursor;
@@ -570,6 +796,9 @@ static void ProcessKeyboard(Node &node) {
         }
       }
       edit.cursor = target;
+      edit.composingStart = edit.composingEnd = -1;
+      HideSelectionOverlay(node);
+      NotifyTextInputState(node, false);
       return;
     }
   }
@@ -585,6 +814,9 @@ static void ProcessKeyboard(Node &node) {
       edit.selectionStart = edit.selectionEnd = -1;
     }
     edit.cursor = target;
+    edit.composingStart = edit.composingEnd = -1;
+    HideSelectionOverlay(node);
+    NotifyTextInputState(node, false);
     return;
   }
 
@@ -599,6 +831,9 @@ static void ProcessKeyboard(Node &node) {
       edit.selectionStart = edit.selectionEnd = -1;
     }
     edit.cursor = target;
+    edit.composingStart = edit.composingEnd = -1;
+    HideSelectionOverlay(node);
+    NotifyTextInputState(node, false);
     return;
   }
 
@@ -620,9 +855,10 @@ static void ProcessKeyboard(Node &node) {
       } else if (cmd && edit.cursor > 0) {
         SaveToHistory(id, buffer);
         int len = static_cast<int>(std::strlen(buffer));
-        std::memmove(&buffer[0], &buffer[edit.cursor],
+        int start = GetPrevWordPos(buffer, edit.cursor);
+        std::memmove(&buffer[start], &buffer[edit.cursor],
                      static_cast<size_t>(len - edit.cursor + 1));
-        edit.cursor = 0;
+        edit.cursor = start;
       } else if (alt && edit.cursor > 0) {
         int prev = GetPrevWordPos(buffer, edit.cursor);
         SaveToHistory(id, buffer);
@@ -633,10 +869,13 @@ static void ProcessKeyboard(Node &node) {
       } else if (edit.cursor > 0) {
         SaveToHistory(id, buffer);
         int len = static_cast<int>(std::strlen(buffer));
-        std::memmove(&buffer[edit.cursor - 1], &buffer[edit.cursor],
+        int prev = Utf8Prev(std::string(buffer), edit.cursor);
+        std::memmove(&buffer[prev], &buffer[edit.cursor],
                      static_cast<size_t>(len - edit.cursor + 1));
-        edit.cursor--;
+        edit.cursor = prev;
       }
+      edit.composingStart = edit.composingEnd = -1;
+      HideSelectionOverlay(node);
       notify();
       return;
     }
@@ -660,9 +899,12 @@ static void ProcessKeyboard(Node &node) {
                      static_cast<size_t>(len - next + 1));
       } else if (edit.cursor < len) {
         SaveToHistory(id, buffer);
-        std::memmove(&buffer[edit.cursor], &buffer[edit.cursor + 1],
-                     static_cast<size_t>(len - edit.cursor));
+        int next = Utf8Next(std::string(buffer), edit.cursor);
+        std::memmove(&buffer[edit.cursor], &buffer[next],
+                     static_cast<size_t>(len - next + 1));
       }
+      edit.composingStart = edit.composingEnd = -1;
+      HideSelectionOverlay(node);
       notify();
       return;
     }
@@ -671,7 +913,7 @@ static void ProcessKeyboard(Node &node) {
   int key = GetCharPressed();
   while (key > 0) {
     int len = static_cast<int>(std::strlen(buffer));
-    if (len < bufferSize - 1 && key >= 32 && key <= 126) {
+    if (len < bufferSize - 1 && key >= 32) {
       if (hasSelection) {
         SaveToHistory(id, buffer);
         DeleteSelection(node, buffer);
@@ -680,12 +922,20 @@ static void ProcessKeyboard(Node &node) {
         SaveToHistory(id, buffer);
       }
       edit.cursor = std::clamp(edit.cursor, 0, len);
-      if (edit.cursor < len)
-        std::memmove(&buffer[edit.cursor + 1], &buffer[edit.cursor],
-                     static_cast<size_t>(len - edit.cursor + 1));
-      buffer[edit.cursor] = static_cast<char>(key);
-      edit.cursor++;
+      std::string insert;
+      Utf8AppendCodepoint(insert, key);
+      int insertLen = static_cast<int>(insert.size());
+      if (len + insertLen < bufferSize) {
+        if (edit.cursor < len)
+          std::memmove(&buffer[edit.cursor + insertLen], &buffer[edit.cursor],
+                       static_cast<size_t>(len - edit.cursor + 1));
+        std::memcpy(&buffer[edit.cursor], insert.data(), static_cast<size_t>(insertLen));
+        edit.cursor += insertLen;
+      }
       edit.lastBlinkTime = static_cast<float>(GetTime());
+      edit.selectionStart = edit.selectionEnd = -1;
+      edit.composingStart = edit.composingEnd = -1;
+      HideSelectionOverlay(node);
       notify();
     }
     key = GetCharPressed();
@@ -696,11 +946,180 @@ static void ProcessKeyboard(Node &node) {
 } // namespace
 
 void ResyncTextInputBuffer(NodeId nodeId, int cursorPos) {
+  (void)cursorPos;
   Ctx().textInputUndo.erase(nodeId);
+  Ctx().lastNotifiedTextInputState.erase(nodeId);
 }
 
-void SetTextInputCursorCallback(std::function<void(NodeId, int)> cb) {
-  s_cursorCallback = std::move(cb);
+void SetTextInputHostHooks(TextInputHostHooks hooks) { HostHooks() = std::move(hooks); }
+
+void SetTextInputStateCallback(
+    std::function<void(NodeId, const TextInputEditingState &)> cb) {
+  StateCallback() = std::move(cb);
+}
+
+TextInputHostHooks &GetTextInputHostHooks() { return HostHooks(); }
+
+Rectangle TextInputInputBounds(Node &node) { return InputBoundsFor(node); }
+
+int TextInputHitTestCaret(Node &node, float screenX) {
+  char *buffer = TextBuffer(node);
+  if (!buffer)
+    return 0;
+  Rectangle inputBounds = InputBoundsFor(node);
+  float textStartX = inputBounds.x + kBasePadding * 2.0f;
+  float clickRelativeX = screenX - (textStartX - node.textEdit.scrollOffsetX);
+  return HitTestCaret(buffer, clickRelativeX, node.textInput.passwordMode);
+}
+
+float TextInputByteOffsetX(Node &node, int byteOffset) {
+  char *buffer = TextBuffer(node);
+  if (!buffer)
+    return node.layout.x;
+  Rectangle inputBounds = InputBoundsFor(node);
+  float textStartX = inputBounds.x + kBasePadding * 2.0f;
+  std::string prefix =
+      DisplayPrefix(buffer, byteOffset, node.textInput.passwordMode);
+  Vector2 size = raym3::Renderer::MeasureText(prefix.c_str(), kFieldFontSize,
+                                              FontWeight::Regular);
+  return textStartX - node.textEdit.scrollOffsetX + size.x;
+}
+
+void TextInputNotifyEditingState(Node &node, bool textChanged) {
+  NotifyTextInputState(node, textChanged);
+}
+
+void TextInputSetSelection(Node &node, int start, int end, int cursor) {
+  char *buffer = TextBuffer(node);
+  std::string s = buffer ? std::string(buffer) : std::string{};
+  node.textEdit.selectionStart = start < 0 ? -1 : ClampUtf8Boundary(s, start);
+  node.textEdit.selectionEnd = end < 0 ? -1 : ClampUtf8Boundary(s, end);
+  node.textEdit.cursor = ClampUtf8Boundary(s, cursor);
+  node.textEdit.composingStart = node.textEdit.composingEnd = -1;
+  ResetCaretBlink(node);
+  NotifyTextInputState(node, false);
+}
+
+void TextInputSelectAll(Node &node) {
+  char *buffer = TextBuffer(node);
+  int len = buffer ? static_cast<int>(std::strlen(buffer)) : 0;
+  node.textEdit.selectionStart = 0;
+  node.textEdit.selectionEnd = len;
+  node.textEdit.cursor = len;
+  node.textEdit.composingStart = node.textEdit.composingEnd = -1;
+  node.textEdit.handlesVisible = len > 0;
+  node.textEdit.toolbarVisible = len > 0;
+  ResetCaretBlink(node);
+  NotifyTextInputState(node, false);
+}
+
+bool TextInputCopy(Node &node) {
+  char *buffer = TextBuffer(node);
+  if (!buffer)
+    return false;
+  int s = node.textEdit.selectionStart, e = node.textEdit.selectionEnd;
+  NormalizeSelection(s, e);
+  if (s < 0 || e < 0 || s == e)
+    return false;
+  if (HostHooks().setClipboardText)
+    HostHooks().setClipboardText(std::string(buffer + s, e - s));
+  return true;
+}
+
+bool TextInputCut(Node &node) {
+  if (node.textInput.readOnly || node.textInput.disabled || node.disabled)
+    return false;
+  char *buffer = TextBuffer(node);
+  if (!buffer || !TextInputCopy(node))
+    return false;
+  SaveToHistory(IdOf(&node), buffer);
+  DeleteSelection(node, buffer);
+  node.textEdit.handlesVisible = false;
+  node.textEdit.toolbarVisible = false;
+  ResetCaretBlink(node);
+  CommitBuffer(node, buffer);
+  return true;
+}
+
+bool TextInputPaste(Node &node) {
+  if (node.textInput.readOnly || node.textInput.disabled || node.disabled)
+    return false;
+  std::string clip =
+      HostHooks().getClipboardText ? HostHooks().getClipboardText() : std::string{};
+  if (clip.empty())
+    return false;
+  return TextInputReplaceSelection(node, clip);
+}
+
+bool TextInputReplaceSelection(Node &node, const std::string &text,
+                               int composingStart, int composingEnd) {
+  if (node.textInput.readOnly || node.textInput.disabled || node.disabled)
+    return false;
+  char *buffer = TextBuffer(node);
+  int bufferSize = TextBufferSize(node);
+  if (!buffer || bufferSize <= 1)
+    return false;
+  SaveToHistory(IdOf(&node), buffer);
+  int s = node.textEdit.selectionStart, e = node.textEdit.selectionEnd;
+  NormalizeSelection(s, e);
+  if (s < 0 || e < 0) {
+    s = e = std::clamp(node.textEdit.cursor, 0,
+                       static_cast<int>(std::strlen(buffer)));
+  }
+  std::string current(buffer);
+  s = ClampUtf8Boundary(current, s);
+  e = ClampUtf8Boundary(current, e);
+  current.replace(static_cast<size_t>(s), static_cast<size_t>(e - s), text);
+  if (static_cast<int>(current.size()) >= bufferSize)
+    current.resize(static_cast<size_t>(bufferSize - 1));
+  std::fill(buffer, buffer + bufferSize, '\0');
+  std::memcpy(buffer, current.data(), current.size());
+  int insertedEnd = ClampUtf8Boundary(current, s + static_cast<int>(text.size()));
+  node.textEdit.cursor = insertedEnd;
+  node.textEdit.selectionStart = node.textEdit.selectionEnd = -1;
+  if (composingStart >= 0 && composingEnd >= composingStart) {
+    node.textEdit.composingStart = ClampUtf8Boundary(current, s + composingStart);
+    node.textEdit.composingEnd = ClampUtf8Boundary(current, s + composingEnd);
+  } else {
+    node.textEdit.composingStart = node.textEdit.composingEnd = -1;
+  }
+  node.textEdit.handlesVisible = false;
+  node.textEdit.toolbarVisible = false;
+  ResetCaretBlink(node);
+  CommitBuffer(node, buffer);
+  return true;
+}
+
+void TextInputSetEditingState(Node &node, const std::string &text,
+                              int selectionStart, int selectionEnd,
+                              int composingStart, int composingEnd,
+                              bool notifyTextChanged) {
+  char *buffer = TextBuffer(node);
+  int bufferSize = TextBufferSize(node);
+  if (!buffer || bufferSize <= 1)
+    return;
+  std::string clipped = text;
+  if (static_cast<int>(clipped.size()) >= bufferSize)
+    clipped.resize(static_cast<size_t>(bufferSize - 1));
+  std::fill(buffer, buffer + bufferSize, '\0');
+  std::memcpy(buffer, clipped.data(), clipped.size());
+  if (node.textInput.value)
+    *node.textInput.value = clipped;
+  int len = static_cast<int>(clipped.size());
+  node.textEdit.selectionStart =
+      selectionStart < 0 ? -1 : ClampUtf8Boundary(clipped, selectionStart);
+  node.textEdit.selectionEnd =
+      selectionEnd < 0 ? -1 : ClampUtf8Boundary(clipped, selectionEnd);
+  node.textEdit.cursor =
+      selectionEnd < 0 ? len : ClampUtf8Boundary(clipped, selectionEnd);
+  node.textEdit.composingStart =
+      composingStart < 0 ? -1 : ClampUtf8Boundary(clipped, composingStart);
+  node.textEdit.composingEnd =
+      composingEnd < 0 ? -1 : ClampUtf8Boundary(clipped, composingEnd);
+  ResetCaretBlink(node);
+  if (notifyTextChanged && node.textInput.onChange)
+    node.textInput.onChange(clipped);
+  NotifyTextInputState(node, notifyTextChanged);
 }
 
 void ResolveTextInput(const NodePtr &root) {
@@ -738,6 +1157,7 @@ void ResolveTextInput(const NodePtr &root) {
           u.index = 0;
         }
       }
+      NotifyTextInputState(*next, true);
     }
 
     if (prev && prev->kind == NodeKind::TextInput) {
@@ -752,9 +1172,7 @@ void ResolveTextInput(const NodePtr &root) {
   if (focused != 0) {
     NodePtr focusedNode = FindNodeById(root, focused);
     if (focusedNode && focusedNode->kind == NodeKind::TextInput) {
-      int prevCursor = focusedNode->textEdit.cursor;
       HandlePointer(*focusedNode, p);
-      NotifyCursorMoved(*focusedNode, prevCursor);
       ProcessKeyboard(*focusedNode);
     }
   }
@@ -898,10 +1316,11 @@ void PaintTextInput(Node &node) {
   }
 
   if (isFocused) {
-    std::string displaySel = DisplayText(buffer, ti.passwordMode);
-    DrawSelection(inputBounds, displaySel.c_str(), edit.selectionStart,
-                  edit.selectionEnd, currentScroll,
-                  textStartX - inputBounds.x);
+    DrawSelection(inputBounds, buffer, edit.selectionStart, edit.selectionEnd,
+                  currentScroll, textStartX - inputBounds.x, ti.passwordMode);
+    DrawComposingUnderline(inputBounds, buffer, edit.composingStart,
+                           edit.composingEnd, currentScroll,
+                           textStartX - inputBounds.x, ti.passwordMode);
   }
 
   bool isEmpty = buffer[0] == '\0';

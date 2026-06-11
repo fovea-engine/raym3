@@ -203,6 +203,7 @@ Style MergeStyles(const Style &base, const Style &overrideStyle) {
   RAYM3_MERGE_FIELD(translateX);
   RAYM3_MERGE_FIELD(translateY);
   RAYM3_MERGE_FIELD(scale);
+  RAYM3_MERGE_FIELD(transitions);
 
 #undef RAYM3_MERGE_FIELD
 

@@ -85,6 +85,36 @@ struct BoxShadow {
   bool inset = false;
 };
 
+// ─── CSS transitions ─────────────────────────────────────────────────────────
+// Float-valued style properties a CSS `transition` declaration can animate.
+enum class TransitionProperty : uint8_t {
+  MarginTop, MarginRight, MarginBottom, MarginLeft,
+  InsetTop, InsetRight, InsetBottom, InsetLeft,
+  Opacity, TranslateX, TranslateY, Scale, Rotation,
+  Width, Height,
+  Count
+};
+
+// One parsed `transition` segment: which property, timing, and easing.
+struct TransitionEntry {
+  TransitionProperty property = TransitionProperty::Count;
+  float durationMs = 0.0f;
+  float delayMs = 0.0f;
+  // cubic-bezier control points; default = CSS `ease`.
+  float x1 = 0.25f, y1 = 0.1f, x2 = 0.25f, y2 = 1.0f;
+};
+
+// In-flight interpolation state for one property on one node.
+struct ActiveTransition {
+  TransitionProperty property = TransitionProperty::Count;
+  float from = 0.0f;
+  float to = 0.0f;
+  float durationMs = 0.0f;
+  float delayMs = 0.0f;
+  float elapsedMs = 0.0f;
+  float x1 = 0.25f, y1 = 0.1f, x2 = 0.25f, y2 = 1.0f;
+};
+
 struct Style {
   std::optional<Display> display;
   std::optional<FlexDirection> flexDirection;
@@ -130,6 +160,10 @@ struct Style {
   std::optional<float> translateY;
   std::optional<float> scale;
   std::optional<float> rotation; // degrees, clockwise, about the node's center
+
+  // CSS `transition` spec. nullopt = not specified (merge inherits the base
+  // spec); empty vector = explicit `transition: none` (cancels in-flight).
+  std::optional<std::vector<TransitionEntry>> transitions;
 
   TextStyle text;
 };

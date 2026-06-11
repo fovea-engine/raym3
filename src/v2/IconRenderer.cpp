@@ -249,4 +249,18 @@ void ResetMaterialIconAtlas() {
   atlasDirty_ = false;
 }
 
+void IconRendererResetDeviceCache() {
+  // The graphics device was re-initialized: every texture id this cache holds
+  // belongs to the dead device. Do NOT UnloadTexture — the ids may already be
+  // reused by the new device, and freeing them would destroy live textures.
+  // Registrations are kept implicitly: DrawMaterialIcon re-registers every
+  // icon it draws, so the atlas rebuilds on the next frame.
+  atlas_ = {0};
+  rects_.clear();
+  fonts_.clear();
+  requests_.clear();
+  codepoints_.clear();
+  atlasDirty_ = false;
+}
+
 } // namespace raym3::v2

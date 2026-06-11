@@ -59,6 +59,14 @@ struct TextInputUndoState {
   bool isUndoRedo = false;
 };
 
+struct TextInputMirrorState {
+  std::string text;
+  int selectionStart = -1;
+  int selectionEnd = -1;
+  int composingStart = -1;
+  int composingEnd = -1;
+};
+
 // Flutter VelocityTracker-style pointer history (least-squares fit over the
 // last 100ms of samples; pointer considered stopped after a 40ms gap).
 struct ScrollSample {
@@ -128,6 +136,7 @@ struct RenderContext {
   // --- TextInput state ---------------------------------------------------------
   std::unordered_map<std::string, std::vector<char>> textInputBuffers;
   std::unordered_map<NodeId, TextInputUndoState> textInputUndo;
+  std::unordered_map<NodeId, TextInputMirrorState> lastNotifiedTextInputState;
   NodeId lastFocusedTextInput = 0;
   bool ibeamCursorActive = false;
 

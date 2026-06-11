@@ -1,4 +1,5 @@
 #include "raym3/v2/Renderer.h"
+#include "raym3/v2/TextSelectionOverlay.h"
 #include "raym3/v2/RenderContext.h"
 #include "raym3/v2/TextInput.h"
 
@@ -1708,6 +1709,8 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
     }
   }
 
+  PaintTextSelectionOverlay(root);
+
   // Commit the fully-built stack for input queries. Inline OwnsInput calls made
   // during the next frame's tree walk read this complete snapshot; HitTest runs
   // after Render() so it reads the snapshot just committed for the current frame.
@@ -1724,6 +1727,9 @@ static bool NodeNeedsAnotherFrame(const NodePtr &node) {
   if (!node || node->style.display == Display::None)
     return false;
   if (node->alwaysAnimates)
+    return true;
+  // In-flight CSS transitions (Transitions.cpp).
+  if (!node->activeTransitions.empty())
     return true;
   // Toggle controls (checkbox/switch/radio) mid-transition.
   if (node->control.animTarget >= 0.0f && node->control.anim >= 0.0f &&
@@ -2277,8 +2283,13 @@ void ResolveScrollInput(const NodePtr &root) {
         NodeId focused = GetFocusedId();
         if (focused) {
           auto *fn = reinterpret_cast<Node *>(focused);
-          if (fn && fn->kind == NodeKind::TextInput)
+          if (fn && fn->kind == NodeKind::TextInput) {
             fn->textEdit.isSelecting = false;
+            fn->textEdit.handlesVisible = false;
+            fn->textEdit.toolbarVisible = false;
+            fn->textEdit.activeHandle = -1;
+            fn->textEdit.longPressSelectionActive = false;
+          }
         }
       }
     }
@@ -2444,6 +2455,9 @@ void ResolveInput(const NodePtr &root) {
   const PointerInput &p = GetPointer();
   Vector2 pt = p.pos;
   Ctx().lastStats.hitTestCount++;
+
+  if (HandleTextSelectionOverlayInput(root))
+    return;
 
   const StackEntry *hitE = HitEntry(pt);
   NodePtr owner = hitE ? hitE->node : nullptr;
