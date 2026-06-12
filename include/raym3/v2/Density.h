@@ -23,6 +23,11 @@ public:
 
   static int RasterPixels(float dp);
 
+  // CSS / web reference pixels (px, or rem×16) → raym3 layout dp. Matches
+  // Flutter logical pixels: physical size = cssPx × platformDensity, expressed
+  // in the active layout coordinate system (layoutDensity may differ on Android).
+  static float CssReferencePxToLayoutDp(float cssPx);
+
 private:
   static float ClampDensity(float density);
 };

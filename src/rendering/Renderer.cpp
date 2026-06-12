@@ -6,11 +6,49 @@
 
 namespace raym3 {
 namespace {
-#ifdef PLATFORM_ANDROID
-constexpr int kRoundedRectSegments = 10;
-#else
 constexpr int kRoundedRectSegments = 16;
-#endif
+
+// Uniform border thickness: raylib's DrawRectangleRoundedLinesEx uses 1px line
+// arcs when lineThick <= 1, so corners look thinner than straight edges.
+static void DrawRoundedBorderFrame(Rectangle bounds, float cornerRadius,
+                                   float lineWidth, Color color) {
+  if (lineWidth <= 0.0f)
+    return;
+
+  const float w = lineWidth;
+  if (bounds.width <= 2.0f * w || bounds.height <= 2.0f * w) {
+    Renderer::DrawRoundedRectangle(bounds, cornerRadius, color);
+    return;
+  }
+
+  const float r =
+      std::min(cornerRadius, std::min(bounds.width, bounds.height) * 0.5f);
+  const float innerR = std::max(0.0f, r - w);
+  const int segs = kRoundedRectSegments;
+
+  if (bounds.width > 2.0f * r) {
+    DrawRectangle(bounds.x + r, bounds.y, bounds.width - 2.0f * r, w, color);
+    DrawRectangle(bounds.x + r, bounds.y + bounds.height - w,
+                  bounds.width - 2.0f * r, w, color);
+  }
+  if (bounds.height > 2.0f * r) {
+    DrawRectangle(bounds.x + bounds.width - w, bounds.y + r, w,
+                  bounds.height - 2.0f * r, color);
+    DrawRectangle(bounds.x, bounds.y + r, w, bounds.height - 2.0f * r, color);
+  }
+
+  if (r <= 0.0f)
+    return;
+
+  DrawRing({bounds.x + r, bounds.y + r}, innerR, r, 180.0f, 270.0f, segs,
+           color);
+  DrawRing({bounds.x + bounds.width - r, bounds.y + r}, innerR, r, 270.0f,
+           360.0f, segs, color);
+  DrawRing({bounds.x + bounds.width - r, bounds.y + bounds.height - r}, innerR,
+           r, 0.0f, 90.0f, segs, color);
+  DrawRing({bounds.x + r, bounds.y + bounds.height - r}, innerR, r, 90.0f,
+           180.0f, segs, color);
+}
 } // namespace
 
 void Renderer::DrawRoundedRectangle(Rectangle bounds, float cornerRadius,
@@ -25,15 +63,7 @@ void Renderer::DrawRoundedRectangle(Rectangle bounds, float cornerRadius,
 
 void Renderer::DrawRoundedRectangleEx(Rectangle bounds, float cornerRadius,
                                       Color color, float lineWidth) {
-  float minDim = std::min(bounds.width, bounds.height);
-  float roundness = (minDim > 0) ? (2.0f * cornerRadius) / minDim : 0.0f;
-  roundness = std::clamp(roundness, 0.0f, 1.0f);
-#ifdef PLATFORM_ANDROID
-  DrawRectangleRoundedLinesEx(bounds, roundness, kRoundedRectSegments, lineWidth,
-                              color);
-#else
-  DrawRectangleRoundedLines(bounds, roundness, kRoundedRectSegments, color);
-#endif
+  DrawRoundedBorderFrame(bounds, cornerRadius, lineWidth, color);
 }
 
 void Renderer::DrawElevatedRectangle(Rectangle bounds, float cornerRadius,

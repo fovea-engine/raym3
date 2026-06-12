@@ -9,9 +9,13 @@ reference for Material 3 defaults, not a runtime or rendering dependency.
 - Component defaults, padding, typography sizes, elevation geometry, hit targets,
   and safe-area values are stored in dp.
 - `raym3::v2::Density` is the canonical conversion API:
-  - `SetPlatformDensity()` stores the real platform density.
+  - `SetPlatformDensity()` stores the real platform density (Flutter
+    `devicePixelRatio` / Android `density`).
   - `SetLayoutDensity()` stores the active raym3 layout/raster density.
   - `DpToPx()` and `PxToDp()` convert only at platform/render boundaries.
+  - `CssReferencePxToLayoutDp()` maps CSS/Tailwind `px` and `rem` into layout
+    dp: `cssPx * platformDensity / layoutDensity` (same PPI scale used for
+    safe-area inset rescaling on Android).
   - `RasterPixels()` gives crisp font/icon texture sizes.
 
 ## Rayact Android Density Policy

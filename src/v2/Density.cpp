@@ -56,4 +56,14 @@ int Density::RasterPixels(float dp) {
   return std::max(1, static_cast<int>(std::round(DpToPx(dp))));
 }
 
+float Density::CssReferencePxToLayoutDp(float cssPx) {
+  const float layout = Ctx().layoutDensity;
+  const float platform = Ctx().platformDensity;
+  if (layout <= 0.0f || !std::isfinite(layout))
+    return cssPx;
+  if (platform <= 0.0f || !std::isfinite(platform))
+    return cssPx;
+  return cssPx * platform / layout;
+}
+
 } // namespace raym3::v2

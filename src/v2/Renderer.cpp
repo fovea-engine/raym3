@@ -1127,11 +1127,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
                        HasRipplesForNode(nodeId);
     if (paintRipple) {
       float rippleRadius = style.borderRadius.value_or(0.0f);
-#if defined(RAYLIB_USE_RLVK)
-      bool rippleStencil = false;
-#else
       bool rippleStencil = rippleRadius > 0.0f;
-#endif
       if (rippleStencil)
         raym3::PushRoundedStencil(node->layout, rippleRadius);
       else
@@ -1147,13 +1143,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   bool clipped = style.overflow == Overflow::Hidden ||
                  style.overflow == Overflow::Scroll;
   float clipRadius = style.borderRadius.value_or(0.0f);
-#if defined(RAYLIB_USE_RLVK)
-  // Rounded stencil clips need separate compare/write masks; use scissor until
-  // every nested clip level is verified on Vulkan.
-  bool useStencil = false;
-#else
   bool useStencil  = clipped && clipRadius > 0.0f;
-#endif
 
   if (useStencil) {
     raym3::PushRoundedStencil(node->layout, clipRadius);
