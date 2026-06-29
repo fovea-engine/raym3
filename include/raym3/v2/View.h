@@ -32,7 +32,7 @@ enum class NodeKind {
 // selected child's bounds).
 enum class NodeRole { None, Tabs, NavItem, NavigationBar, NavigationRail,
                       ButtonGroupContainer, ButtonGroupConnected, SplitButton,
-                      BottomSheet };
+                      BottomSheet, AppBar };
 
 enum class PopoverPlacement { Auto, Below, Above };
 
@@ -47,6 +47,11 @@ struct ViewProps {
   std::optional<Rectangle> anchorRect;
   PopoverPlacement placement = PopoverPlacement::Auto;
   std::function<void()> onPress;
+  // App-bar slot semantics (Flutter NavigationToolbar centerMiddle). The bar
+  // node carries appBarCenterTitle; the title slot child carries appBarTitle so
+  // the renderer can recenter just that subtree across the full bar width.
+  bool appBarCenterTitle = false;
+  bool appBarTitle = false;
 };
 
 struct TextProps {
@@ -74,6 +79,27 @@ struct TextInputProps {
   std::string imeAction = "done";
   bool readOnly = false;
   bool disabled = false;
+  // react-native parity. 0 = unlimited. Counted in UTF-8 codepoints.
+  int maxLength = 0;
+  // 'none' | 'sentences' | 'words' | 'characters'
+  std::string autoCapitalize = "sentences";
+  bool multiline = false;
+  bool caretHidden = false;
+  // Blur on the return key (single-line default). When false (multiline), the
+  // return key inserts a newline.
+  bool blurOnSubmit = true;
+  bool selectTextOnFocus = false;
+  bool autoFocus = false;
+  // 'left' | 'center' | 'right' | 'auto'
+  std::string textAlign = "auto";
+  // Optional appearance overrides (RN selectionColor / cursorColor /
+  // placeholderTextColor). 0-alpha sentinel means "use theme".
+  bool hasSelectionColor = false;
+  Color selectionColor = {0, 0, 0, 0};
+  bool hasCursorColor = false;
+  Color cursorColor = {0, 0, 0, 0};
+  bool hasPlaceholderColor = false;
+  Color placeholderColor = {0, 0, 0, 0};
   TextFieldVariant variant = TextFieldVariant::Outlined;
   bool drawBackground = true;
   bool drawOutline = true;
@@ -83,6 +109,9 @@ struct TextInputProps {
   std::function<void(const std::string &)> onChange;
   std::function<void()> onFocus;
   std::function<void()> onBlur;
+  // Fired when the return/submit key (or IME action) commits. react-native
+  // onSubmitEditing. Receives the current text.
+  std::function<void(const std::string &)> onSubmit;
 };
 
 struct ButtonProps {
@@ -237,6 +266,10 @@ public:
 
   bool inNavigationRail = false;
   bool inNavigationBar = false;
+  // App-bar centerMiddle layout (see ViewProps). appBarCenterTitle on the bar;
+  // isAppBarTitle on the title slot child.
+  bool appBarCenterTitle = false;
+  bool isAppBarTitle = false;
   float navigationRailOpenAmount = 0.0f;
   // True for modal overlay components (Dialog, BottomSheet, SideSheet) — causes
   // a full-screen scrim to be drawn behind the node in the fixed-position pass.

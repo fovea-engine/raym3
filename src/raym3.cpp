@@ -3,8 +3,10 @@
 #include <rlgl.h>
 
 // Raw OpenGL for stencil operations (not wrapped by rlgl)
-#if defined(RAYLIB_USE_RLVK)
-  // rlvk implements stencil via rlgl (see rlvk.h)
+#if defined(RAYLIB_USE_RLMT) || defined(RAYLIB_USE_RLWG)
+  // rlmt (Metal) and rlwg (WebGPU) have no GL context — route stencil/clear through
+  // the rlgl-level wrappers their backends implement (rlwg stubs them as no-ops for
+  // now; stencil-based rounded clipping is a later rlwg feature).
   #define RAYM3_GL_STENCIL_TEST           0x0B90
   #define RAYM3_GL_EQUAL                  0x0202
   #define RAYM3_GL_KEEP                   0x1E00
@@ -146,6 +148,22 @@ void PopScissor() {
 }
 
 void PushRoundedStencil(Rectangle bounds, float radius) {
+#if defined(RAYLIB_USE_RLVK) || defined(RAYLIB_USE_RLWG) || defined(RAYM3_WEBGPU)
+  // Non-GL backends without a real color-mask + stencil implementation must skip
+  // rounded clipping. Otherwise the WHITE mask quad
+  // (DrawRectangleRounded(..., WHITE)) leaks into the color buffer and paints
+  // elevated/rounded elements white.
+  // The rlgl stencil wrappers don't reliably support the nested INCR/DECR clip
+  // (it blanks the frame), and BeginScissorMode works in framebuffer pixels
+  // while these bounds are dp (the Android render is dp-scaled), so a scissor
+  // fallback can clip the wrong region and also blank. Until rounded clipping is
+  // implemented correctly for these backends, skip it entirely: no mask draw
+  // (no white leak), no stencil, no scissor. Cost: ripples/overflow are not
+  // clipped to the rounded shape.
+  (void)bounds;
+  (void)radius;
+  return;
+#endif
   rlDrawRenderBatchActive(); // flush pending draws before touching GL state
 
   int parentLevel = (int)s_stencilStack.size();
@@ -179,6 +197,9 @@ void PushRoundedStencil(Rectangle bounds, float radius) {
 }
 
 void PopRoundedStencil() {
+#if defined(RAYLIB_USE_RLVK) || defined(RAYLIB_USE_RLWG) || defined(RAYM3_WEBGPU)
+  return; // rounded clipping disabled for this backend (see PushRoundedStencil)
+#endif
   if (s_stencilStack.empty()) return;
   StencilEntry entry = s_stencilStack.back();
   s_stencilStack.pop_back();

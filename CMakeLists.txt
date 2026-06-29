@@ -141,7 +141,14 @@ else()
     target_compile_definitions(raym3 PUBLIC RAYM3_USE_YOGA=0)
 endif()
 
-if(EMSCRIPTEN)
+option(RAYM3_WEBGPU "Target the rlwg WebGPU backend on web (emulates GL 3.3) instead of WebGL2/ES3" OFF)
+if(RAYM3_WEBGPU)
+    target_compile_definitions(raym3 PUBLIC RAYM3_WEBGPU=1)
+endif()
+if(EMSCRIPTEN AND NOT RAYM3_WEBGPU)
+    # Default web path is WebGL2 via GLES3. With the rlwg WebGPU backend the raylib
+    # target is compiled for GRAPHICS_API_OPENGL_33 instead (set by raylib_backend_attach),
+    # so do NOT force ES3 here — the two defines would conflict.
     target_compile_definitions(raym3 PUBLIC GRAPHICS_API_OPENGL_ES3)
 endif()
 

@@ -151,6 +151,17 @@ static void MarkNavigationRailContext(const NodePtr &node, bool inRail,
   }
 }
 
+// Shift a node and its whole subtree horizontally. Layout rects are absolute,
+// so recentering the app-bar title means translating the title node and every
+// descendant by the same dx.
+static void TranslateSubtreeX(const NodePtr &node, float dx) {
+  if (!node)
+    return;
+  node->layout.x += dx;
+  for (const NodePtr &child : node->children)
+    TranslateSubtreeX(child, dx);
+}
+
 static const Node *FindNavigationIconChild(const Node &item) {
   for (const NodePtr &child : item.children) {
     if (child && child->kind != NodeKind::Text)
@@ -837,6 +848,9 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
   // component declares an elevation but no explicit boxShadows. dp value maps
   // directly to shadow geometry (FAB/dialog/menu = 3dp, nav/sheets = 2dp).
   float elevation = style.elevation.value_or(0.0f);
+#if defined(__EMSCRIPTEN__)
+  elevation = 0.0f;
+#endif
   if (elevation > 0.0f && style.boxShadows.empty()) {
     struct ElevShadow { float offsetY; float grow; float alpha; };
     const ElevShadow passes[] = {
@@ -856,6 +870,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
           ColorAlpha(Color{0, 0, 0, 255}, opacity * p.alpha));
     }
   }
+#if !defined(__EMSCRIPTEN__)
   for (const BoxShadow &shadow : style.boxShadows) {
     if (shadow.inset)
       continue;
@@ -874,6 +889,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
           ColorAlpha(shadow.color, opacity * ((float)shadow.color.a / 255.0f) / (float)layers));
     }
   }
+#endif
   if (style.backdropBlur && *style.backdropBlur > 0.0f) {
     // Cross-platform fallback: the retained renderer exposes the style and
     // preserves draw order. Backends with render-target blur can replace this
@@ -1396,6 +1412,44 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     }
   }
 
+  // App bar centerTitle (Flutter NavigationToolbar centerMiddle): the title
+  // slot lays out in flow between the leading and trailing clusters; recenter
+  // it across the full bar width, clamped so it never overlaps either cluster.
+  if (node->role == NodeRole::AppBar && node->appBarCenterTitle) {
+    const NodePtr *title = nullptr;
+    for (const NodePtr &child : children) {
+      if (child && child->isAppBarTitle) { title = &child; break; }
+    }
+    if (title && (*title)->layout.width > 0.0f) {
+      float barL = node->layout.x + style.padding.Left();
+      float barR = node->layout.x + node->layout.width - style.padding.Right();
+      float leadingRight = barL;
+      float trailingLeft = barR;
+      bool seenTitle = false;
+      for (const NodePtr &child : children) {
+        if (!child) continue;
+        if (child.get() == title->get()) { seenTitle = true; continue; }
+        if (child->layout.width <= 0.0f) continue;
+        if (!seenTitle)
+          leadingRight = std::max(leadingRight, child->layout.x + child->layout.width);
+        else
+          trailingLeft = std::min(trailingLeft, child->layout.x);
+      }
+      const float spacing = style.gap.value_or(0.0f);
+      float titleW = (*title)->layout.width;
+      float targetX = (barL + barR) * 0.5f - titleW * 0.5f;
+      float minX = leadingRight + spacing;
+      float maxX = trailingLeft - spacing - titleW;
+      if (maxX < minX)
+        targetX = minX; // no room to center — sit just past the leading cluster
+      else
+        targetX = std::clamp(targetX, minX, maxX);
+      float dx = targetX - (*title)->layout.x;
+      if (std::fabs(dx) > 0.5f)
+        TranslateSubtreeX(*title, dx);
+    }
+  }
+
   for (const NodePtr &child : children) {
     RenderNode(child, effectiveZ);
   }
@@ -1734,6 +1788,18 @@ static bool NodeNeedsAnotherFrame(const NodePtr &node) {
       node->animIndicatorFade > 0.0f) {
     if (std::abs(node->animIndicatorX - node->animIndicatorY) > kAnimEpsilon ||
         std::abs(node->animIndicatorW - node->animIndicatorFade) > kAnimEpsilon)
+      return true;
+  }
+  // Nav bar/rail item select + indicator-fade animations tick per frame in
+  // DrawNode; without reporting them here, an on-demand frame scheduler
+  // (Android) stops pumping and the indicator crawls along on whatever
+  // stray frames timers happen to produce.
+  if (node->role == NodeRole::NavItem) {
+    const float targetSelect = node->selected ? 1.0f : 0.0f;
+    if (std::abs(node->animSelect - targetSelect) > kAnimEpsilon)
+      return true;
+    if (node->inNavigationBar &&
+        std::abs(node->animIndicatorFade - targetSelect) > kAnimEpsilon)
       return true;
   }
   if (node->kind == NodeKind::TextInput && GetFocusedId() == IdOf(node))
@@ -2437,14 +2503,29 @@ static void ReleaseActive(Node *an, Vector2 pt, const Node *releaseTarget) {
     return;
   }
 
-  if (over && an->onPress)
-    an->onPress();
+  if (over && an->onPress) {
+    // Immediate-captured nodes get onPress on release even after a long
+    // drag (the pointer is usually still over them). A node with drag
+    // handlers treats real movement as a drag, not a tap — without this a
+    // swipe row's release would re-trigger onPress and undo the drag.
+    const bool hasDragHandlers =
+        an->onDragStart || an->onDragMove || an->onDragEnd;
+    if (!hasDragHandlers || PointerTravel(GetDragOrigin(), pt) <= kTouchSlop)
+      an->onPress();
+  }
 }
 
 void ResolveInput(const NodePtr &root) {
   const PointerInput &p = GetPointer();
   Vector2 pt = p.pos;
   Ctx().lastStats.hitTestCount++;
+
+  const Node *rootNode = root.get();
+  if (NodeId fid = GetFocusedId()) {
+    auto *fn = reinterpret_cast<Node *>(fid);
+    if (!NodeWithinSubtree(fn, rootNode))
+      SetFocusedId(0);
+  }
 
   if (HandleTextSelectionOverlayInput(root))
     return;
@@ -2459,48 +2540,54 @@ void ResolveInput(const NodePtr &root) {
   NodeId activeId = GetActiveId();
   if (activeId != 0) {
     Node *an = reinterpret_cast<Node *>(activeId);
-    if (Ctx().activeIsBottomSheetDrag) {
-      if (p.down) {
-        float dy = pt.y - GetDragOrigin().y;
-        an->overlayDragOffsetY = std::max(0.0f, dy);
-        ClearScrollGesture();
-      } else {
-        float dt = GetFrameTime();
-        if (dt <= 0.0f || dt > 0.1f)
-          dt = 0.016f;
-        float velocityY = (pt.y - GetDragOrigin().y) / dt;
-        if (an->overlayDragOffsetY > kBottomSheetDismissThreshold ||
-            velocityY > kBottomSheetDismissVelocity) {
-          if (an->onRequestClose)
-            an->onRequestClose();
-          else if (an->onPress)
-            an->onPress();
+    if (!NodeWithinSubtree(an, rootNode)) {
+      SetActiveId(0);
+      Ctx().activeIsScrim = false;
+      Ctx().activeIsBottomSheetDrag = false;
+    } else {
+      if (Ctx().activeIsBottomSheetDrag) {
+        if (p.down) {
+          float dy = pt.y - GetDragOrigin().y;
+          an->overlayDragOffsetY = std::max(0.0f, dy);
+          ClearScrollGesture();
         } else {
-          an->overlayDragOffsetY = 0.0f;
+          float dt = GetFrameTime();
+          if (dt <= 0.0f || dt > 0.1f)
+            dt = 0.016f;
+          float velocityY = (pt.y - GetDragOrigin().y) / dt;
+          if (an->overlayDragOffsetY > kBottomSheetDismissThreshold ||
+              velocityY > kBottomSheetDismissVelocity) {
+            if (an->onRequestClose)
+              an->onRequestClose();
+            else if (an->onPress)
+              an->onPress();
+          } else {
+            an->overlayDragOffsetY = 0.0f;
+          }
+          SetActiveId(0);
+          Ctx().activeIsBottomSheetDrag = false;
         }
+        SetHoveredId(hoveredId);
+        return;
+      }
+      if (p.down) {
+        if (IsControlKind(an->kind) && an->control.dragging)
+          DriveControlDrag(*an, pt);
+        if (an->onDragMove)
+          an->onDragMove({pt.x - GetDragOrigin().x, pt.y - GetDragOrigin().y});
+      } else {
+        if (!Ctx().activeIsScrim)
+          StartRippleFadeOut(activeId);
+        const float travel = PointerTravel(GetDragOrigin(), pt);
+        if (an->kind != NodeKind::TextInput)
+          DismissTextInputIfNeeded(nullptr, Ctx().scroll.engaged, travel);
+        ReleaseActive(an, pt, target.get());
         SetActiveId(0);
-        Ctx().activeIsBottomSheetDrag = false;
+        Ctx().activeIsScrim = false;
       }
       SetHoveredId(hoveredId);
       return;
     }
-    if (p.down) {
-      if (IsControlKind(an->kind) && an->control.dragging)
-        DriveControlDrag(*an, pt);
-      if (an->onDragMove)
-        an->onDragMove({pt.x - GetDragOrigin().x, pt.y - GetDragOrigin().y});
-    } else {
-      if (!Ctx().activeIsScrim)
-        StartRippleFadeOut(activeId);
-      const float travel = PointerTravel(GetDragOrigin(), pt);
-      if (an->kind != NodeKind::TextInput)
-        DismissTextInputIfNeeded(nullptr, Ctx().scroll.engaged, travel);
-      ReleaseActive(an, pt, target.get());
-      SetActiveId(0);
-      Ctx().activeIsScrim = false;
-    }
-    SetHoveredId(hoveredId);
-    return;
   }
 
   // Hover enter/leave edges.
@@ -2508,7 +2595,7 @@ void ResolveInput(const NodePtr &root) {
   if (hoveredId != prevHover) {
     if (prevHover) {
       Node *ph = reinterpret_cast<Node *>(prevHover);
-      if (ph->onHoverOut)
+      if (NodeWithinSubtree(ph, rootNode) && ph->onHoverOut)
         ph->onHoverOut();
     }
     if (hoveredId && target && target->onHoverIn)

@@ -63,7 +63,11 @@ bool SystemAppearance::IsDarkMode() {
 void SystemAppearance::StartWatching(std::function<void(bool isDark)> onChange) {
     g_onChange = std::move(onChange);
     g_watcherRunning = true;
-#if defined(__APPLE__)
+#if defined(__EMSCRIPTEN__)
+    // Web: no background watcher thread (pthreads requires cross-origin isolation).
+    // Report the current value once; a future media-query listener can update it.
+    if (g_onChange) g_onChange(SystemAppearance::IsDarkMode());
+#elif defined(__APPLE__)
     platformStartWatcher([]() {
         if (g_onChange) g_onChange(SystemAppearance::IsDarkMode());
     });

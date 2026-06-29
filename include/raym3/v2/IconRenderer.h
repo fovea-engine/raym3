@@ -4,6 +4,7 @@
 
 namespace raym3::v2 {
 
+void SetIconFontSearchPrefix(const char* prefix);
 void RegisterMaterialIcon(int codepoint, int sizeDp, bool filled = true);
 void DrawMaterialIcon(int codepoint, Rectangle bounds, Color color,
                       int sizeDp = 0, bool filled = true);

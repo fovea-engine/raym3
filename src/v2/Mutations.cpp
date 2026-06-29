@@ -46,8 +46,15 @@ void ApplyMutations(v2::RenderContext &ctx, MutationBatch &batch,
     case MutationOp::AppendChild: {
       auto pit = nodes.find((int)m.parentId);
       auto cit = nodes.find((int)m.childId);
-      if (pit != nodes.end() && cit != nodes.end())
-        pit->second->children.push_back(cit->second);
+      if (pit != nodes.end() && cit != nodes.end()) {
+        // A re-append is a move-to-end: drop any existing occurrence first so
+        // the child can't sit in the vector twice (double YGNodeInsertChild
+        // aborts the Yoga build).
+        auto &children = pit->second->children;
+        children.erase(std::remove(children.begin(), children.end(), cit->second),
+                       children.end());
+        children.push_back(cit->second);
+      }
       break;
     }
     case MutationOp::RemoveChild: {

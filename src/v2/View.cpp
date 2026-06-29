@@ -20,6 +20,8 @@ static void ApplyViewProps(Node &node, const ViewProps &props) {
   node.anchorRect = props.anchorRect;
   node.placement = props.placement;
   node.onPress = props.onPress;
+  node.appBarCenterTitle = props.appBarCenterTitle;
+  node.isAppBarTitle = props.appBarTitle;
 }
 
 NodePtr View(const ViewProps &props, std::vector<NodePtr> children) {

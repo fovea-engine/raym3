@@ -11,7 +11,7 @@ raym3 is a Material Design 3 inspired immediate-mode GUI library built on raylib
 ## Features
 
 - **Material Design 3 Inspired** - Implements Material Design 3 design principles and components
-- **v2 Composable API Foundation** - Retained `raym3::v2` View tree with style objects, same-frame layout, and Material component catalog entry points
+- **v2 Composable API** - Retained `raym3::v2` View tree with style objects, same-frame layout, a Material component catalog, text input editing, CSS transitions, a mutation-batch protocol, and Flutter-style CSS density scaling
 - **Immediate-Mode API** - Simple, intuitive API similar to raygui
 - **Automatic Resource Management** - Icons and fonts are automatically discovered or can be embedded
 - **Optional Yoga Layout** - Flexbox layout support for advanced UI composition

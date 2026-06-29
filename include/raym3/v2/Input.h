@@ -92,4 +92,10 @@ bool IsNodePressed(const Node &node);
 void SetPendingPressId(NodeId id);
 NodeId GetPendingPressId();
 
+// Drop every input reference to `n` (hover/active/focus/pendingPress/scroll
+// candidate). Input state holds raw Node* as NodeId, so a freed node would be
+// dereferenced on the next input frame (use-after-free). The host MUST call
+// this for a node before it is destroyed (e.g. on disposeNode / screen unmount).
+void ForgetInputNode(Node *n);
+
 } // namespace raym3::v2

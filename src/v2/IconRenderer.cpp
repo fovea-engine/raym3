@@ -41,13 +41,23 @@ static std::map<MaterialFontKey, Font> fonts_;
 static Texture2D atlas_ = {0};
 static std::map<MaterialIconKey, Rectangle> rects_;
 static bool atlasDirty_ = false;
+static std::string g_fontSearchPrefix;
+
+void SetIconFontSearchPrefix(const char* prefix) {
+  g_fontSearchPrefix = (prefix && *prefix) ? prefix : "";
+}
 
 static int PixelSize(int sizeDp) {
   return Density::RasterPixels((float)sizeDp);
 }
 
 static const char *FindIconFontPath(bool filled) {
+  static std::string s_found;
   static std::vector<std::string> filledCandidates = {
+      "./rayact/resources/fonts/MaterialIcons-Regular.ttf",
+      "./rayact/resources/fonts/MaterialSymbolsRounded-Filled.ttf",
+      "./rayact/resources/fonts/MaterialSymbolsRounded.ttf",
+      "./resources/fonts/MaterialIcons-Regular.ttf",
       std::string(RAYM3_RESOURCE_DIR) +
           "/fonts/MaterialSymbolsRounded-Filled.ttf",
       std::string(RAYM3_RESOURCE_DIR) + "/MaterialSymbolsRounded-Filled.ttf",
@@ -55,19 +65,39 @@ static const char *FindIconFontPath(bool filled) {
       "./raym3/resources/fonts/MaterialSymbolsRounded-Filled.ttf",
       "../raym3/resources/fonts/MaterialSymbolsRounded-Filled.ttf",
       "./resources/fonts/MaterialSymbolsRounded.ttf",
-      "./resources/fonts/MaterialIcons-Regular.ttf",
   };
   static std::vector<std::string> outlinedCandidates = {
+      "./rayact/resources/fonts/MaterialIcons-Regular.ttf",
+      "./rayact/resources/fonts/MaterialSymbolsRounded.ttf",
+      "./rayact/resources/fonts/MaterialSymbolsRounded-Filled.ttf",
+      "./resources/fonts/MaterialIcons-Regular.ttf",
       std::string(RAYM3_RESOURCE_DIR) + "/fonts/MaterialSymbolsRounded.ttf",
       std::string(RAYM3_RESOURCE_DIR) + "/MaterialSymbolsRounded.ttf",
       "./resources/fonts/MaterialSymbolsRounded.ttf",
       "./resources/fonts/MaterialSymbolsRounded-Filled.ttf",
-      "./resources/fonts/MaterialIcons-Regular.ttf",
   };
+  auto tryPath = [&](const std::string &path) -> const char * {
+    if (std::filesystem::exists(path)) {
+      s_found = path;
+      return s_found.c_str();
+    }
+    return nullptr;
+  };
+  if (!g_fontSearchPrefix.empty()) {
+    static const char *kRelPaths[] = {
+        "resources/fonts/MaterialSymbolsRounded-Filled.ttf",
+        "resources/fonts/MaterialSymbolsRounded.ttf",
+        "resources/fonts/MaterialIcons-Regular.ttf",
+        nullptr};
+    for (int i = 0; kRelPaths[i]; ++i) {
+      if (auto hit = tryPath(g_fontSearchPrefix + "/" + kRelPaths[i]))
+        return hit;
+    }
+  }
   auto &candidates = filled ? filledCandidates : outlinedCandidates;
   for (const auto &path : candidates) {
-    if (std::filesystem::exists(path))
-      return path.c_str();
+    if (auto hit = tryPath(path))
+      return hit;
   }
   return nullptr;
 }
@@ -179,7 +209,7 @@ static void EnsureAtlas() {
       Rectangle dst = {(float)entry.x + ((float)entry.cellPx - dw) * 0.5f,
                        (float)kPad + ((float)entry.cellPx - dh) * 0.5f, dw,
                        dh};
-      ImageDraw(&atlas, glyph, src, dst, WHITE);
+      ImageDrawImagePro(&atlas, glyph, src, dst, (Vector2){0, 0}, 0.0f, WHITE);
     }
     rects_[entry.key] = {(float)entry.x, (float)kPad, (float)entry.cellPx,
                          (float)entry.cellPx};
@@ -204,6 +234,14 @@ void DrawMaterialIcon(int codepoint, Rectangle bounds, Color color, int sizeDp,
   sizeDp = FontManager::SnapSize(sizeDp);
 
   RegisterMaterialIcon(codepoint, sizeDp, filled);
+#if defined(__EMSCRIPTEN__)
+  Font font = GetMaterialFont(sizeDp, filled);
+  float drawSize = (float)sizeDp;
+  Vector2 pos = {bounds.x + (bounds.width - drawSize) * 0.5f,
+                 bounds.y + (bounds.height - drawSize) * 0.5f};
+  DrawTextCodepoint(font, codepoint, pos, drawSize, color);
+  return;
+#endif
   EnsureAtlas();
 
   MaterialIconKey key{codepoint, sizeDp, filled};
@@ -215,23 +253,7 @@ void DrawMaterialIcon(int codepoint, Rectangle bounds, Color color, int sizeDp,
                      bounds.y + (bounds.height - drawSize) * 0.5f, drawSize,
                      drawSize};
     DrawTexturePro(atlas_, src, dst, {0.0f, 0.0f}, 0.0f, color);
-    return;
   }
-
-  char utf8[5] = {0};
-  if (codepoint < 0x800) {
-    utf8[0] = (char)(0xC0 | (codepoint >> 6));
-    utf8[1] = (char)(0x80 | (codepoint & 0x3F));
-  } else {
-    utf8[0] = (char)(0xE0 | (codepoint >> 12));
-    utf8[1] = (char)(0x80 | ((codepoint >> 6) & 0x3F));
-    utf8[2] = (char)(0x80 | (codepoint & 0x3F));
-  }
-  Font font = GetMaterialFont(sizeDp, filled);
-  Vector2 measured = MeasureTextEx(font, utf8, (float)sizeDp, 0.0f);
-  Vector2 pos = {bounds.x + (bounds.width - measured.x) * 0.5f,
-                 bounds.y + (bounds.height - measured.y) * 0.5f};
-  DrawTextEx(font, utf8, pos, (float)sizeDp, 0.0f, color);
 }
 
 void ResetMaterialIconAtlas() {

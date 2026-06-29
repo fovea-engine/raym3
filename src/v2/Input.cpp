@@ -6,6 +6,28 @@ namespace raym3::v2 {
 void SetPendingPressId(NodeId id) { Ctx().input.pendingPress = id; }
 NodeId GetPendingPressId() { return Ctx().input.pendingPress; }
 
+void ForgetInputNode(Node *n) {
+  if (!n)
+    return;
+  NodeId id = IdOf(n);
+  RenderContext &c = Ctx();
+  InputState &in = c.input;
+  if (in.hovered == id)
+    in.hovered = 0;
+  if (in.active == id)
+    in.active = 0;
+  if (in.focused == id)
+    in.focused = 0;
+  if (in.pendingPress == id)
+    in.pendingPress = 0;
+  if (c.lastFocusedTextInput == id)
+    c.lastFocusedTextInput = 0;
+  if (c.scroll.candidate.get() == n)
+    c.scroll.candidate = nullptr;
+  if (c.scroll.pendingPressTarget.get() == n)
+    c.scroll.pendingPressTarget = nullptr;
+}
+
 void BeginInputFrame(Vector2 posDp, bool down, bool pressed, bool released,
                      float wheel) {
   PointerInput &pointer = Ctx().input.pointer;

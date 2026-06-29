@@ -76,6 +76,9 @@ struct ComponentProps {
   float wavelength = -1.0f;
   int anchorId = 0;
   PopoverPlacement placement = PopoverPlacement::Auto;
+  // App bar: center the title slot across the full bar width (Flutter
+  // centerTitle / NavigationToolbar centerMiddle). False = start-aligned (M3).
+  bool appBarCenterTitle = false;
   std::function<void()> onPress;
 };
 

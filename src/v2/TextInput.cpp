@@ -309,7 +309,7 @@ static int HitTestCaret(const char *buffer, float clickRelativeX,
 
 static void DrawSelection(Rectangle inputBounds, const char *text, int start,
                           int end, float scrollOffset, float textStartX,
-                          bool passwordMode) {
+                          bool passwordMode, const Color *overrideColor = nullptr) {
   if (start == -1 || end == -1 || start == end || !text)
     return;
   NormalizeSelection(start, end);
@@ -326,6 +326,7 @@ static void DrawSelection(Rectangle inputBounds, const char *text, int start,
       inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f;
   Color selectionColor = scheme.primary;
   selectionColor.a = 76;
+  if (overrideColor) selectionColor = *overrideColor; // RN selectionColor
   DrawRectangleRec({selectionX, selectionY, selectionWidth, kFieldFontSize},
                    selectionColor);
 }
@@ -398,7 +399,7 @@ static void SyncScrollForCaret(Node &node, char *buffer, float textStartX,
     edit.scrollOffsetX = cursorX - availableWidth;
   else if (cursorX - edit.scrollOffsetX < 0.0f)
     edit.scrollOffsetX = cursorX;
-    std::string display = DisplayText(buffer, passwordMode);
+  std::string display = DisplayText(buffer, passwordMode);
   Vector2 totalSize = raym3::Renderer::MeasureText(
       display.c_str(), kFieldFontSize, FontWeight::Regular);
   float maxScroll = std::max(0.0f, totalSize.x - availableWidth);
@@ -606,12 +607,51 @@ static void ProcessKeyboard(Node &node) {
 
   auto notify = [&]() { CommitBuffer(node, buffer); };
 
-  // Enter commits (onChange already fired live) and blurs; Escape blurs.
-  if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
-      IsKeyPressed(KEY_ESCAPE)) {
+  // Escape always blurs without submitting.
+  if (IsKeyPressed(KEY_ESCAPE)) {
     edit.isSelecting = false;
     edit.selectionStart = edit.selectionEnd = -1;
     Blur();
+    return;
+  }
+
+  // Enter: a multiline field that should not blur inserts a newline; otherwise
+  // it fires onSubmit (react-native onSubmitEditing) and, when blurOnSubmit is
+  // set (single-line default), blurs.
+  if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+    if (node.textInput.multiline && !node.textInput.blurOnSubmit) {
+      int len = static_cast<int>(std::strlen(buffer));
+      if (!node.textInput.maxLength ||
+          Utf8CodepointCount(std::string(buffer)) < node.textInput.maxLength) {
+        if (edit.selectionStart != -1 && edit.selectionEnd != -1) {
+          SaveToHistory(id, buffer);
+          DeleteSelection(node, buffer);
+          len = static_cast<int>(std::strlen(buffer));
+        } else {
+          SaveToHistory(id, buffer);
+        }
+        edit.cursor = std::clamp(edit.cursor, 0, len);
+        if (len + 1 < bufferSize) {
+          if (edit.cursor < len)
+            std::memmove(&buffer[edit.cursor + 1], &buffer[edit.cursor],
+                         static_cast<size_t>(len - edit.cursor + 1));
+          buffer[edit.cursor] = '\n';
+          edit.cursor += 1;
+        }
+        edit.selectionStart = edit.selectionEnd = -1;
+        edit.composingStart = edit.composingEnd = -1;
+        edit.lastBlinkTime = static_cast<float>(GetTime());
+        notify();
+      }
+      return;
+    }
+    if (node.textInput.onSubmit)
+      node.textInput.onSubmit(std::string(buffer));
+    if (node.textInput.blurOnSubmit) {
+      edit.isSelecting = false;
+      edit.selectionStart = edit.selectionEnd = -1;
+      Blur();
+    }
     return;
   }
 
@@ -663,6 +703,21 @@ static void ProcessKeyboard(Node &node) {
       if (s != -1 && e != -1)
         DeleteSelection(node, buffer);
       int len = static_cast<int>(std::strlen(buffer));
+      // react-native maxLength: truncate the pasted text so the total codepoint
+      // count never exceeds the limit.
+      if (node.textInput.maxLength > 0) {
+        int have = Utf8CodepointCount(std::string(buffer));
+        int room = node.textInput.maxLength - have;
+        if (room <= 0) { clip.clear(); clipText = clip.c_str(); }
+        else if (Utf8CodepointCount(clip) > room) {
+          int bytePos = 0, cps = 0;
+          for (; bytePos < static_cast<int>(clip.size()) && cps < room;
+               bytePos = Utf8Next(clip, bytePos))
+            cps++;
+          clip.resize(static_cast<size_t>(bytePos));
+          clipText = clip.c_str();
+        }
+      }
       int clipLen = static_cast<int>(std::strlen(clipText));
       int avail = bufferSize - 1 - len;
       int toCopy = std::min(clipLen, avail);
@@ -913,7 +968,13 @@ static void ProcessKeyboard(Node &node) {
   int key = GetCharPressed();
   while (key > 0) {
     int len = static_cast<int>(std::strlen(buffer));
-    if (len < bufferSize - 1 && key >= 32) {
+    // react-native maxLength: cap by codepoint count. A selection replace still
+    // counts as a net change, so only block when there is no selection to free
+    // up room.
+    bool atMaxLength =
+        node.textInput.maxLength > 0 && !hasSelection &&
+        Utf8CodepointCount(std::string(buffer)) >= node.textInput.maxLength;
+    if (len < bufferSize - 1 && key >= 32 && !atMaxLength) {
       if (hasSelection) {
         SaveToHistory(id, buffer);
         DeleteSelection(node, buffer);
@@ -1317,7 +1378,8 @@ void PaintTextInput(Node &node) {
 
   if (isFocused) {
     DrawSelection(inputBounds, buffer, edit.selectionStart, edit.selectionEnd,
-                  currentScroll, textStartX - inputBounds.x, ti.passwordMode);
+                  currentScroll, textStartX - inputBounds.x, ti.passwordMode,
+                  ti.hasSelectionColor ? &ti.selectionColor : nullptr);
     DrawComposingUnderline(inputBounds, buffer, edit.composingStart,
                            edit.composingEnd, currentScroll,
                            textStartX - inputBounds.x, ti.passwordMode);
@@ -1332,6 +1394,7 @@ void PaintTextInput(Node &node) {
   if (showPlaceholder) {
     Color ph = scheme.onSurfaceVariant;
     ph.a = 180;
+    if (ti.hasPlaceholderColor) ph = ti.placeholderColor; // RN placeholderTextColor
     raym3::Renderer::DrawText(ti.placeholder.c_str(), textPos, kFieldFontSize,
                               ph, FontWeight::Regular);
   } else if (!isEmpty) {
@@ -1340,7 +1403,8 @@ void PaintTextInput(Node &node) {
                               textColor, FontWeight::Regular);
   }
 
-  if (isFocused && !ti.readOnly) {
+  // RN caretHidden suppresses the blinking cursor.
+  if (isFocused && !ti.readOnly && !ti.caretHidden) {
     DrawCursor(inputBounds, buffer, edit.cursor, currentScroll,
                edit.lastBlinkTime, textStartX - inputBounds.x, bgColor,
                ti.passwordMode);

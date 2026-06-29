@@ -26,15 +26,20 @@ static void DrawRoundedBorderFrame(Rectangle bounds, float cornerRadius,
   const float innerR = std::max(0.0f, r - w);
   const int segs = kRoundedRectSegments;
 
+  // Use the float-coord DrawRectangleRec, NOT DrawRectangle(int,int,...): the
+  // latter truncates to integer pixels, so at fractional positions (e.g. a
+  // momentum-scrolled offset) the straight edges snap to whole pixels while the
+  // corner arcs (DrawRing) and the fill (DrawRectangleRounded) stay on the float
+  // position — the border then misaligns/shimmers against the fill while scrolling.
   if (bounds.width > 2.0f * r) {
-    DrawRectangle(bounds.x + r, bounds.y, bounds.width - 2.0f * r, w, color);
-    DrawRectangle(bounds.x + r, bounds.y + bounds.height - w,
-                  bounds.width - 2.0f * r, w, color);
+    DrawRectangleRec({bounds.x + r, bounds.y, bounds.width - 2.0f * r, w}, color);
+    DrawRectangleRec({bounds.x + r, bounds.y + bounds.height - w,
+                      bounds.width - 2.0f * r, w}, color);
   }
   if (bounds.height > 2.0f * r) {
-    DrawRectangle(bounds.x + bounds.width - w, bounds.y + r, w,
-                  bounds.height - 2.0f * r, color);
-    DrawRectangle(bounds.x, bounds.y + r, w, bounds.height - 2.0f * r, color);
+    DrawRectangleRec({bounds.x + bounds.width - w, bounds.y + r, w,
+                      bounds.height - 2.0f * r}, color);
+    DrawRectangleRec({bounds.x, bounds.y + r, w, bounds.height - 2.0f * r}, color);
   }
 
   if (r <= 0.0f)

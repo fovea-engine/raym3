@@ -150,7 +150,9 @@ static const std::vector<int>& GetCodepoints() {
     for (int i = from; i <= to; i++) cps.push_back(i);
   };
   addRange(32,  126);   // Basic ASCII
+#if !defined(__EMSCRIPTEN__)
   addRange(160, 591);   // Latin-1 Supplement + Latin Extended A/B
+#endif
   return cps;
 }
 

@@ -60,3 +60,6 @@ docs/html/
 
 # CMake FetchContent dependencies
 _deps/
+
+# v2 build output dirs
+build-v2*/

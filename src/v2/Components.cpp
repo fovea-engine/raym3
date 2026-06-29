@@ -186,7 +186,7 @@ static void PaintLinearProgress(Rectangle r, float progress, bool indeterminate,
   };
 
   // Active is a SOLID rounded segment so it fully masks the track in its
-  // region � the inactive track is only ever drawn outside the active segment
+  // region � the inactive track is only ever drawn outside the active segment
   // (with a gap), never beneath it.
   auto active = [&](float x0, float x1) {
     if (x1 - x0 > 0.5f) {
@@ -412,7 +412,7 @@ static void PaintCircularLoading(Rectangle r, float progress, bool indeterminate
     float p = std::clamp(progress, 0.0f, 1.0f);
     float activeEnd = -90.0f + 360.0f * p;
     if (p > 0.0f) activeArc(-90.0f, activeEnd, c.primary);
-    // Inactive arc fills only the remainder, with gaps on both sides � never
+    // Inactive arc fills only the remainder, with gaps on both sides � never
     // beneath the active arc.
     if (p < 1.0f)
       trackArc(activeEnd + gapDeg, 270.0f - gapDeg);
@@ -441,7 +441,7 @@ static bool IsInteractive(M3Component component) {
   case M3Component::Fab:
   case M3Component::FabMenu:
   case M3Component::IconButton:
-  // Menu container is a passive surface � only its items are interactive.
+  // Menu container is a passive surface � only its items are interactive.
   case M3Component::MenuItem:
   case M3Component::NavigationBar:
   case M3Component::NavigationDrawer:
@@ -782,7 +782,7 @@ static Style DefaultsFor(M3Component component) {
     break;
   case M3Component::SegmentedButton:
     // Container: pill border + segment fills drawn manually by the renderer
-    // (ButtonGroupContainer role) so no overflow:Hidden/stencil is needed �
+    // (ButtonGroupContainer role) so no overflow:Hidden/stencil is needed �
     // fills are drawn with DrawSegmentShape which rounds only the outer edges.
     style.height = metrics.layoutHeight;
     style.flexDirection = FlexDirection::Row;
@@ -932,12 +932,12 @@ static Style DefaultsFor(M3Component component) {
     style.overflow = Overflow::Hidden;
     break;
   case M3Component::LoadingIndicator:
-    // Painted via PaintCircularLoading � container only reserves the size.
+    // Painted via PaintCircularLoading � container only reserves the size.
     style.width = metrics.layoutWidth;
     style.height = metrics.layoutHeight;
     break;
   case M3Component::ProgressIndicator:
-    // Painted via PaintLinearProgress � no box fill behind the track.
+    // Painted via PaintLinearProgress � no box fill behind the track.
     style.height = metrics.layoutHeight;
     style.minWidth = metrics.minWidth;
     break;
@@ -970,7 +970,7 @@ static Style DefaultsFor(M3Component component) {
   case M3Component::TextField:
     style.height = metrics.layoutHeight;
     style.minWidth = metrics.minWidth;
-    // M3 filled text field: no box border � PaintTextFieldContainer draws bg
+    // M3 filled text field: no box border � PaintTextFieldContainer draws bg
     // with top-only 4dp corners and the 1dp bottom indicator line.
     style.backgroundColor = {};
     break;
@@ -1127,7 +1127,7 @@ static void ApplySelectionState(M3Component component, const ComponentProps &pro
     break;
   case M3Component::NavigationRail:
     // The rail conveys open/closed via width + the per-item active-indicator
-    // pill, not a container fill � and `open` is mapped onto `selected`, so a
+    // pill, not a container fill � and `open` is mapped onto `selected`, so a
     // selection fill here would paint the whole surface pill-colored once the
     // rail has been opened. Keep the surface as `surface`.
     break;
@@ -1138,7 +1138,7 @@ static void ApplySelectionState(M3Component component, const ComponentProps &pro
     break;
   case M3Component::Tabs:
     // M3 tabs: selected state = primary-colored label + the bottom indicator
-    // (painted by the renderer). NO container fill � a fill would draw a tall
+    // (painted by the renderer). NO container fill � a fill would draw a tall
     // box behind the selected tab instead of the 3dp underline.
     style.text.color = Theme::GetColorScheme().primary;
     break;
@@ -1411,7 +1411,7 @@ NodePtr MaterialComponent(M3Component component, const ComponentProps &props,
                                         wavelength);
                   },
                   std::move(children)), component);
-    // Indeterminate/wavy paint is GetTime()-driven � keep the frame scheduler
+    // Indeterminate/wavy paint is GetTime()-driven � keep the frame scheduler
     // rendering (Android renders on demand; see NodeNeedsAnotherFrame).
     if (node) node->alwaysAnimates = indeterminate || wavy;
     return node;
@@ -1495,7 +1495,7 @@ NodePtr MaterialComponent(M3Component component, const ComponentProps &props,
   // ?? NavigationBar ??????????????????????????????????????????????????????????
   // Container (no label) owns a single sliding active-indicator pill that
   // moves between item icon centers (NodeRole::NavigationBar). Items paint
-  // labels/icons only � no per-item selection fill.
+  // labels/icons only � no per-item selection fill.
   if (component == M3Component::NavigationBar) {
     if (props.label.empty()) {
       ViewProps containerProps;
@@ -1508,6 +1508,27 @@ NodePtr MaterialComponent(M3Component component, const ComponentProps &props,
       node->role = NodeRole::NavigationBar;
       return FinishM3Node(node, component);
     }
+  }
+
+  // ── App bar ────────────────────────────────────────────────────────────────
+  // The bar is a flex row holding [leading][title][actions] slots composed by
+  // the caller. NodeRole::AppBar lets the renderer recenter the title slot
+  // across the full bar width when centerTitle is set (Flutter centerMiddle),
+  // which plain flexbox cannot express.
+  if (component == M3Component::AppBar || component == M3Component::Toolbar) {
+    ViewProps containerProps;
+    containerProps.id = props.id;
+    containerProps.style = style;
+    containerProps.stateStyles = stateStyles;
+    containerProps.motion = motion;
+    containerProps.disabled = props.disabled;
+    containerProps.capturesInput = props.capturesInput;
+    containerProps.zIndex = props.zIndex;
+    containerProps.onPress = props.onPress;
+    containerProps.appBarCenterTitle = props.appBarCenterTitle;
+    NodePtr node = View(containerProps, std::move(children));
+    node->role = NodeRole::AppBar;
+    return FinishM3Node(node, component);
   }
 
   // ?? Tabs ???????????????????????????????????????????????????????????????????
@@ -1551,7 +1572,7 @@ NodePtr MaterialComponent(M3Component component, const ComponentProps &props,
   }
   if (component == M3Component::SegmentedButton) {
     if (props.label.empty()) {
-      // CONTAINER: structural pill wrapper � no state layers, no fill.
+      // CONTAINER: structural pill wrapper � no state layers, no fill.
       // Renderer (ButtonGroupContainer role) draws segment fills and border.
       style.flexDirection   = FlexDirection::Row;
       style.alignItems      = Align::Stretch;
@@ -1564,7 +1585,7 @@ NodePtr MaterialComponent(M3Component component, const ComponentProps &props,
       containerProps.motion   = motion;
       containerProps.disabled = props.disabled;
       containerProps.zIndex   = props.zIndex;
-      // No stateStyles, no onPress � items own interaction.
+      // No stateStyles, no onPress � items own interaction.
       NodePtr node = View(containerProps, std::move(children));
       node->selected = false;
       node->role = NodeRole::ButtonGroupContainer;
@@ -1617,7 +1638,7 @@ NodePtr MaterialComponent(M3Component component, const ComponentProps &props,
     style.borderRadius = tokens::kCornerFull;
     style.backgroundColor = isSelected ? cs.secondaryContainer : cs.surfaceContainerHigh;
     style.text.color = isSelected ? cs.onSecondaryContainer : cs.onSurfaceVariant;
-    // Resting state must not set stateLayerColor � its alpha seeds animStateAlpha
+    // Resting state must not set stateLayerColor � its alpha seeds animStateAlpha
     // and an opaque value floods the pill over the label. Hover/press layers come
     // from DefaultStateStylesFor via stateStyles.
     style.stateLayerColor = {};
@@ -1718,7 +1739,7 @@ NodePtr MaterialComponent(M3Component component, const ComponentProps &props,
     children.push_back(Text(props.label, textProps));
   }
 
-  // Selected segmented button items get a leading checkmark � injected AFTER
+  // Selected segmented button items get a leading checkmark � injected AFTER
   // label so children is [Text], becomes [Checkmark, Text]. Same pattern as Chip.
   if (component == M3Component::SegmentedButton && isSelected) {
     ViewProps checkProps;
