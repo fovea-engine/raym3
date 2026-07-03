@@ -105,6 +105,16 @@ bool EmojiFont::Available() {
   return backend_ != Backend::None;
 }
 
+EmojiFont::BackendKind EmojiFont::ActiveBackend() {
+  EnsureBackend();
+  switch (backend_) {
+    case Backend::Raster: return BackendKind::OsRasterizer;
+    case Backend::Cbdt:   return BackendKind::Bundled;
+    case Backend::None:   return BackendKind::None;
+    default:              return BackendKind::Unresolved;
+  }
+}
+
 void EmojiFont::EnsureBackend() {
   if (backend_ != Backend::Unresolved) return;
 
@@ -123,40 +133,56 @@ void EmojiFont::EnsureBackend() {
   TraceLog(LOG_INFO, "EmojiFont: no emoji backend available");
 }
 
+void EmojiFont::RegisterCustomEmojiFont(std::vector<std::uint8_t> bytes) {
+  customFontBytes_ = std::move(bytes);
+  fontParsed_ = false;
+  data_.clear();
+  cmap_.clear();
+  strike_.clear();
+  ligatures_.clear();
+  backend_ = Backend::Unresolved;
+  ResetTextureCache();
+}
+
 bool EmojiFont::LoadCbdtFont() {
   if (fontParsed_) return !cmap_.empty() && !strike_.empty();
   fontParsed_ = true;
 
-  const std::vector<std::string> candidates = {
-      // Linux: system emoji fonts (checked before bundled to avoid shipping 10 MB)
-      "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",        // Ubuntu/Debian
-      "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",    // Fedora
-      "/usr/share/fonts/noto/NotoColorEmoji.ttf",                 // openSUSE / Arch
-      "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
-      "/usr/share/fonts/NotoColorEmoji.ttf",
-      // Bundled fallback (shipped with the app on Linux when system font absent;
-      // always present on non-Linux since CBDT is only used there as last resort)
-      std::string(RAYM3_RESOURCE_DIR) + "/fonts/NotoColorEmoji.ttf",
-      "./resources/fonts/NotoColorEmoji.ttf",
-      "./raym3/resources/fonts/NotoColorEmoji.ttf",
-      "NotoColorEmoji.ttf",
-  };
   std::string path;
-  for (const auto &c : candidates)
-    if (std::filesystem::exists(c)) { path = c; break; }
-  if (path.empty()) return false;
+  if (!customFontBytes_.empty()) {
+    data_ = customFontBytes_;
+    path = "<custom emoji font bytes>";
+  } else {
+    const std::vector<std::string> candidates = {
+        // Linux: system emoji fonts (checked before bundled to avoid shipping 10 MB)
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",        // Ubuntu/Debian
+        "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",    // Fedora
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",                 // openSUSE / Arch
+        "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
+        "/usr/share/fonts/NotoColorEmoji.ttf",
+        // Bundled fallback (shipped with the app on Linux when system font absent;
+        // always present on non-Linux since CBDT is only used there as last resort)
+        std::string(RAYM3_RESOURCE_DIR) + "/fonts/NotoColorEmoji.ttf",
+        "./resources/fonts/NotoColorEmoji.ttf",
+        "./raym3/resources/fonts/NotoColorEmoji.ttf",
+        "NotoColorEmoji.ttf",
+    };
+    for (const auto &c : candidates)
+      if (std::filesystem::exists(c)) { path = c; break; }
+    if (path.empty()) return false;
 
-  FILE *f = std::fopen(path.c_str(), "rb");
-  if (!f) return false;
-  std::fseek(f, 0, SEEK_END);
-  long sz = std::ftell(f);
-  std::fseek(f, 0, SEEK_SET);
-  if (sz <= 0) { std::fclose(f); return false; }
-  data_.resize((std::size_t)sz);
-  if (std::fread(data_.data(), 1, (std::size_t)sz, f) != (std::size_t)sz) {
-    std::fclose(f); data_.clear(); return false;
+    FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { std::fclose(f); return false; }
+    data_.resize((std::size_t)sz);
+    if (std::fread(data_.data(), 1, (std::size_t)sz, f) != (std::size_t)sz) {
+      std::fclose(f); data_.clear(); return false;
+    }
+    std::fclose(f);
   }
-  std::fclose(f);
 
   const std::uint8_t *base = data_.data();
   const std::size_t total = data_.size();

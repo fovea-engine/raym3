@@ -14,11 +14,11 @@
 
 namespace raym3::v2 {
 
-struct MaterialIconKey {
+struct IconKey {
   int cp;
   int sizeDp;
   bool filled;
-  bool operator<(const MaterialIconKey &o) const {
+  bool operator<(const IconKey &o) const {
     if (cp != o.cp)
       return cp < o.cp;
     if (sizeDp != o.sizeDp)
@@ -27,37 +27,64 @@ struct MaterialIconKey {
   }
 };
 
-struct MaterialFontKey {
+struct IconFontKey {
   int sizeDp;
   bool filled;
-  bool operator<(const MaterialFontKey &o) const {
+  bool operator<(const IconFontKey &o) const {
     return sizeDp != o.sizeDp ? sizeDp < o.sizeDp : filled < o.filled;
   }
 };
 
-static std::set<MaterialIconKey> requests_;
-static std::set<int> codepoints_;
-static std::map<MaterialFontKey, Font> fonts_;
-static Texture2D atlas_ = {0};
-static std::map<MaterialIconKey, Rectangle> rects_;
-static bool atlasDirty_ = false;
+// A loaded font variant for one style within a set ("outlined"/"filled"/
+// "regular"/anything else), sourced from either raw bytes or a filesystem
+// path. Bytes take priority when both are present.
+struct VariantSource {
+  std::vector<unsigned char> bytes;
+  std::string path;
+  bool HasBytes() const { return !bytes.empty(); }
+};
+
+// All state for one named icon set. Kept independent per set so loading a
+// custom set never invalidates another set's (e.g. "material"'s) atlas.
+struct IconSetState {
+  std::unordered_map<std::string, VariantSource> variants; // style -> source
+  std::unordered_map<std::string, int> names;              // icon name -> codepoint
+  std::set<IconKey> requests;
+  std::set<int> codepoints;
+  std::map<IconFontKey, Font> fonts;
+  Texture2D atlas = {0};
+  std::map<IconKey, Rectangle> rects;
+  bool atlasDirty = false;
+};
+
+static std::unordered_map<std::string, IconSetState> g_sets;
 static std::string g_fontSearchPrefix;
 
-void SetIconFontSearchPrefix(const char* prefix) {
+static IconSetState &GetOrCreateSet(const std::string &setName) {
+  return g_sets[setName];
+}
+
+void SetIconFontSearchPrefix(const char *prefix) {
   g_fontSearchPrefix = (prefix && *prefix) ? prefix : "";
 }
 
-static int PixelSize(int sizeDp) {
-  return Density::RasterPixels((float)sizeDp);
-}
+static int PixelSize(int sizeDp) { return Density::RasterPixels((float)sizeDp); }
 
-static const char *FindIconFontPath(bool filled) {
+// Fallback candidate search used ONLY for the built-in "material" set when no
+// explicit variant has been loaded for it via LoadIconSet/LoadIconSetFromPaths.
+// The Material Symbols variant matching `filled` must be tried FIRST — it's
+// the only font family that can actually distinguish fill state (classic
+// MaterialIcons-Regular.ttf is single-style, so putting it first made
+// `filled` a no-op wherever it shipped). Verified material_icons.js's full
+// codepoint map resolves 4253/4253 in both MaterialSymbolsRounded.ttf and
+// -Filled.ttf, vs 2053/4253 in classic, so this ordering doesn't regress
+// coverage; classic stays as the final fallback.
+static const char *FindMaterialFontPathFallback(bool filled) {
   static std::string s_found;
   static std::vector<std::string> filledCandidates = {
-      "./rayact/resources/fonts/MaterialIcons-Regular.ttf",
       "./rayact/resources/fonts/MaterialSymbolsRounded-Filled.ttf",
       "./rayact/resources/fonts/MaterialSymbolsRounded.ttf",
-      "./resources/fonts/MaterialIcons-Regular.ttf",
+      "./rayact/resources/fonts/MaterialIcons-Regular.ttf",
       std::string(RAYM3_RESOURCE_DIR) +
           "/fonts/MaterialSymbolsRounded-Filled.ttf",
       std::string(RAYM3_RESOURCE_DIR) + "/MaterialSymbolsRounded-Filled.ttf",
@@ -65,16 +92,17 @@ static const char *FindIconFontPath(bool filled) {
       "./raym3/resources/fonts/MaterialSymbolsRounded-Filled.ttf",
       "../raym3/resources/fonts/MaterialSymbolsRounded-Filled.ttf",
       "./resources/fonts/MaterialSymbolsRounded.ttf",
+      "./resources/fonts/MaterialIcons-Regular.ttf",
   };
   static std::vector<std::string> outlinedCandidates = {
-      "./rayact/resources/fonts/MaterialIcons-Regular.ttf",
       "./rayact/resources/fonts/MaterialSymbolsRounded.ttf",
       "./rayact/resources/fonts/MaterialSymbolsRounded-Filled.ttf",
-      "./resources/fonts/MaterialIcons-Regular.ttf",
+      "./rayact/resources/fonts/MaterialIcons-Regular.ttf",
       std::string(RAYM3_RESOURCE_DIR) + "/fonts/MaterialSymbolsRounded.ttf",
       std::string(RAYM3_RESOURCE_DIR) + "/MaterialSymbolsRounded.ttf",
       "./resources/fonts/MaterialSymbolsRounded.ttf",
       "./resources/fonts/MaterialSymbolsRounded-Filled.ttf",
+      "./resources/fonts/MaterialIcons-Regular.ttf",
   };
   auto tryPath = [&](const std::string &path) -> const char * {
     if (std::filesystem::exists(path)) {
@@ -84,13 +112,21 @@ static const char *FindIconFontPath(bool filled) {
     return nullptr;
   };
   if (!g_fontSearchPrefix.empty()) {
-    static const char *kRelPaths[] = {
+    // Must vary by `filled` — this used to always try the Filled font first
+    // regardless of the request, making every icon here render filled.
+    static const char *kFilledRelPaths[] = {
         "resources/fonts/MaterialSymbolsRounded-Filled.ttf",
         "resources/fonts/MaterialSymbolsRounded.ttf",
         "resources/fonts/MaterialIcons-Regular.ttf",
         nullptr};
-    for (int i = 0; kRelPaths[i]; ++i) {
-      if (auto hit = tryPath(g_fontSearchPrefix + "/" + kRelPaths[i]))
+    static const char *kOutlinedRelPaths[] = {
+        "resources/fonts/MaterialSymbolsRounded.ttf",
+        "resources/fonts/MaterialSymbolsRounded-Filled.ttf",
+        "resources/fonts/MaterialIcons-Regular.ttf",
+        nullptr};
+    const char **relPaths = filled ? kFilledRelPaths : kOutlinedRelPaths;
+    for (int i = 0; relPaths[i]; ++i) {
+      if (auto hit = tryPath(g_fontSearchPrefix + "/" + relPaths[i]))
         return hit;
     }
   }
@@ -102,51 +138,127 @@ static const char *FindIconFontPath(bool filled) {
   return nullptr;
 }
 
-static Font GetMaterialFont(int sizeDp, bool filled) {
-  MaterialFontKey key{sizeDp, filled};
-  auto it = fonts_.find(key);
-  if (it != fonts_.end())
+// Resolve which loaded variant to use for a request: exact style match first
+// ("filled"/"outlined"), then "regular" (single-style custom icon fonts),
+// then whatever is registered (last resort, for sets with only one
+// unconventionally-named variant).
+static const VariantSource *FindVariant(const IconSetState &set, bool filled) {
+  const char *style = filled ? "filled" : "outlined";
+  auto it = set.variants.find(style);
+  if (it != set.variants.end())
+    return &it->second;
+  it = set.variants.find("regular");
+  if (it != set.variants.end())
+    return &it->second;
+  if (!set.variants.empty())
+    return &set.variants.begin()->second;
+  return nullptr;
+}
+
+static Font GetSetFont(const std::string &setName, IconSetState &set, int sizeDp, bool filled) {
+  IconFontKey key{sizeDp, filled};
+  auto it = set.fonts.find(key);
+  if (it != set.fonts.end())
     return it->second;
 
   Font font = {0};
-  const char *path = FindIconFontPath(filled);
-  if (path && !codepoints_.empty()) {
-    std::vector<int> cps(codepoints_.begin(), codepoints_.end());
-    font = LoadFontEx(path, PixelSize(sizeDp), cps.data(), (int)cps.size());
+  if (!set.codepoints.empty()) {
+    std::vector<int> cps(set.codepoints.begin(), set.codepoints.end());
+    const VariantSource *variant = FindVariant(set, filled);
+    if (variant && variant->HasBytes()) {
+      font = LoadFontFromMemory(".ttf", variant->bytes.data(), (int)variant->bytes.size(),
+                                PixelSize(sizeDp), cps.data(), (int)cps.size());
+    } else if (variant && !variant->path.empty()) {
+      font = LoadFontEx(variant->path.c_str(), PixelSize(sizeDp), cps.data(), (int)cps.size());
+    } else if (setName == "material") {
+      const char *path = FindMaterialFontPathFallback(filled);
+      if (path)
+        font = LoadFontEx(path, PixelSize(sizeDp), cps.data(), (int)cps.size());
+    }
   }
   if (font.texture.id == 0)
     font = GetFontDefault();
-  fonts_[key] = font;
+  set.fonts[key] = font;
   return font;
 }
 
-void RegisterMaterialIcon(int codepoint, int sizeDp, bool filled) {
+void LoadIconSet(const std::string &setName,
+                 const std::unordered_map<std::string, std::vector<unsigned char>> &variantBytes) {
+  IconSetState &set = GetOrCreateSet(setName);
+  for (const auto &[style, bytes] : variantBytes) {
+    VariantSource src;
+    src.bytes = bytes;
+    set.variants[style] = std::move(src);
+  }
+  // Loaded fonts for this set are now stale (variant sources changed).
+  for (auto &[key, font] : set.fonts) {
+    if (font.texture.id != 0)
+      UnloadFont(font);
+  }
+  set.fonts.clear();
+  set.atlasDirty = true;
+}
+
+void LoadIconSetFromPaths(const std::string &setName,
+                          const std::unordered_map<std::string, std::string> &variantPaths) {
+  IconSetState &set = GetOrCreateSet(setName);
+  for (const auto &[style, path] : variantPaths) {
+    VariantSource src;
+    src.path = path;
+    set.variants[style] = std::move(src);
+  }
+  for (auto &[key, font] : set.fonts) {
+    if (font.texture.id != 0)
+      UnloadFont(font);
+  }
+  set.fonts.clear();
+  set.atlasDirty = true;
+}
+
+void RegisterIconNames(const std::string &setName,
+                       const std::unordered_map<std::string, int> &nameToCodepoint) {
+  IconSetState &set = GetOrCreateSet(setName);
+  for (const auto &[name, cp] : nameToCodepoint) {
+    set.names[name] = cp;
+  }
+}
+
+int ResolveIconCodepoint(const std::string &setName, const std::string &name) {
+  auto setIt = g_sets.find(setName);
+  if (setIt == g_sets.end())
+    return 0;
+  auto it = setIt->second.names.find(name);
+  return it != setIt->second.names.end() ? it->second : 0;
+}
+
+void RegisterIcon(int codepoint, int sizeDp, bool filled, const std::string &setName) {
   if (codepoint <= 0 || sizeDp <= 0)
     return;
-  MaterialIconKey key{codepoint, FontManager::SnapSize(sizeDp), filled};
-  bool inserted = requests_.insert(key).second;
-  bool cpInserted = codepoints_.insert(codepoint).second;
+  IconSetState &set = GetOrCreateSet(setName);
+  IconKey key{codepoint, FontManager::SnapSize(sizeDp), filled};
+  bool inserted = set.requests.insert(key).second;
+  bool cpInserted = set.codepoints.insert(codepoint).second;
   if (cpInserted) {
-    for (auto &[fontKey, font] : fonts_) {
+    for (auto &[fontKey, font] : set.fonts) {
       if (font.texture.id != 0)
         UnloadFont(font);
     }
-    fonts_.clear();
+    set.fonts.clear();
   }
-  atlasDirty_ = atlasDirty_ || inserted || cpInserted;
+  set.atlasDirty = set.atlasDirty || inserted || cpInserted;
 }
 
-static void EnsureAtlas() {
-  if (!atlasDirty_ && atlas_.id != 0)
+static void EnsureAtlas(const std::string &setName, IconSetState &set) {
+  if (!set.atlasDirty && set.atlas.id != 0)
     return;
-  if (requests_.empty())
+  if (set.requests.empty())
     return;
 
-  rects_.clear();
+  set.rects.clear();
   constexpr int kPad = 2;
 
   struct Entry {
-    MaterialIconKey key;
+    IconKey key;
     int x;
     int cellPx;
   };
@@ -154,7 +266,7 @@ static void EnsureAtlas() {
   std::vector<Entry> entries;
   int curX = kPad;
   int maxCellPx = 0;
-  for (const auto &key : requests_) {
+  for (const auto &key : set.requests) {
     int cellPx = PixelSize(key.sizeDp);
     entries.push_back({key, curX, cellPx});
     curX += cellPx + kPad * 2;
@@ -170,11 +282,11 @@ static void EnsureAtlas() {
   while (texH < rawH)
     texH <<= 1;
 
-  Image atlas = GenImageColor(texW, texH, Color{0, 0, 0, 0});
-  ImageFormat(&atlas, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+  Image atlasImg = GenImageColor(texW, texH, Color{0, 0, 0, 0});
+  ImageFormat(&atlasImg, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 
   for (const auto &entry : entries) {
-    Font font = GetMaterialFont(entry.key.sizeDp, entry.key.filled);
+    Font font = GetSetFont(setName, set, entry.key.sizeDp, entry.key.filled);
     int gidx = GetGlyphIndex(font, entry.key.cp);
     Image glyph = font.glyphs[gidx].image;
 
@@ -209,80 +321,112 @@ static void EnsureAtlas() {
       Rectangle dst = {(float)entry.x + ((float)entry.cellPx - dw) * 0.5f,
                        (float)kPad + ((float)entry.cellPx - dh) * 0.5f, dw,
                        dh};
-      ImageDrawImagePro(&atlas, glyph, src, dst, (Vector2){0, 0}, 0.0f, WHITE);
+      ImageDrawImagePro(&atlasImg, glyph, src, dst, (Vector2){0, 0}, 0.0f, WHITE);
     }
-    rects_[entry.key] = {(float)entry.x, (float)kPad, (float)entry.cellPx,
-                         (float)entry.cellPx};
+    set.rects[entry.key] = {(float)entry.x, (float)kPad, (float)entry.cellPx,
+                            (float)entry.cellPx};
   }
 
-  if (atlas_.id != 0)
-    UnloadTexture(atlas_);
-  atlas_ = LoadTextureFromImage(atlas);
-  SetTextureFilter(atlas_, TEXTURE_FILTER_BILINEAR);
+  if (set.atlas.id != 0)
+    UnloadTexture(set.atlas);
+  set.atlas = LoadTextureFromImage(atlasImg);
+  SetTextureFilter(set.atlas, TEXTURE_FILTER_BILINEAR);
   if (std::getenv("RAYM3_ICON_ATLAS_DBG"))
-    ExportImage(atlas, "raym3-icon-atlas.png");
-  UnloadImage(atlas);
-  atlasDirty_ = false;
+    ExportImage(atlasImg, ("raym3-icon-atlas-" + setName + ".png").c_str());
+  UnloadImage(atlasImg);
+  set.atlasDirty = false;
 }
 
-void DrawMaterialIcon(int codepoint, Rectangle bounds, Color color, int sizeDp,
-                      bool filled) {
+void DrawIcon(int codepoint, Rectangle bounds, Color color, int sizeDp, bool filled,
+             const std::string &setName) {
   if (codepoint <= 0 || bounds.width <= 0.0f || bounds.height <= 0.0f)
     return;
   if (sizeDp <= 0)
     sizeDp = (int)std::round(std::min(bounds.width, bounds.height));
   sizeDp = FontManager::SnapSize(sizeDp);
 
-  RegisterMaterialIcon(codepoint, sizeDp, filled);
+  RegisterIcon(codepoint, sizeDp, filled, setName);
+  IconSetState &set = GetOrCreateSet(setName);
 #if defined(__EMSCRIPTEN__)
-  Font font = GetMaterialFont(sizeDp, filled);
+  Font font = GetSetFont(setName, set, sizeDp, filled);
   float drawSize = (float)sizeDp;
   Vector2 pos = {bounds.x + (bounds.width - drawSize) * 0.5f,
                  bounds.y + (bounds.height - drawSize) * 0.5f};
   DrawTextCodepoint(font, codepoint, pos, drawSize, color);
   return;
 #endif
-  EnsureAtlas();
+  EnsureAtlas(setName, set);
 
-  MaterialIconKey key{codepoint, sizeDp, filled};
-  auto it = rects_.find(key);
-  if (atlas_.id != 0 && it != rects_.end()) {
+  IconKey key{codepoint, sizeDp, filled};
+  auto it = set.rects.find(key);
+  if (set.atlas.id != 0 && it != set.rects.end()) {
     Rectangle src = it->second;
     float drawSize = (float)sizeDp;
     Rectangle dst = {bounds.x + (bounds.width - drawSize) * 0.5f,
                      bounds.y + (bounds.height - drawSize) * 0.5f, drawSize,
                      drawSize};
-    DrawTexturePro(atlas_, src, dst, {0.0f, 0.0f}, 0.0f, color);
+    DrawTexturePro(set.atlas, src, dst, {0.0f, 0.0f}, 0.0f, color);
   }
 }
 
-void ResetMaterialIconAtlas() {
-  if (atlas_.id != 0)
-    UnloadTexture(atlas_);
-  atlas_ = {0};
-  rects_.clear();
-  for (auto &[key, font] : fonts_) {
+void RegisterMaterialIcon(int codepoint, int sizeDp, bool filled) {
+  RegisterIcon(codepoint, sizeDp, filled, "material");
+}
+
+void DrawMaterialIcon(int codepoint, Rectangle bounds, Color color, int sizeDp, bool filled) {
+  DrawIcon(codepoint, bounds, color, sizeDp, filled, "material");
+}
+
+void ResetIconSetAtlas(const std::string &setName) {
+  auto it = g_sets.find(setName);
+  if (it == g_sets.end())
+    return;
+  IconSetState &set = it->second;
+  if (set.atlas.id != 0)
+    UnloadTexture(set.atlas);
+  set.atlas = {0};
+  set.rects.clear();
+  for (auto &[key, font] : set.fonts) {
     if (font.texture.id != 0)
       UnloadFont(font);
   }
-  fonts_.clear();
-  requests_.clear();
-  codepoints_.clear();
-  atlasDirty_ = false;
+  set.fonts.clear();
+  set.requests.clear();
+  set.codepoints.clear();
+  set.atlasDirty = false;
+}
+
+void ResetAllIconAtlases() {
+  for (auto &[name, set] : g_sets) {
+    if (set.atlas.id != 0)
+      UnloadTexture(set.atlas);
+    set.atlas = {0};
+    set.rects.clear();
+    for (auto &[key, font] : set.fonts) {
+      if (font.texture.id != 0)
+        UnloadFont(font);
+    }
+    set.fonts.clear();
+    set.requests.clear();
+    set.codepoints.clear();
+    set.atlasDirty = false;
+  }
 }
 
 void IconRendererResetDeviceCache() {
-  // The graphics device was re-initialized: every texture id this cache holds
-  // belongs to the dead device. Do NOT UnloadTexture — the ids may already be
-  // reused by the new device, and freeing them would destroy live textures.
-  // Registrations are kept implicitly: DrawMaterialIcon re-registers every
-  // icon it draws, so the atlas rebuilds on the next frame.
-  atlas_ = {0};
-  rects_.clear();
-  fonts_.clear();
-  requests_.clear();
-  codepoints_.clear();
-  atlasDirty_ = false;
+  // The graphics device was re-initialized: every texture id these caches
+  // hold belongs to the dead device. Do NOT UnloadTexture — the ids may
+  // already be reused by the new device, and freeing them would destroy live
+  // textures. Registrations are kept implicitly: DrawIcon re-registers every
+  // icon it draws, so each set's atlas rebuilds on the next frame.
+  for (auto &[name, set] : g_sets) {
+    set.atlas = {0};
+    set.rects.clear();
+    set.fonts.clear();
+    set.requests.clear();
+    set.codepoints.clear();
+    set.atlasDirty = false;
+  }
 }
 
 } // namespace raym3::v2

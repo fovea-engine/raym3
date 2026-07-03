@@ -4,6 +4,7 @@
 #include <raylib.h>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace raym3 {
 
@@ -50,7 +51,15 @@ public:
   // Named font registry — call RegisterFont once at startup, then reference
   // the name in CSS font-family or style.text.fontFamily.
   static void RegisterFont(const std::string &name, const std::string &path);
+  // Register a font family from raw bytes (TTF/OTF) instead of a path —
+  // needed for assets delivered as bytes (web MEMFS-less runtime load,
+  // Android APK asset bytes, or any RayactAsset.bytes() payload). FontManager
+  // copies the bytes into its own storage.
+  static void RegisterFontFromMemory(const std::string &name, std::vector<unsigned char> bytes);
   static Font LoadFontByFamily(const std::string &name, int size);
+
+  static bool HasFont(const std::string &name);
+  static std::vector<std::string> ListRegisteredFonts();
 
   static void UnloadFont(Font font);
 
@@ -68,10 +77,18 @@ private:
   static bool initialized_;
   static float dpiScale_;
 
-  // Custom font registry: name → file path
-  static std::unordered_map<std::string, std::string> fontRegistry_;
+  // Custom font registry: name → source (path or in-memory bytes)
+  struct FontSource {
+    std::string path;
+    std::vector<unsigned char> bytes;
+    bool isMemory = false;
+  };
+  static std::unordered_map<std::string, FontSource> fontRegistry_;
   // Custom font cache: "name:size" → Font
   static std::unordered_map<std::string, Font> customFontCache_;
+
+  static Font LoadCustomFontFromMemory(const std::vector<unsigned char> &bytes, int size);
+  static void InvalidateCustomFontCache(const std::string &name);
 };
 
 } // namespace raym3

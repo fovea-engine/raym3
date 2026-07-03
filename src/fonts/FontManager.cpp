@@ -9,7 +9,7 @@
 namespace raym3 {
 
 std::unordered_map<FontKey, Font, FontKeyHash> FontManager::fontCache_;
-std::unordered_map<std::string, std::string>   FontManager::fontRegistry_;
+std::unordered_map<std::string, FontManager::FontSource> FontManager::fontRegistry_;
 std::unordered_map<std::string, Font>           FontManager::customFontCache_;
 Font FontManager::defaultFont_ = {0};
 bool FontManager::initialized_ = false;
@@ -101,9 +101,7 @@ Font FontManager::LoadCustomFont(const std::string &path, int size) {
   return LoadFontEx(resolvedPath.c_str(), pxSize, nullptr, 0);
 }
 
-void FontManager::RegisterFont(const std::string &name, const std::string &path) {
-  fontRegistry_[name] = path;
-  // Invalidate any cached entries for this name
+void FontManager::InvalidateCustomFontCache(const std::string &name) {
   for (auto it = customFontCache_.begin(); it != customFontCache_.end(); ) {
     if (it->first.rfind(name + ":", 0) == 0) {
       if (it->second.texture.id != 0) UnloadFont(it->second);
@@ -112,6 +110,39 @@ void FontManager::RegisterFont(const std::string &name, const std::string &path)
       ++it;
     }
   }
+}
+
+void FontManager::RegisterFont(const std::string &name, const std::string &path) {
+  FontSource src;
+  src.path = path;
+  src.isMemory = false;
+  fontRegistry_[name] = std::move(src);
+  InvalidateCustomFontCache(name);
+}
+
+void FontManager::RegisterFontFromMemory(const std::string &name, std::vector<unsigned char> bytes) {
+  FontSource src;
+  src.bytes = std::move(bytes);
+  src.isMemory = true;
+  fontRegistry_[name] = std::move(src);
+  InvalidateCustomFontCache(name);
+}
+
+bool FontManager::HasFont(const std::string &name) {
+  return fontRegistry_.find(name) != fontRegistry_.end();
+}
+
+std::vector<std::string> FontManager::ListRegisteredFonts() {
+  std::vector<std::string> names;
+  names.reserve(fontRegistry_.size());
+  for (const auto &[name, src] : fontRegistry_) names.push_back(name);
+  return names;
+}
+
+Font FontManager::LoadCustomFontFromMemory(const std::vector<unsigned char> &bytes, int size) {
+  if (bytes.empty()) return {0};
+  const int pxSize = v2::Density::RasterPixels((float)size);
+  return LoadFontFromMemory(".ttf", bytes.data(), (int)bytes.size(), pxSize, nullptr, 0);
 }
 
 Font FontManager::LoadFontByFamily(const std::string &name, int size) {
@@ -126,10 +157,11 @@ Font FontManager::LoadFontByFamily(const std::string &name, int size) {
     return LoadFont(FontWeight::Regular, FontStyle::Normal, size);
   }
 
-  Font font = LoadCustomFont(reg->second, size);
+  Font font = reg->second.isMemory ? LoadCustomFontFromMemory(reg->second.bytes, size)
+                                   : LoadCustomFont(reg->second.path, size);
   if (font.texture.id == 0) {
-    fprintf(stderr, "FontManager: failed to load font '%s' from '%s'\n",
-            name.c_str(), reg->second.c_str());
+    fprintf(stderr, "FontManager: failed to load font '%s' (%s)\n", name.c_str(),
+            reg->second.isMemory ? "from memory" : reg->second.path.c_str());
     font = LoadFont(FontWeight::Regular, FontStyle::Normal, size);
   }
   customFontCache_[cacheKey] = font;

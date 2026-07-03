@@ -68,6 +68,20 @@ public:
 
   void ResetTextureCache();
 
+  // Register (or replace) the bundled CBDT/CBLC fallback emoji font from
+  // bytes instead of scanning for resources/fonts/NotoColorEmoji.ttf on disk
+  // — lets JS ship a smaller/newer/custom emoji font. Additive to the
+  // existing backend priority: still only used as the fallback when no OS
+  // rasterizer is available (never overrides SetRasterizer). Resets the
+  // resolved backend so the next Available()/GetCluster() call re-picks with
+  // the new bytes.
+  void RegisterCustomEmojiFont(std::vector<std::uint8_t> bytes);
+
+  enum class BackendKind { None, OsRasterizer, Bundled, Unresolved };
+  // Which backend is currently active (or would be chosen next) — useful for
+  // JS-side diagnostics / the loadEmoji() resolution value.
+  BackendKind ActiveBackend();
+
 private:
   EmojiFont() = default;
   void EnsureBackend();
@@ -82,6 +96,7 @@ private:
   bool LoadCbdtFont();
   bool fontParsed_ = false;
   std::vector<std::uint8_t> data_;
+  std::vector<std::uint8_t> customFontBytes_; // pre-seeded via RegisterCustomEmojiFont
 
   struct CmapRange {
     std::uint32_t start, end, startGlyph;
