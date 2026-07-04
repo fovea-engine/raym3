@@ -12,9 +12,9 @@
 #include <cmath>
 #include <cstring>
 #include <raylib.h>
-#include <utility>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace raym3::v2 {
@@ -25,6 +25,7 @@ constexpr float kFieldFontSize = 16.0f;
 constexpr float kLabelRestSize = 16.0f;
 constexpr float kLabelFloatSize = 12.0f;
 constexpr float kBasePadding = 8.0f;
+constexpr float kLineHeight = 20.0f;
 constexpr int kMaxUndoHistory = 32;
 
 static TextInputHostHooks &HostHooks() {
@@ -33,11 +34,13 @@ static TextInputHostHooks &HostHooks() {
         const char *clip = ::GetClipboardText();
         return clip ? std::string(clip) : std::string{};
       },
-      [](const std::string &text) { ::SetClipboardText(text.c_str()); }, []() {}};
+      [](const std::string &text) { ::SetClipboardText(text.c_str()); },
+      []() {}};
   return hooks;
 }
 
-static std::function<void(NodeId, const TextInputEditingState &)> &StateCallback() {
+static std::function<void(NodeId, const TextInputEditingState &)> &
+StateCallback() {
   static std::function<void(NodeId, const TextInputEditingState &)> cb;
   return cb;
 }
@@ -64,7 +67,9 @@ static void NormalizeSelection(int &start, int &end) {
     std::swap(start, end);
 }
 
-static bool IsUtf8ContinuationByte(unsigned char c) { return (c & 0xC0) == 0x80; }
+static bool IsUtf8ContinuationByte(unsigned char c) {
+  return (c & 0xC0) == 0x80;
+}
 
 static int Utf8SequenceLength(unsigned char lead) {
   if ((lead & 0x80) == 0x00)
@@ -84,7 +89,8 @@ static int Utf8Prev(const std::string &text, int pos) {
   pos = std::min(pos, static_cast<int>(text.size()));
   do {
     --pos;
-  } while (pos > 0 && IsUtf8ContinuationByte(static_cast<unsigned char>(text[pos])));
+  } while (pos > 0 &&
+           IsUtf8ContinuationByte(static_cast<unsigned char>(text[pos])));
   return pos;
 }
 
@@ -131,7 +137,8 @@ static bool IsWordByte(unsigned char c) {
 
 static int ClampUtf8Boundary(const std::string &text, int pos) {
   pos = std::clamp(pos, 0, static_cast<int>(text.size()));
-  while (pos > 0 && IsUtf8ContinuationByte(static_cast<unsigned char>(text[pos])))
+  while (pos > 0 &&
+         IsUtf8ContinuationByte(static_cast<unsigned char>(text[pos])))
     --pos;
   return pos;
 }
@@ -172,6 +179,78 @@ static std::string DisplayPrefix(const char *buffer, int bytePos,
   for (int i = 0; i < bytePos; i = Utf8Next(text, i))
     ++count;
   return std::string(static_cast<size_t>(count), '*');
+}
+
+static float MeasureDisplayText(std::string_view text) {
+  std::string materialized(text);
+  return raym3::Renderer::MeasureText(materialized.c_str(), kFieldFontSize,
+                                      FontWeight::Regular)
+      .x;
+}
+
+struct TextLineMetrics {
+  int start = 0;
+  int end = 0;       // Excludes the newline byte.
+  int nextStart = 0; // Includes the newline byte, when present.
+  float width = 0.0f;
+};
+
+static std::vector<TextLineMetrics> BuildLineMetrics(const char *buffer,
+                                                     bool passwordMode) {
+  std::string source = buffer ? buffer : "";
+  std::vector<TextLineMetrics> lines;
+  int len = static_cast<int>(source.size());
+  int start = 0;
+  for (int i = 0; i <= len; ++i) {
+    if (i == len || source[static_cast<size_t>(i)] == '\n') {
+      std::string slice = source.substr(static_cast<size_t>(start),
+                                        static_cast<size_t>(i - start));
+      std::string display =
+          passwordMode
+              ? std::string(static_cast<size_t>(Utf8CodepointCount(slice)), '*')
+              : slice;
+      lines.push_back(
+          {start, i, i < len ? i + 1 : i, MeasureDisplayText(display)});
+      start = i + 1;
+    }
+  }
+  if (lines.empty())
+    lines.push_back({0, 0, 0, 0.0f});
+  return lines;
+}
+
+static int LineIndexForOffset(const std::vector<TextLineMetrics> &lines,
+                              int byteOffset) {
+  for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+    if (byteOffset <= lines[static_cast<size_t>(i)].end ||
+        byteOffset < lines[static_cast<size_t>(i)].nextStart)
+      return i;
+  }
+  return std::max(0, static_cast<int>(lines.size()) - 1);
+}
+
+static float PrefixWidthOnLine(const char *buffer, int lineStart,
+                               int byteOffset, bool passwordMode) {
+  std::string source = buffer ? buffer : "";
+  byteOffset = ClampUtf8Boundary(source, byteOffset);
+  lineStart = std::clamp(lineStart, 0, byteOffset);
+  std::string slice =
+      source.substr(static_cast<size_t>(lineStart),
+                    static_cast<size_t>(byteOffset - lineStart));
+  if (passwordMode)
+    return MeasureDisplayText(
+        std::string(static_cast<size_t>(Utf8CodepointCount(slice)), '*'));
+  return MeasureDisplayText(slice);
+}
+
+static Vector2 TextOrigin(Rectangle inputBounds, bool multiline,
+                          int lineCount = 1) {
+  if (multiline) {
+    return {inputBounds.x + kBasePadding * 2.0f, inputBounds.y + kBasePadding};
+  }
+  float contentHeight = std::max(kFieldFontSize, lineCount * kLineHeight);
+  return {inputBounds.x + kBasePadding * 2.0f,
+          inputBounds.y + (inputBounds.height - contentHeight) * 0.5f};
 }
 
 static int GetPrevWordPos(const char *text, int pos) {
@@ -225,8 +304,8 @@ static void FindWordBoundaries(const char *text, int pos, int &start,
 
 static TextInputEditingState SnapshotEditingState(const Node &node) {
   const TextEditState &edit = node.textEdit;
-  const char *buffer = node.textInput.buffer ? node.textInput.buffer
-                                            : node.inputBuffer.data();
+  const char *buffer =
+      node.textInput.buffer ? node.textInput.buffer : node.inputBuffer.data();
   TextInputEditingState state;
   state.text = buffer ? std::string(buffer) : std::string{};
   state.selectionStart = edit.selectionStart;
@@ -243,8 +322,10 @@ static void NotifyTextInputState(Node &node, bool textChanged) {
   TextInputEditingState next = SnapshotEditingState(node);
   next.textChanged = textChanged;
   auto &last = Ctx().lastNotifiedTextInputState[id];
-  if (!textChanged && last.text == next.text && last.selectionStart == next.selectionStart &&
-      last.selectionEnd == next.selectionEnd && last.composingStart == next.composingStart &&
+  if (!textChanged && last.text == next.text &&
+      last.selectionStart == next.selectionStart &&
+      last.selectionEnd == next.selectionEnd &&
+      last.composingStart == next.composingStart &&
       last.composingEnd == next.composingEnd)
     return;
   last.text = next.text;
@@ -281,54 +362,82 @@ static void SaveToHistory(NodeId id, const std::string &text) {
     u.index = kMaxUndoHistory - 1;
 }
 
-static int HitTestCaret(const char *buffer, float clickRelativeX,
-                        bool passwordMode) {
-  int len = buffer ? static_cast<int>(std::strlen(buffer)) : 0;
-  int clickPosition = len;
+static int HitTestCaretOnLine(const char *buffer, float clickRelativeX,
+                              bool passwordMode, int lineStart, int lineEnd) {
   std::string source = buffer ? buffer : "";
-  if (len > 0) {
-    float closestDiff = 10000.0f;
-    int displayCount = 0;
-    for (int i = 0;; i = Utf8Next(source, i)) {
-      std::string sub = passwordMode ? std::string(static_cast<size_t>(displayCount), '*')
-                                      : source.substr(0, i);
-      Vector2 size = raym3::Renderer::MeasureText(
-          sub.c_str(), kFieldFontSize, FontWeight::Regular);
-      float diff = std::fabs(size.x - clickRelativeX);
-      if (diff < closestDiff) {
-        closestDiff = diff;
-        clickPosition = i;
-      }
-      if (i >= len)
-        break;
-      ++displayCount;
+  lineStart = std::clamp(lineStart, 0, static_cast<int>(source.size()));
+  lineEnd = std::clamp(lineEnd, lineStart, static_cast<int>(source.size()));
+  int clickPosition = lineEnd;
+  float closestDiff = 10000.0f;
+  int displayCount = 0;
+  for (int i = lineStart;; i = Utf8Next(source, i)) {
+    std::string sub = passwordMode
+                          ? std::string(static_cast<size_t>(displayCount), '*')
+                          : source.substr(static_cast<size_t>(lineStart),
+                                          static_cast<size_t>(i - lineStart));
+    float diff = std::fabs(MeasureDisplayText(sub) - clickRelativeX);
+    if (diff < closestDiff) {
+      closestDiff = diff;
+      clickPosition = i;
     }
+    if (i >= lineEnd)
+      break;
+    ++displayCount;
   }
   return clickPosition;
 }
 
+static int HitTestCaret(const char *buffer, float clickRelativeX,
+                        bool passwordMode) {
+  int len = buffer ? static_cast<int>(std::strlen(buffer)) : 0;
+  return HitTestCaretOnLine(buffer, clickRelativeX, passwordMode, 0, len);
+}
+
 static void DrawSelection(Rectangle inputBounds, const char *text, int start,
                           int end, float scrollOffset, float textStartX,
-                          bool passwordMode, const Color *overrideColor = nullptr) {
+                          bool passwordMode, bool multiline,
+                          float scrollOffsetY,
+                          const Color *overrideColor = nullptr) {
   if (start == -1 || end == -1 || start == end || !text)
     return;
   NormalizeSelection(start, end);
   ColorScheme &scheme = Theme::GetColorScheme();
-  std::string beforeStart = DisplayPrefix(text, start, passwordMode);
-  std::string beforeEnd = DisplayPrefix(text, end, passwordMode);
-  Vector2 startSize = raym3::Renderer::MeasureText(
-      beforeStart.c_str(), kFieldFontSize, FontWeight::Regular);
-  Vector2 endSize = raym3::Renderer::MeasureText(
-      beforeEnd.c_str(), kFieldFontSize, FontWeight::Regular);
-  float selectionX = inputBounds.x + textStartX - scrollOffset + startSize.x;
-  float selectionWidth = endSize.x - startSize.x;
-  float selectionY =
-      inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f;
   Color selectionColor = scheme.primary;
   selectionColor.a = 76;
-  if (overrideColor) selectionColor = *overrideColor; // RN selectionColor
-  DrawRectangleRec({selectionX, selectionY, selectionWidth, kFieldFontSize},
-                   selectionColor);
+  if (overrideColor)
+    selectionColor = *overrideColor; // RN selectionColor
+  if (!multiline) {
+    std::string beforeStart = DisplayPrefix(text, start, passwordMode);
+    std::string beforeEnd = DisplayPrefix(text, end, passwordMode);
+    float startX = MeasureDisplayText(beforeStart);
+    float endX = MeasureDisplayText(beforeEnd);
+    float selectionX = inputBounds.x + textStartX - scrollOffset + startX;
+    float selectionY =
+        inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f;
+    DrawRectangleRec({selectionX, selectionY, endX - startX, kFieldFontSize},
+                     selectionColor);
+    return;
+  }
+
+  std::vector<TextLineMetrics> lines = BuildLineMetrics(text, passwordMode);
+  Vector2 origin =
+      TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
+  for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+    const auto &line = lines[static_cast<size_t>(i)];
+    int lineSelStart = std::max(start, line.start);
+    int lineSelEnd = std::min(end, line.end);
+    if (lineSelStart == lineSelEnd && !(start <= line.end && end > line.end))
+      continue;
+    float sx = PrefixWidthOnLine(text, line.start, lineSelStart, passwordMode);
+    float ex =
+        (end > line.end && line.nextStart > line.end)
+            ? std::max(line.width + 4.0f, sx + 4.0f)
+            : PrefixWidthOnLine(text, line.start, lineSelEnd, passwordMode);
+    DrawRectangleRec({origin.x - scrollOffset + sx,
+                      origin.y - scrollOffsetY + i * kLineHeight,
+                      std::max(1.0f, ex - sx), kFieldFontSize},
+                     selectionColor);
+  }
 }
 
 static void DrawComposingUnderline(Rectangle inputBounds, const char *text,
@@ -355,7 +464,8 @@ static void DrawComposingUnderline(Rectangle inputBounds, const char *text,
 
 static void DrawCursor(Rectangle inputBounds, const char *text, int position,
                        float scrollOffset, float lastBlinkTime,
-                       float textStartX, Color bgColor, bool passwordMode) {
+                       float textStartX, Color bgColor, bool passwordMode,
+                       bool multiline, float scrollOffsetY) {
   float blinkCycle = (GetTime() - lastBlinkTime) * 2.0f;
   bool showCursor = (static_cast<int>(blinkCycle) % 2 == 0) ||
                     IsKeyDown(KEY_BACKSPACE) || IsKeyDown(KEY_DELETE) ||
@@ -364,14 +474,22 @@ static void DrawCursor(Rectangle inputBounds, const char *text, int position,
     return;
 
   float cursorX = inputBounds.x + textStartX - scrollOffset;
-  if (text && position > 0) {
+  float cursorY = inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f;
+  if (multiline && text) {
+    std::vector<TextLineMetrics> lines = BuildLineMetrics(text, passwordMode);
+    int lineIndex = LineIndexForOffset(lines, position);
+    const auto &line = lines[static_cast<size_t>(lineIndex)];
+    Vector2 origin =
+        TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
+    cursorX = origin.x - scrollOffset +
+              PrefixWidthOnLine(text, line.start, position, passwordMode);
+    cursorY = origin.y - scrollOffsetY + lineIndex * kLineHeight;
+  } else if (text && position > 0) {
     int textLen = static_cast<int>(std::strlen(text));
     int pos = std::min(position, textLen);
     if (pos > 0) {
       std::string before = DisplayPrefix(text, pos, passwordMode);
-      Vector2 textSize = raym3::Renderer::MeasureText(
-          before.c_str(), kFieldFontSize, FontWeight::Regular);
-      cursorX += textSize.x;
+      cursorX += MeasureDisplayText(before);
     }
   }
 
@@ -381,7 +499,6 @@ static void DrawCursor(Rectangle inputBounds, const char *text, int position,
         (0.299f * bgColor.r + 0.587f * bgColor.g + 0.114f * bgColor.b) / 255.0f;
     cursorColor = luminance > 0.5f ? BLACK : WHITE;
   }
-  float cursorY = inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f;
   DrawLine(static_cast<int>(cursorX), static_cast<int>(cursorY),
            static_cast<int>(cursorX),
            static_cast<int>(cursorY + kFieldFontSize), cursorColor);
@@ -404,6 +521,46 @@ static void SyncScrollForCaret(Node &node, char *buffer, float textStartX,
       display.c_str(), kFieldFontSize, FontWeight::Regular);
   float maxScroll = std::max(0.0f, totalSize.x - availableWidth);
   edit.scrollOffsetX = std::clamp(edit.scrollOffsetX, 0.0f, maxScroll);
+}
+
+static void SyncScrollForCaret(Node &node, char *buffer, Rectangle inputBounds,
+                               bool passwordMode) {
+  TextEditState &edit = node.textEdit;
+  float textStartX = inputBounds.x + kBasePadding * 2.0f;
+  float textEndX = inputBounds.x + inputBounds.width - kBasePadding * 2.0f;
+  if (!node.textInput.multiline) {
+    edit.scrollOffsetY = 0.0f;
+    SyncScrollForCaret(node, buffer, textStartX, textEndX, passwordMode);
+    return;
+  }
+
+  std::vector<TextLineMetrics> lines = BuildLineMetrics(buffer, passwordMode);
+  int lineIndex = LineIndexForOffset(lines, edit.cursor);
+  const auto &line = lines[static_cast<size_t>(lineIndex)];
+  float availableWidth = std::max(1.0f, textEndX - textStartX);
+  float cursorX =
+      PrefixWidthOnLine(buffer, line.start, edit.cursor, passwordMode);
+  if (cursorX - edit.scrollOffsetX > availableWidth)
+    edit.scrollOffsetX = cursorX - availableWidth;
+  else if (cursorX - edit.scrollOffsetX < 0.0f)
+    edit.scrollOffsetX = cursorX;
+  float maxLineWidth = 0.0f;
+  for (const auto &candidate : lines)
+    maxLineWidth = std::max(maxLineWidth, candidate.width);
+  edit.scrollOffsetX = std::clamp(
+      edit.scrollOffsetX, 0.0f, std::max(0.0f, maxLineWidth - availableWidth));
+
+  float contentHeight = lines.size() * kLineHeight;
+  float caretTop = lineIndex * kLineHeight;
+  float caretBottom = caretTop + kLineHeight;
+  float visibleHeight =
+      std::max(1.0f, inputBounds.height - kBasePadding * 2.0f);
+  if (caretBottom - edit.scrollOffsetY > visibleHeight)
+    edit.scrollOffsetY = caretBottom - visibleHeight;
+  else if (caretTop - edit.scrollOffsetY < 0.0f)
+    edit.scrollOffsetY = caretTop;
+  edit.scrollOffsetY = std::clamp(
+      edit.scrollOffsetY, 0.0f, std::max(0.0f, contentHeight - visibleHeight));
 }
 
 static Rectangle InputBoundsFor(Node &node) {
@@ -459,9 +616,19 @@ static void HandlePointer(Node &node, const PointerInput &p) {
   float textEndX = inputBounds.x + inputBounds.width - kBasePadding * 2.0f;
   bool passwordMode = node.textInput.passwordMode;
 
-  auto caretAt = [&](float screenX) {
+  auto caretAt = [&](float screenX, float screenY) {
     float clickRelativeX = screenX - (textStartX - edit.scrollOffsetX);
-    return HitTestCaret(buffer, clickRelativeX, passwordMode);
+    if (!node.textInput.multiline)
+      return HitTestCaret(buffer, clickRelativeX, passwordMode);
+    std::vector<TextLineMetrics> lines = BuildLineMetrics(buffer, passwordMode);
+    Vector2 origin =
+        TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
+    int lineIndex = static_cast<int>(
+        std::floor((screenY - origin.y + edit.scrollOffsetY) / kLineHeight));
+    lineIndex = std::clamp(lineIndex, 0, static_cast<int>(lines.size()) - 1);
+    const auto &line = lines[static_cast<size_t>(lineIndex)];
+    return HitTestCaretOnLine(buffer, clickRelativeX, passwordMode, line.start,
+                              line.end);
   };
 
   if (p.pressed) {
@@ -473,7 +640,7 @@ static void HandlePointer(Node &node, const PointerInput &p) {
       return;
     }
     double now = GetTime();
-    int pos = caretAt(p.pos.x);
+    int pos = caretAt(p.pos.x, p.pos.y);
     bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
 
     if (shift) {
@@ -535,8 +702,8 @@ static void HandlePointer(Node &node, const PointerInput &p) {
       dt = 0.016f;
     // Auto-scroll while dragging past the field edges.
     if (p.pos.x < textStartX) {
-      edit.scrollOffsetX = std::max(
-          0.0f, edit.scrollOffsetX - kSelectionAutoScrollSpeed * dt);
+      edit.scrollOffsetX =
+          std::max(0.0f, edit.scrollOffsetX - kSelectionAutoScrollSpeed * dt);
     } else if (p.pos.x > textEndX) {
       std::string display = DisplayText(buffer, passwordMode);
       Vector2 totalSize = raym3::Renderer::MeasureText(
@@ -545,7 +712,7 @@ static void HandlePointer(Node &node, const PointerInput &p) {
       edit.scrollOffsetX = std::min(
           maxScroll, edit.scrollOffsetX + kSelectionAutoScrollSpeed * dt);
     }
-    int pos = caretAt(std::clamp(p.pos.x, textStartX, textEndX));
+    int pos = caretAt(std::clamp(p.pos.x, textStartX, textEndX), p.pos.y);
     if (edit.longPressActive && GetTime() - edit.longPressStartTime > 0.45) {
       int start = 0;
       int end = 0;
@@ -693,8 +860,10 @@ static void ProcessKeyboard(Node &node) {
   }
 
   if (cmd && IsKeyPressed(KEY_V)) {
-    std::string clip = HostHooks().getClipboardText ? HostHooks().getClipboardText()
-                                                    : std::string(GetClipboardText() ? GetClipboardText() : "");
+    std::string clip =
+        HostHooks().getClipboardText
+            ? HostHooks().getClipboardText()
+            : std::string(GetClipboardText() ? GetClipboardText() : "");
     const char *clipText = clip.c_str();
     if (clipText && clipText[0]) {
       SaveToHistory(id, buffer);
@@ -708,8 +877,10 @@ static void ProcessKeyboard(Node &node) {
       if (node.textInput.maxLength > 0) {
         int have = Utf8CodepointCount(std::string(buffer));
         int room = node.textInput.maxLength - have;
-        if (room <= 0) { clip.clear(); clipText = clip.c_str(); }
-        else if (Utf8CodepointCount(clip) > room) {
+        if (room <= 0) {
+          clip.clear();
+          clipText = clip.c_str();
+        } else if (Utf8CodepointCount(clip) > room) {
           int bytePos = 0, cps = 0;
           for (; bytePos < static_cast<int>(clip.size()) && cps < room;
                bytePos = Utf8Next(clip, bytePos))
@@ -726,7 +897,8 @@ static void ProcessKeyboard(Node &node) {
         if (edit.cursor < len)
           std::memmove(&buffer[edit.cursor + toCopy], &buffer[edit.cursor],
                        static_cast<size_t>(len - edit.cursor + 1));
-        std::memcpy(&buffer[edit.cursor], clipText, static_cast<size_t>(toCopy));
+        std::memcpy(&buffer[edit.cursor], clipText,
+                    static_cast<size_t>(toCopy));
         edit.cursor += toCopy;
         edit.selectionStart = edit.selectionEnd = -1;
         edit.lastBlinkTime = static_cast<float>(GetTime());
@@ -788,8 +960,7 @@ static void ProcessKeyboard(Node &node) {
     if (!shouldMove && GetTime() > edit.arrowLeftTimer)
       shouldMove = true;
     if (shouldMove) {
-      edit.arrowLeftTimer =
-          GetTime() + (IsKeyPressed(KEY_LEFT) ? 0.5 : 0.05);
+      edit.arrowLeftTimer = GetTime() + (IsKeyPressed(KEY_LEFT) ? 0.5 : 0.05);
       edit.lastBlinkTime = static_cast<float>(GetTime());
       int target = edit.cursor;
       if (!shift && edit.selectionStart != -1) {
@@ -825,8 +996,7 @@ static void ProcessKeyboard(Node &node) {
     if (!shouldMove && GetTime() > edit.arrowRightTimer)
       shouldMove = true;
     if (shouldMove) {
-      edit.arrowRightTimer =
-          GetTime() + (IsKeyPressed(KEY_RIGHT) ? 0.5 : 0.05);
+      edit.arrowRightTimer = GetTime() + (IsKeyPressed(KEY_RIGHT) ? 0.5 : 0.05);
       edit.lastBlinkTime = static_cast<float>(GetTime());
       int len = static_cast<int>(std::strlen(buffer));
       int target = edit.cursor;
@@ -858,9 +1028,46 @@ static void ProcessKeyboard(Node &node) {
     }
   }
 
+  if (node.textInput.multiline &&
+      (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_DOWN))) {
+    std::vector<TextLineMetrics> lines =
+        BuildLineMetrics(buffer, node.textInput.passwordMode);
+    int lineIndex = LineIndexForOffset(lines, edit.cursor);
+    const auto &line = lines[static_cast<size_t>(lineIndex)];
+    float currentX = PrefixWidthOnLine(buffer, line.start, edit.cursor,
+                                       node.textInput.passwordMode);
+    int nextLine =
+        IsKeyPressed(KEY_UP)
+            ? std::max(0, lineIndex - 1)
+            : std::min(static_cast<int>(lines.size()) - 1, lineIndex + 1);
+    const auto &targetLine = lines[static_cast<size_t>(nextLine)];
+    int target =
+        HitTestCaretOnLine(buffer, currentX, node.textInput.passwordMode,
+                           targetLine.start, targetLine.end);
+    if (shift) {
+      if (edit.selectionStart == -1)
+        edit.selectionStart = edit.cursor;
+      edit.selectionEnd = target;
+    } else {
+      edit.selectionStart = edit.selectionEnd = -1;
+    }
+    edit.cursor = target;
+    edit.composingStart = edit.composingEnd = -1;
+    edit.lastBlinkTime = static_cast<float>(GetTime());
+    HideSelectionOverlay(node);
+    NotifyTextInputState(node, false);
+    return;
+  }
+
   if (IsKeyPressed(KEY_HOME)) {
     edit.lastBlinkTime = static_cast<float>(GetTime());
     int target = 0;
+    if (node.textInput.multiline && !cmd) {
+      auto lines = BuildLineMetrics(buffer, node.textInput.passwordMode);
+      target =
+          lines[static_cast<size_t>(LineIndexForOffset(lines, edit.cursor))]
+              .start;
+    }
     if (shift) {
       if (edit.selectionStart == -1)
         edit.selectionStart = edit.cursor;
@@ -878,6 +1085,12 @@ static void ProcessKeyboard(Node &node) {
   if (IsKeyPressed(KEY_END)) {
     edit.lastBlinkTime = static_cast<float>(GetTime());
     int target = static_cast<int>(std::strlen(buffer));
+    if (node.textInput.multiline && !cmd) {
+      auto lines = BuildLineMetrics(buffer, node.textInput.passwordMode);
+      target =
+          lines[static_cast<size_t>(LineIndexForOffset(lines, edit.cursor))]
+              .end;
+    }
     if (shift) {
       if (edit.selectionStart == -1)
         edit.selectionStart = edit.cursor;
@@ -990,7 +1203,8 @@ static void ProcessKeyboard(Node &node) {
         if (edit.cursor < len)
           std::memmove(&buffer[edit.cursor + insertLen], &buffer[edit.cursor],
                        static_cast<size_t>(len - edit.cursor + 1));
-        std::memcpy(&buffer[edit.cursor], insert.data(), static_cast<size_t>(insertLen));
+        std::memcpy(&buffer[edit.cursor], insert.data(),
+                    static_cast<size_t>(insertLen));
         edit.cursor += insertLen;
       }
       edit.lastBlinkTime = static_cast<float>(GetTime());
@@ -1003,7 +1217,6 @@ static void ProcessKeyboard(Node &node) {
   }
 }
 
-
 } // namespace
 
 void ResyncTextInputBuffer(NodeId nodeId, int cursorPos) {
@@ -1012,7 +1225,9 @@ void ResyncTextInputBuffer(NodeId nodeId, int cursorPos) {
   Ctx().lastNotifiedTextInputState.erase(nodeId);
 }
 
-void SetTextInputHostHooks(TextInputHostHooks hooks) { HostHooks() = std::move(hooks); }
+void SetTextInputHostHooks(TextInputHostHooks hooks) {
+  HostHooks() = std::move(hooks);
+}
 
 void SetTextInputStateCallback(
     std::function<void(NodeId, const TextInputEditingState &)> cb) {
@@ -1038,12 +1253,33 @@ float TextInputByteOffsetX(Node &node, int byteOffset) {
   if (!buffer)
     return node.layout.x;
   Rectangle inputBounds = InputBoundsFor(node);
+  if (node.textInput.multiline) {
+    auto lines = BuildLineMetrics(buffer, node.textInput.passwordMode);
+    int lineIndex = LineIndexForOffset(lines, byteOffset);
+    const auto &line = lines[static_cast<size_t>(lineIndex)];
+    Vector2 origin =
+        TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
+    return origin.x - node.textEdit.scrollOffsetX +
+           PrefixWidthOnLine(buffer, line.start, byteOffset,
+                             node.textInput.passwordMode);
+  }
   float textStartX = inputBounds.x + kBasePadding * 2.0f;
   std::string prefix =
       DisplayPrefix(buffer, byteOffset, node.textInput.passwordMode);
-  Vector2 size = raym3::Renderer::MeasureText(prefix.c_str(), kFieldFontSize,
-                                              FontWeight::Regular);
-  return textStartX - node.textEdit.scrollOffsetX + size.x;
+  return textStartX - node.textEdit.scrollOffsetX + MeasureDisplayText(prefix);
+}
+
+float TextInputByteOffsetY(Node &node, int byteOffset) {
+  Rectangle inputBounds = InputBoundsFor(node);
+  char *buffer = TextBuffer(node);
+  if (!buffer || !node.textInput.multiline)
+    return inputBounds.y + inputBounds.height * 0.5f;
+  auto lines = BuildLineMetrics(buffer, node.textInput.passwordMode);
+  int lineIndex = LineIndexForOffset(lines, byteOffset);
+  Vector2 origin =
+      TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
+  return origin.y - node.textEdit.scrollOffsetY + lineIndex * kLineHeight +
+         kFieldFontSize * 0.5f;
 }
 
 void TextInputNotifyEditingState(Node &node, bool textChanged) {
@@ -1105,8 +1341,9 @@ bool TextInputCut(Node &node) {
 bool TextInputPaste(Node &node) {
   if (node.textInput.readOnly || node.textInput.disabled || node.disabled)
     return false;
-  std::string clip =
-      HostHooks().getClipboardText ? HostHooks().getClipboardText() : std::string{};
+  std::string clip = HostHooks().getClipboardText
+                         ? HostHooks().getClipboardText()
+                         : std::string{};
   if (clip.empty())
     return false;
   return TextInputReplaceSelection(node, clip);
@@ -1135,11 +1372,13 @@ bool TextInputReplaceSelection(Node &node, const std::string &text,
     current.resize(static_cast<size_t>(bufferSize - 1));
   std::fill(buffer, buffer + bufferSize, '\0');
   std::memcpy(buffer, current.data(), current.size());
-  int insertedEnd = ClampUtf8Boundary(current, s + static_cast<int>(text.size()));
+  int insertedEnd =
+      ClampUtf8Boundary(current, s + static_cast<int>(text.size()));
   node.textEdit.cursor = insertedEnd;
   node.textEdit.selectionStart = node.textEdit.selectionEnd = -1;
   if (composingStart >= 0 && composingEnd >= composingStart) {
-    node.textEdit.composingStart = ClampUtf8Boundary(current, s + composingStart);
+    node.textEdit.composingStart =
+        ClampUtf8Boundary(current, s + composingStart);
     node.textEdit.composingEnd = ClampUtf8Boundary(current, s + composingEnd);
   } else {
     node.textEdit.composingStart = node.textEdit.composingEnd = -1;
@@ -1194,12 +1433,11 @@ void ResolveTextInput(const NodePtr &root) {
     NodePtr prev = Ctx().lastFocusedTextInput != 0
                        ? FindNodeById(root, Ctx().lastFocusedTextInput)
                        : nullptr;
-    NodePtr next =
-        focused != 0 ? FindNodeById(root, focused) : nullptr;
+    NodePtr next = focused != 0 ? FindNodeById(root, focused) : nullptr;
 
-    const bool switchingField =
-        prev && prev->kind == NodeKind::TextInput && next &&
-        next->kind == NodeKind::TextInput && IdOf(prev) != IdOf(next);
+    const bool switchingField = prev && prev->kind == NodeKind::TextInput &&
+                                next && next->kind == NodeKind::TextInput &&
+                                IdOf(prev) != IdOf(next);
 
     // Gain focus (and IME switch) before blur so onBlur can see the new field.
     if (next && next->kind == NodeKind::TextInput) {
@@ -1306,8 +1544,7 @@ void PaintTextInput(Node &node) {
     float dtl = GetFrameTime();
     if (dtl <= 0.0f || dtl > 0.1f)
       dtl = 0.016f;
-    edit.labelAnim +=
-        (target - edit.labelAnim) * std::min(1.0f, dtl * 16.0f);
+    edit.labelAnim += (target - edit.labelAnim) * std::min(1.0f, dtl * 16.0f);
     float a = edit.labelAnim;
     float restY = inputBounds.y + (inputBounds.height - kLabelRestSize) / 2.0f;
     float ly = restY + (bounds.y - restY) * a;
@@ -1344,29 +1581,40 @@ void PaintTextInput(Node &node) {
   if (ti.drawOutline) {
     if (ti.variant == TextFieldVariant::Outlined) {
       raym3::Renderer::DrawRoundedRectangleEx(inputBounds, cornerRadius,
-                                            outlineColor, outlineWidth);
+                                              outlineColor, outlineWidth);
     } else {
-      DrawRectangleRec(
-          {inputBounds.x, inputBounds.y + inputBounds.height - outlineWidth,
-           inputBounds.width, outlineWidth},
-          outlineColor);
+      DrawRectangleRec({inputBounds.x,
+                        inputBounds.y + inputBounds.height - outlineWidth,
+                        inputBounds.width, outlineWidth},
+                       outlineColor);
     }
   }
 
   float textStartX = inputBounds.x + kBasePadding * 2.0f;
   float textEndX = inputBounds.x + inputBounds.width - kBasePadding * 2.0f;
   if (isFocused)
-    SyncScrollForCaret(node, buffer, textStartX, textEndX, ti.passwordMode);
+    SyncScrollForCaret(node, buffer, inputBounds, ti.passwordMode);
   else {
-    std::string display = DisplayText(buffer, ti.passwordMode);
-    Vector2 totalSize = raym3::Renderer::MeasureText(
-        display.c_str(), kFieldFontSize, FontWeight::Regular);
     float availableWidth = textEndX - textStartX;
-    edit.scrollOffsetX =
-        totalSize.x > availableWidth ? totalSize.x - availableWidth : 0.0f;
+    if (ti.multiline) {
+      auto lines = BuildLineMetrics(buffer, ti.passwordMode);
+      float maxLineWidth = 0.0f;
+      for (const auto &line : lines)
+        maxLineWidth = std::max(maxLineWidth, line.width);
+      edit.scrollOffsetX =
+          maxLineWidth > availableWidth ? maxLineWidth - availableWidth : 0.0f;
+      edit.scrollOffsetY = 0.0f;
+    } else {
+      std::string display = DisplayText(buffer, ti.passwordMode);
+      float totalWidth = MeasureDisplayText(display);
+      edit.scrollOffsetX =
+          totalWidth > availableWidth ? totalWidth - availableWidth : 0.0f;
+      edit.scrollOffsetY = 0.0f;
+    }
   }
 
   float currentScroll = edit.scrollOffsetX;
+  float currentScrollY = edit.scrollOffsetY;
   int scissorW = static_cast<int>(std::ceil(textEndX - textStartX));
   int scissorH = static_cast<int>(std::ceil(inputBounds.height));
   bool scissorActive = false;
@@ -1379,35 +1627,63 @@ void PaintTextInput(Node &node) {
   if (isFocused) {
     DrawSelection(inputBounds, buffer, edit.selectionStart, edit.selectionEnd,
                   currentScroll, textStartX - inputBounds.x, ti.passwordMode,
+                  ti.multiline, currentScrollY,
                   ti.hasSelectionColor ? &ti.selectionColor : nullptr);
-    DrawComposingUnderline(inputBounds, buffer, edit.composingStart,
-                           edit.composingEnd, currentScroll,
-                           textStartX - inputBounds.x, ti.passwordMode);
+    if (!ti.multiline) {
+      DrawComposingUnderline(inputBounds, buffer, edit.composingStart,
+                             edit.composingEnd, currentScroll,
+                             textStartX - inputBounds.x, ti.passwordMode);
+    }
   }
 
   bool isEmpty = buffer[0] == '\0';
   bool showPlaceholder = isEmpty && !ti.placeholder.empty() && !label;
+  auto lines = BuildLineMetrics(buffer, ti.passwordMode);
+  Vector2 origin =
+      TextOrigin(inputBounds, ti.multiline, static_cast<int>(lines.size()));
   Vector2 textPos = {textStartX - currentScroll,
-                     inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f};
+                     inputBounds.y +
+                         (inputBounds.height - kFieldFontSize) / 2.0f};
+  if (ti.multiline)
+    textPos = {origin.x - currentScroll, origin.y - currentScrollY};
   Color textColor = style.text.color.value_or(scheme.onSurface);
 
   if (showPlaceholder) {
     Color ph = scheme.onSurfaceVariant;
     ph.a = 180;
-    if (ti.hasPlaceholderColor) ph = ti.placeholderColor; // RN placeholderTextColor
+    if (ti.hasPlaceholderColor)
+      ph = ti.placeholderColor; // RN placeholderTextColor
     raym3::Renderer::DrawText(ti.placeholder.c_str(), textPos, kFieldFontSize,
                               ph, FontWeight::Regular);
   } else if (!isEmpty) {
-    std::string masked = DisplayText(buffer, ti.passwordMode);
-    raym3::Renderer::DrawText(masked.c_str(), textPos, kFieldFontSize,
-                              textColor, FontWeight::Regular);
+    if (ti.multiline) {
+      for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+        const auto &line = lines[static_cast<size_t>(i)];
+        std::string source(buffer);
+        std::string slice =
+            source.substr(static_cast<size_t>(line.start),
+                          static_cast<size_t>(line.end - line.start));
+        std::string display =
+            ti.passwordMode
+                ? std::string(static_cast<size_t>(Utf8CodepointCount(slice)),
+                              '*')
+                : slice;
+        raym3::Renderer::DrawText(
+            display.c_str(), {textPos.x, textPos.y + i * kLineHeight},
+            kFieldFontSize, textColor, FontWeight::Regular);
+      }
+    } else {
+      std::string masked = DisplayText(buffer, ti.passwordMode);
+      raym3::Renderer::DrawText(masked.c_str(), textPos, kFieldFontSize,
+                                textColor, FontWeight::Regular);
+    }
   }
 
   // RN caretHidden suppresses the blinking cursor.
   if (isFocused && !ti.readOnly && !ti.caretHidden) {
     DrawCursor(inputBounds, buffer, edit.cursor, currentScroll,
                edit.lastBlinkTime, textStartX - inputBounds.x, bgColor,
-               ti.passwordMode);
+               ti.passwordMode, ti.multiline, currentScrollY);
   }
 
   if (scissorActive)

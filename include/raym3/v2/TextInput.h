@@ -35,14 +35,14 @@ void SetTextInputStateCallback(
 Rectangle TextInputInputBounds(Node &node);
 int TextInputHitTestCaret(Node &node, float screenX);
 float TextInputByteOffsetX(Node &node, int byteOffset);
+float TextInputByteOffsetY(Node &node, int byteOffset);
 void TextInputSetSelection(Node &node, int start, int end, int cursor);
 void TextInputSelectAll(Node &node);
 bool TextInputCopy(Node &node);
 bool TextInputCut(Node &node);
 bool TextInputPaste(Node &node);
 bool TextInputReplaceSelection(Node &node, const std::string &text,
-                               int composingStart = -1,
-                               int composingEnd = -1);
+                               int composingStart = -1, int composingEnd = -1);
 void TextInputSetEditingState(Node &node, const std::string &text,
                               int selectionStart, int selectionEnd,
                               int composingStart, int composingEnd,

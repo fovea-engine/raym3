@@ -41,14 +41,8 @@ bool HasSelection(Node &node, int &start, int &end) {
   return true;
 }
 
-float TextMidY(Node &node) {
-  Rectangle input = TextInputInputBounds(node);
-  return input.y + input.height * 0.5f;
-}
-
 Rectangle HandleHitRect(float x, float y) {
-  return {x - kHandleHit * 0.5f, y - kHandleHit * 0.5f, kHandleHit,
-          kHandleHit};
+  return {x - kHandleHit * 0.5f, y - kHandleHit * 0.5f, kHandleHit, kHandleHit};
 }
 
 Rectangle ToolbarRect(Node &node) {
@@ -56,8 +50,9 @@ Rectangle ToolbarRect(Node &node) {
   int end = 0;
   bool hasSelection = HasSelection(node, start, end);
   Rectangle input = TextInputInputBounds(node);
-  float startX = hasSelection ? TextInputByteOffsetX(node, start)
-                              : TextInputByteOffsetX(node, node.textEdit.cursor);
+  float startX = hasSelection
+                     ? TextInputByteOffsetX(node, start)
+                     : TextInputByteOffsetX(node, node.textEdit.cursor);
   float endX = hasSelection ? TextInputByteOffsetX(node, end) : startX;
   float centerX = (startX + endX) * 0.5f;
   const float widths[] = {42, 50, 54, 74};
@@ -125,11 +120,14 @@ bool HandleTextSelectionOverlayInput(const NodePtr &root) {
   int start = 0;
   int end = 0;
   bool hasSelection = HasSelection(*node, start, end);
-  bool visible = edit.handlesVisible || edit.toolbarVisible || edit.activeHandle >= 0;
+  bool visible =
+      edit.handlesVisible || edit.toolbarVisible || edit.activeHandle >= 0;
   if (!visible)
     return false;
 
-  float y = TextMidY(*node);
+  float startY = hasSelection ? TextInputByteOffsetY(*node, start)
+                              : TextInputByteOffsetY(*node, edit.cursor);
+  float endY = hasSelection ? TextInputByteOffsetY(*node, end) : startY;
   float startX = hasSelection ? TextInputByteOffsetX(*node, start)
                               : TextInputByteOffsetX(*node, edit.cursor);
   float endX = hasSelection ? TextInputByteOffsetX(*node, end) : startX;
@@ -149,12 +147,13 @@ bool HandleTextSelectionOverlayInput(const NodePtr &root) {
       return true;
     }
     if (hasSelection &&
-        CheckCollisionPointRec(p.pos, HandleHitRect(startX, y + kHandleStem))) {
+        CheckCollisionPointRec(p.pos,
+                               HandleHitRect(startX, startY + kHandleStem))) {
       edit.activeHandle = 0;
       return true;
     }
-    if (hasSelection &&
-        CheckCollisionPointRec(p.pos, HandleHitRect(endX, y + kHandleStem))) {
+    if (hasSelection && CheckCollisionPointRec(
+                            p.pos, HandleHitRect(endX, endY + kHandleStem))) {
       edit.activeHandle = 1;
       return true;
     }
@@ -201,9 +200,10 @@ void PaintTextSelectionOverlay(const NodePtr &root) {
   int end = 0;
   bool hasSelection = HasSelection(*node, start, end);
   if (node->textEdit.handlesVisible && hasSelection) {
-    float y = TextMidY(*node);
-    DrawHandle(TextInputByteOffsetX(*node, start), y, true);
-    DrawHandle(TextInputByteOffsetX(*node, end), y, false);
+    DrawHandle(TextInputByteOffsetX(*node, start),
+               TextInputByteOffsetY(*node, start), true);
+    DrawHandle(TextInputByteOffsetX(*node, end),
+               TextInputByteOffsetY(*node, end), false);
   }
   PaintToolbar(*node);
 }

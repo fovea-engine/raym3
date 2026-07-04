@@ -30,9 +30,18 @@ enum class NodeKind {
 // Marks containers that need post-layout decoration the flexbox model can't
 // express on its own (e.g. a tab's active indicator that slides between the
 // selected child's bounds).
-enum class NodeRole { None, Tabs, NavItem, NavigationBar, NavigationRail,
-                      ButtonGroupContainer, ButtonGroupConnected, SplitButton,
-                      BottomSheet, AppBar };
+enum class NodeRole {
+  None,
+  Tabs,
+  NavItem,
+  NavigationBar,
+  NavigationRail,
+  ButtonGroupContainer,
+  ButtonGroupConnected,
+  SplitButton,
+  BottomSheet,
+  AppBar
+};
 
 enum class PopoverPlacement { Auto, Below, Above };
 
@@ -104,7 +113,8 @@ struct TextInputProps {
   bool drawBackground = true;
   bool drawOutline = true;
   // When false, the borderless field paints no self hover/focus highlight; the
-  // parent (e.g. a search bar) owns the single state layer. See TextFieldOptions.
+  // parent (e.g. a search bar) owns the single state layer. See
+  // TextFieldOptions.
   bool drawStateLayer = true;
   std::function<void(const std::string &)> onChange;
   std::function<void()> onFocus;
@@ -166,6 +176,7 @@ struct TextEditState {
   int composingStart = -1;
   int composingEnd = -1;
   float scrollOffsetX = 0.0f;
+  float scrollOffsetY = 0.0f;
   float labelAnim = 0.0f;
   float lastBlinkTime = 0.0f;
   double backspaceTimer = 0.0;
@@ -217,8 +228,8 @@ public:
 
   Rectangle layout = {0, 0, 0, 0};
   Rectangle previousLayout = {0, 0, 0, 0};
-  // Animation state — interpolated per-frame, persists across frames because the
-  // node tree is retained. animStateAlpha eases the state-layer opacity (M3
+  // Animation state — interpolated per-frame, persists across frames because
+  // the node tree is retained. animStateAlpha eases the state-layer opacity (M3
   // state layers cross-fade rather than snap); animSelect eases selection
   // transitions (switch thumb, tab indicator, checkbox check).
   float animStateAlpha = 0.0f;
@@ -262,7 +273,7 @@ public:
   // Pretext-style two-phase text cache: prepare once (segment + measure),
   // layout many times (pure arithmetic). Invalidated when text or font changes.
   mutable std::optional<PreparedText> preparedTextCache;
-  mutable std::string  preparedTextKey;   // text + fontSize + weight fingerprint
+  mutable std::string preparedTextKey; // text + fontSize + weight fingerprint
 
   bool inNavigationRail = false;
   bool inNavigationBar = false;
@@ -293,10 +304,10 @@ public:
   std::function<void()> onLongPress;
   std::function<void()> onHoverIn;
   std::function<void()> onHoverOut;
-  std::function<void(Vector2)> onHoverMove;   // pointer pos (dp)
-  std::function<void(Vector2)> onDragStart;   // start pos (dp)
-  std::function<void(Vector2)> onDragMove;    // delta since start (dp)
-  std::function<void(Vector2)> onDragEnd;     // final delta (dp)
+  std::function<void(Vector2)> onHoverMove; // pointer pos (dp)
+  std::function<void(Vector2)> onDragStart; // start pos (dp)
+  std::function<void(Vector2)> onDragMove;  // delta since start (dp)
+  std::function<void(Vector2)> onDragEnd;   // final delta (dp)
 
   // --- Layout reporting + focus + accessibility ---
   std::function<void(Rectangle)> onLayout; // fired when measured rect changes
