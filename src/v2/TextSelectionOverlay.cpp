@@ -147,8 +147,7 @@ bool HandleTextSelectionOverlayInput(const NodePtr &root) {
       return true;
     }
     if (hasSelection &&
-        CheckCollisionPointRec(p.pos,
-                               HandleHitRect(startX, startY + kHandleStem))) {
+        CheckCollisionPointRec(p.pos, HandleHitRect(startX, startY))) {
       edit.activeHandle = 0;
       return true;
     }
@@ -168,7 +167,7 @@ bool HandleTextSelectionOverlayInput(const NodePtr &root) {
 
   if (edit.activeHandle >= 0) {
     if (p.down) {
-      int pos = TextInputHitTestCaret(*node, p.pos.x);
+      int pos = TextInputHitTestCaret(*node, p.pos);
       if (edit.activeHandle == 0) {
         TextInputSetSelection(*node, pos, end, end);
       } else {

@@ -34,6 +34,7 @@ void SetTextInputStateCallback(
 
 Rectangle TextInputInputBounds(Node &node);
 int TextInputHitTestCaret(Node &node, float screenX);
+int TextInputHitTestCaret(Node &node, Vector2 screenPos);
 float TextInputByteOffsetX(Node &node, int byteOffset);
 float TextInputByteOffsetY(Node &node, int byteOffset);
 void TextInputSetSelection(Node &node, int start, int end, int cursor);

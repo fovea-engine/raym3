@@ -1248,6 +1248,28 @@ int TextInputHitTestCaret(Node &node, float screenX) {
   return HitTestCaret(buffer, clickRelativeX, node.textInput.passwordMode);
 }
 
+int TextInputHitTestCaret(Node &node, Vector2 screenPos) {
+  char *buffer = TextBuffer(node);
+  if (!buffer)
+    return 0;
+  Rectangle inputBounds = InputBoundsFor(node);
+  float textStartX = inputBounds.x + kBasePadding * 2.0f;
+  float clickRelativeX =
+      screenPos.x - (textStartX - node.textEdit.scrollOffsetX);
+  if (!node.textInput.multiline)
+    return HitTestCaret(buffer, clickRelativeX, node.textInput.passwordMode);
+
+  auto lines = BuildLineMetrics(buffer, node.textInput.passwordMode);
+  Vector2 origin =
+      TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
+  int lineIndex = static_cast<int>(std::floor(
+      (screenPos.y - origin.y + node.textEdit.scrollOffsetY) / kLineHeight));
+  lineIndex = std::clamp(lineIndex, 0, static_cast<int>(lines.size()) - 1);
+  const auto &line = lines[static_cast<size_t>(lineIndex)];
+  return HitTestCaretOnLine(buffer, clickRelativeX, node.textInput.passwordMode,
+                            line.start, line.end);
+}
+
 float TextInputByteOffsetX(Node &node, int byteOffset) {
   char *buffer = TextBuffer(node);
   if (!buffer)
