@@ -34,6 +34,9 @@ public:
   // This intentionally does not call UnloadFont() because the old handles may
   // belong to a destroyed device/swapchain.
   static void ResetDeviceCache();
+  // Clear cached GPU font handles while the graphics device is still live.
+  // Unlike ResetDeviceCache(), this unloads the old font textures first.
+  static void InvalidateLiveDeviceCache();
 
   // Set the device DPI scale (e.g. 3.5 on a 560dpi Android phone, 2.0 on
   // a Retina display, 1.0 on a standard-density desktop). The font system

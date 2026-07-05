@@ -195,6 +195,10 @@ struct TextEditState {
   bool handlesVisible = false;
   bool toolbarVisible = false;
   int activeHandle = -1;
+  int activeHandleAnchor = -1;
+  int activeHandleOffset = -1;
+  float activeHandleDragY = 0.0f;
+  float activeHandleDragTargetY = 0.0f;
   bool longPressActive = false;
   bool longPressSelectionActive = false;
   bool longPressHapticSent = false;

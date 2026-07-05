@@ -98,6 +98,7 @@ struct InputState {
   NodeId focused = 0;
   NodeId pendingPress = 0;
   Vector2 dragOrigin = {0, 0};
+  bool textSelectionOverlayConsumedPointer = false;
   // Release-time outside tap: press outside TextField, dismiss on release if
   // the finger didn't scroll and stayed within touch slop.
   bool dismissTapActive = false;

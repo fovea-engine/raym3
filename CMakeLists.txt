@@ -101,6 +101,15 @@ if(RAYM3_BUILD_EXAMPLES AND NOT ANDROID)
     )
 endif()
 
+if(RAYM3_BUILD_TESTS)
+    enable_testing()
+    add_executable(text_input_selection_test
+        tests/text_input_selection_test.cpp
+    )
+    target_link_libraries(text_input_selection_test PRIVATE raym3)
+    add_test(NAME text_input_selection_test COMMAND text_input_selection_test)
+endif()
+
 if(RAYM3_USE_YOGA)
     if(TARGET yogacore)
         message(STATUS "Yoga support enabled (using existing yogacore target)")

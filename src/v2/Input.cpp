@@ -36,6 +36,7 @@ void BeginInputFrame(Vector2 posDp, bool down, bool pressed, bool released,
   pointer.pressed = pressed;
   pointer.released = released;
   pointer.wheel = wheel;
+  Ctx().input.textSelectionOverlayConsumedPointer = false;
 }
 
 const PointerInput &GetPointer() { return Ctx().input.pointer; }
@@ -58,6 +59,12 @@ void SetActiveId(NodeId id) { Ctx().input.active = id; }
 void SetFocusedId(NodeId id) { Ctx().input.focused = id; }
 void SetDragOrigin(Vector2 originDp) { Ctx().input.dragOrigin = originDp; }
 Vector2 GetDragOrigin() { return Ctx().input.dragOrigin; }
+void MarkTextSelectionOverlayPointerConsumed() {
+  Ctx().input.textSelectionOverlayConsumedPointer = true;
+}
+bool WasTextSelectionOverlayPointerConsumed() {
+  return Ctx().input.textSelectionOverlayConsumedPointer;
+}
 
 double FrameTimeMs() {
   float dt = GetFrameTime();

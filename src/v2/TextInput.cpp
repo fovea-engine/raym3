@@ -344,6 +344,10 @@ static void HideSelectionOverlay(Node &node) {
   node.textEdit.handlesVisible = false;
   node.textEdit.toolbarVisible = false;
   node.textEdit.activeHandle = -1;
+  node.textEdit.activeHandleAnchor = -1;
+  node.textEdit.activeHandleOffset = -1;
+  node.textEdit.activeHandleDragY = 0.0f;
+  node.textEdit.activeHandleDragTargetY = 0.0f;
   node.textEdit.longPressSelectionActive = false;
 }
 
@@ -611,6 +615,9 @@ static void HandlePointer(Node &node, const PointerInput &p) {
     return;
 
   TextEditState &edit = node.textEdit;
+  if (WasTextSelectionOverlayPointerConsumed() || edit.activeHandle >= 0)
+    return;
+
   Rectangle inputBounds = InputBoundsFor(node);
   float textStartX = inputBounds.x + kBasePadding * 2.0f;
   float textEndX = inputBounds.x + inputBounds.width - kBasePadding * 2.0f;
@@ -1238,6 +1245,11 @@ TextInputHostHooks &GetTextInputHostHooks() { return HostHooks(); }
 
 Rectangle TextInputInputBounds(Node &node) { return InputBoundsFor(node); }
 
+int TextInputTextLength(Node &node) {
+  char *buffer = TextBuffer(node);
+  return buffer ? static_cast<int>(std::strlen(buffer)) : 0;
+}
+
 int TextInputHitTestCaret(Node &node, float screenX) {
   char *buffer = TextBuffer(node);
   if (!buffer)
@@ -1295,13 +1307,56 @@ float TextInputByteOffsetY(Node &node, int byteOffset) {
   Rectangle inputBounds = InputBoundsFor(node);
   char *buffer = TextBuffer(node);
   if (!buffer || !node.textInput.multiline)
+    return inputBounds.y + inputBounds.height * 0.5f + kLineHeight * 0.5f;
+  auto lines = BuildLineMetrics(buffer, node.textInput.passwordMode);
+  int lineIndex = LineIndexForOffset(lines, byteOffset);
+  Vector2 origin =
+      TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
+  return origin.y - node.textEdit.scrollOffsetY +
+         (lineIndex + 1) * kLineHeight;
+}
+
+float TextInputLineCenterY(Node &node, int byteOffset) {
+  Rectangle inputBounds = InputBoundsFor(node);
+  char *buffer = TextBuffer(node);
+  if (!buffer || !node.textInput.multiline)
     return inputBounds.y + inputBounds.height * 0.5f;
   auto lines = BuildLineMetrics(buffer, node.textInput.passwordMode);
   int lineIndex = LineIndexForOffset(lines, byteOffset);
   Vector2 origin =
       TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
   return origin.y - node.textEdit.scrollOffsetY + lineIndex * kLineHeight +
-         kFieldFontSize * 0.5f;
+         kLineHeight * 0.5f;
+}
+
+float TextInputPreferredLineHeight(Node &node) {
+  (void)node;
+  return kLineHeight;
+}
+
+TextInputDragSelectionUpdate
+TextInputResolveDraggedSelection(TextInputDraggedEdge draggedEdge,
+                                 int fixedAnchor, int currentOffset,
+                                 int textLength) {
+  textLength = std::max(0, textLength);
+  fixedAnchor = std::clamp(fixedAnchor, 0, textLength);
+  currentOffset = std::clamp(currentOffset, 0, textLength);
+
+  TextInputDragSelectionUpdate update;
+  update.cursor = currentOffset;
+  if (draggedEdge == TextInputDraggedEdge::Start) {
+    if (currentOffset >= fixedAnchor)
+      return update;
+    update.selectionStart = currentOffset;
+    update.selectionEnd = fixedAnchor;
+  } else {
+    if (currentOffset <= fixedAnchor)
+      return update;
+    update.selectionStart = fixedAnchor;
+    update.selectionEnd = currentOffset;
+  }
+  update.applied = true;
+  return update;
 }
 
 void TextInputNotifyEditingState(Node &node, bool textChanged) {

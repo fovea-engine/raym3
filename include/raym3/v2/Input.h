@@ -71,6 +71,8 @@ void SetFocusedId(NodeId id);
 void SetDragOrigin(Vector2 originDp);
 Vector2 GetDragOrigin();
 double FrameTimeMs();
+void MarkTextSelectionOverlayPointerConsumed();
+bool WasTextSelectionOverlayPointerConsumed();
 
 // Programmatic focus control.
 void SetFocusedNode(const NodePtr &node);

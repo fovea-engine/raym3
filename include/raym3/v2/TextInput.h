@@ -23,6 +23,15 @@ struct TextInputEditingState {
   bool textChanged = false;
 };
 
+enum class TextInputDraggedEdge { Start, End };
+
+struct TextInputDragSelectionUpdate {
+  int selectionStart = -1;
+  int selectionEnd = -1;
+  int cursor = 0;
+  bool applied = false;
+};
+
 void PaintTextInput(Node &node);
 void ResyncTextInputBuffer(NodeId nodeId, int cursorPos);
 void SetTextInputHostHooks(TextInputHostHooks hooks);
@@ -33,10 +42,17 @@ void SetTextInputStateCallback(
     std::function<void(NodeId, const TextInputEditingState &)> cb);
 
 Rectangle TextInputInputBounds(Node &node);
+int TextInputTextLength(Node &node);
 int TextInputHitTestCaret(Node &node, float screenX);
 int TextInputHitTestCaret(Node &node, Vector2 screenPos);
 float TextInputByteOffsetX(Node &node, int byteOffset);
 float TextInputByteOffsetY(Node &node, int byteOffset);
+float TextInputLineCenterY(Node &node, int byteOffset);
+float TextInputPreferredLineHeight(Node &node);
+TextInputDragSelectionUpdate
+TextInputResolveDraggedSelection(TextInputDraggedEdge draggedEdge,
+                                 int fixedAnchor, int currentOffset,
+                                 int textLength);
 void TextInputSetSelection(Node &node, int start, int end, int cursor);
 void TextInputSelectAll(Node &node);
 bool TextInputCopy(Node &node);

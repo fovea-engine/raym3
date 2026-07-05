@@ -52,5 +52,8 @@ void ResetAllIconAtlases();
 // so held texture ids are stale and may already be reused). Atlases rebuild
 // lazily on the next DrawIcon per set.
 void IconRendererResetDeviceCache();
+// Drop live GPU-side icon state WITH unloading (the graphics device survived,
+// but its icon/font atlas textures should be rebuilt before the next frame).
+void IconRendererInvalidateLiveDeviceCache();
 
 } // namespace raym3::v2

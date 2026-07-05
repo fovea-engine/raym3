@@ -377,39 +377,30 @@ void DrawMaterialIcon(int codepoint, Rectangle bounds, Color color, int sizeDp, 
   DrawIcon(codepoint, bounds, color, sizeDp, filled, "material");
 }
 
-void ResetIconSetAtlas(const std::string &setName) {
-  auto it = g_sets.find(setName);
-  if (it == g_sets.end())
-    return;
-  IconSetState &set = it->second;
-  if (set.atlas.id != 0)
+static void DropIconGpuState(IconSetState &set, bool unloadLiveResources) {
+  if (unloadLiveResources && set.atlas.id != 0)
     UnloadTexture(set.atlas);
   set.atlas = {0};
   set.rects.clear();
   for (auto &[key, font] : set.fonts) {
-    if (font.texture.id != 0)
+    if (unloadLiveResources && font.texture.id != 0 &&
+        font.texture.id != GetFontDefault().texture.id)
       UnloadFont(font);
   }
   set.fonts.clear();
-  set.requests.clear();
-  set.codepoints.clear();
-  set.atlasDirty = false;
+  set.atlasDirty = !set.requests.empty();
+}
+
+void ResetIconSetAtlas(const std::string &setName) {
+  auto it = g_sets.find(setName);
+  if (it == g_sets.end())
+    return;
+  DropIconGpuState(it->second, true);
 }
 
 void ResetAllIconAtlases() {
   for (auto &[name, set] : g_sets) {
-    if (set.atlas.id != 0)
-      UnloadTexture(set.atlas);
-    set.atlas = {0};
-    set.rects.clear();
-    for (auto &[key, font] : set.fonts) {
-      if (font.texture.id != 0)
-        UnloadFont(font);
-    }
-    set.fonts.clear();
-    set.requests.clear();
-    set.codepoints.clear();
-    set.atlasDirty = false;
+    DropIconGpuState(set, true);
   }
 }
 
@@ -417,15 +408,19 @@ void IconRendererResetDeviceCache() {
   // The graphics device was re-initialized: every texture id these caches
   // hold belongs to the dead device. Do NOT UnloadTexture — the ids may
   // already be reused by the new device, and freeing them would destroy live
-  // textures. Registrations are kept implicitly: DrawIcon re-registers every
-  // icon it draws, so each set's atlas rebuilds on the next frame.
+  // textures. Keep registrations/requests so the first frame on the rebuilt
+  // device can rebuild the exact icon atlases it had before teardown.
   for (auto &[name, set] : g_sets) {
-    set.atlas = {0};
-    set.rects.clear();
-    set.fonts.clear();
-    set.requests.clear();
-    set.codepoints.clear();
-    set.atlasDirty = false;
+    DropIconGpuState(set, false);
+  }
+}
+
+void IconRendererInvalidateLiveDeviceCache() {
+  // Fast Android resume keeps the Vulkan device but can still leave font/icon
+  // atlas textures in an invalid presentation state. The device is live here,
+  // so unload old GPU resources and force deterministic atlas rebuild.
+  for (auto &[name, set] : g_sets) {
+    DropIconGpuState(set, true);
   }
 }
 

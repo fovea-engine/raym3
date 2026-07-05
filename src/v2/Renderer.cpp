@@ -2344,6 +2344,10 @@ void ResolveScrollInput(const NodePtr &root) {
             fn->textEdit.handlesVisible = false;
             fn->textEdit.toolbarVisible = false;
             fn->textEdit.activeHandle = -1;
+            fn->textEdit.activeHandleAnchor = -1;
+            fn->textEdit.activeHandleOffset = -1;
+            fn->textEdit.activeHandleDragY = 0.0f;
+            fn->textEdit.activeHandleDragTargetY = 0.0f;
             fn->textEdit.longPressSelectionActive = false;
           }
         }

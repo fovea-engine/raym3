@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <set>
 
 namespace raym3 {
 
@@ -64,6 +65,22 @@ void FontManager::Shutdown() {
 }
 
 void FontManager::ResetDeviceCache() {
+  fontCache_.clear();
+  customFontCache_.clear();
+  defaultFont_ = {0};
+  initialized_ = false;
+}
+
+void FontManager::InvalidateLiveDeviceCache() {
+  std::set<unsigned int> unloaded;
+  auto unloadOnce = [&](Font font) {
+    if (font.texture.id != 0 && unloaded.insert(font.texture.id).second)
+      UnloadFont(font);
+  };
+  for (auto &[key, font] : fontCache_)
+    unloadOnce(font);
+  for (auto &[key, font] : customFontCache_)
+    unloadOnce(font);
   fontCache_.clear();
   customFontCache_.clear();
   defaultFont_ = {0};
