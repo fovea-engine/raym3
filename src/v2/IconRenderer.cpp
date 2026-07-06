@@ -321,7 +321,12 @@ static void EnsureAtlas(const std::string &setName, IconSetState &set) {
       Rectangle dst = {(float)entry.x + ((float)entry.cellPx - dw) * 0.5f,
                        (float)kPad + ((float)entry.cellPx - dh) * 0.5f, dw,
                        dh};
-      ImageDrawImagePro(&atlasImg, glyph, src, dst, (Vector2){0, 0}, 0.0f, WHITE);
+#if RAYLIB_VERSION_MAJOR >= 6 && RAYLIB_VERSION_MINOR == 0
+      ImageDraw(&atlasImg, glyph, src, dst, WHITE);
+#else
+      ImageDrawImagePro(&atlasImg, glyph, src, dst, (Vector2){0, 0}, 0.0f,
+                        WHITE);
+#endif
     }
     set.rects[entry.key] = {(float)entry.x, (float)kPad, (float)entry.cellPx,
                             (float)entry.cellPx};

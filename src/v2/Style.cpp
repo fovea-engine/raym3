@@ -160,6 +160,12 @@ TextStyle MergeTextStyles(const TextStyle &base,
     result.alignment = overrideStyle.alignment;
   if (overrideStyle.color)
     result.color = overrideStyle.color;
+  if (overrideStyle.fontFamily)
+    result.fontFamily = overrideStyle.fontFamily;
+  if (overrideStyle.whiteSpace)
+    result.whiteSpace = overrideStyle.whiteSpace;
+  if (overrideStyle.wordBreak)
+    result.wordBreak = overrideStyle.wordBreak;
   return result;
 }
 

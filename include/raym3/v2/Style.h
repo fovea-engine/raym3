@@ -1,6 +1,7 @@
 #pragma once
 
 #include "raym3/types.h"
+#include "raym3/v2/TextEngine.h"
 #include <optional>
 #include <vector>
 #include <raylib.h>
@@ -64,6 +65,8 @@ struct TextStyle {
   std::optional<TextAlignment> alignment;
   std::optional<Color> color;
   std::optional<std::string> fontFamily; // named font registered via registerFont()
+  std::optional<WhiteSpace> whiteSpace;
+  std::optional<WordBreak> wordBreak;
 };
 
 struct LinearGradientStop {

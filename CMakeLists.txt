@@ -108,6 +108,14 @@ if(RAYM3_BUILD_TESTS)
     )
     target_link_libraries(text_input_selection_test PRIVATE raym3)
     add_test(NAME text_input_selection_test COMMAND text_input_selection_test)
+
+    add_executable(text_layout_test
+        tests/text_layout_test.cpp
+    )
+    target_compile_definitions(text_layout_test PRIVATE
+        RAYM3_GOLDEN_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/text_layout_goldens.json")
+    target_link_libraries(text_layout_test PRIVATE raym3)
+    add_test(NAME text_layout_test COMMAND text_layout_test)
 endif()
 
 if(RAYM3_USE_YOGA)

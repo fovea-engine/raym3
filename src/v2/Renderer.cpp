@@ -322,14 +322,23 @@ static const PreparedText& GetOrPrepare(const Node* node) {
   float fontSize = node->style.text.fontSize.value_or(16.0f);
   FontWeight weight = node->style.text.weight.value_or(FontWeight::Regular);
   const std::string& family = node->style.text.fontFamily.value_or(std::string{});
-  std::string key = TextCacheKey(node->text, fontSize, weight, family);
+  WhiteSpace whiteSpace = node->style.text.whiteSpace.value_or(
+      node->kind == NodeKind::TextInput ? WhiteSpace::PreWrap : WhiteSpace::Normal);
+  WordBreak wordBreak = node->style.text.wordBreak.value_or(WordBreak::Normal);
+  float letterSpacing = node->style.text.letterSpacing.value_or(0.25f);
+  std::string key = TextCacheKey(node->text, fontSize, weight, family, whiteSpace,
+                                 wordBreak, letterSpacing);
 
   if (!node->preparedTextCache || node->preparedTextKey != key) {
     TextLayoutOptions opts;
     opts.fontSize   = fontSize;
-    opts.lineHeight = node->style.text.lineHeight.value_or(fontSize + 4.0f);
+    opts.lineHeight = node->style.text.lineHeight.value_or(
+        std::max(fontSize + 4.0f, fontSize * 1.43f));
+    opts.letterSpacing = letterSpacing;
     opts.weight     = weight;
     opts.fontFamily = family;
+    opts.whiteSpace = whiteSpace;
+    opts.wordBreak  = wordBreak;
     node->preparedTextCache = PrepareText(node->text, opts);
     node->preparedTextKey   = std::move(key);
   }
@@ -939,13 +948,10 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
 }
 
 static void RenderTextNode(const Node &node, const Style &style) {
-  TextLayoutOptions options;
-  options.fontSize =
+  float fontSize =
       style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium);
-  options.lineHeight = style.text.lineHeight.value_or(options.fontSize * 1.43f);
-  options.letterSpacing = style.text.letterSpacing.value_or(0.25f);
-  options.weight = style.text.weight.value_or(FontWeight::Regular);
-  // fontFamily is on the TextStyle sub-struct.
+  float letterSpacing = style.text.letterSpacing.value_or(0.25f);
+  FontWeight weight = style.text.weight.value_or(FontWeight::Regular);
   std::string fontFamily = style.text.fontFamily.value_or(std::string{});
   // Reuse the cached PreparedText from Yoga measure phase — no re-measurement.
   const PreparedText& prepared = GetOrPrepare(&node);
@@ -960,8 +966,8 @@ static void RenderTextNode(const Node &node, const Style &style) {
 
   // Resolve font once — custom family or Roboto.
   Font resolvedFont = fontFamily.empty()
-      ? Theme::GetFont(options.fontSize, options.weight)
-      : FontManager::LoadFontByFamily(fontFamily, (int)options.fontSize);
+      ? Theme::GetFont(fontSize, weight)
+      : FontManager::LoadFontByFamily(fontFamily, (int)fontSize);
 
   // Draw text in pixel space: the font texture was generated at size * dp, so
   // we want a 1:1 sample (no extra scale on the draw call). The host applies an
@@ -983,9 +989,9 @@ static void RenderTextNode(const Node &node, const Style &style) {
       x += Density::DpToPx(node.layout.width - line.width);
     }
     DrawTextWithEmoji(resolvedFont, line.text, {x, y},
-                      Density::DpToPx(options.fontSize),
-                      Density::DpToPx(options.letterSpacing), color);
-    y += Density::DpToPx(options.lineHeight);
+                      Density::DpToPx(fontSize),
+                      Density::DpToPx(letterSpacing), color);
+    y += Density::DpToPx(prepared.options.lineHeight);
   }
 
   rlPopMatrix();

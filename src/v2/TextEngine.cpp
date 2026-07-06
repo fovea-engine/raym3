@@ -4,253 +4,400 @@
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
 #include "raym3/v2/EmojiFont.h"
+#include "raym3/v2/TextAnalysis.h"
+#include "raym3/v2/TextLineBreak.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 
 namespace raym3::v2 {
 
-static std::size_t NextUtf8Boundary(std::string_view text, std::size_t index) {
-  if (index >= text.size())
-    return text.size();
+namespace {
 
-  unsigned char first = static_cast<unsigned char>(text[index]);
-  std::size_t step = 1;
-  if ((first & 0x80u) == 0) {
-    step = 1;
-  } else if ((first & 0xE0u) == 0xC0u) {
-    step = 2;
-  } else if ((first & 0xF0u) == 0xE0u) {
-    step = 3;
-  } else if ((first & 0xF8u) == 0xF0u) {
-    step = 4;
+bool IsLeftStickyPunctuationChar(uint32_t cp) {
+  return cp == '.' || cp == ',' || cp == '!' || cp == '?' || cp == ':' ||
+         cp == ';' || cp == ')' || cp == ']' || cp == '}' || cp == '%' ||
+         cp == '"' || cp == 0x2026;
+}
+
+bool EndsWithClosingQuote(std::string_view text) {
+  if (text.empty())
+    return false;
+  std::size_t i = text.size();
+  while (i > 0) {
+    std::size_t start = i;
+    while (start > 0 && (static_cast<unsigned char>(text[start - 1]) & 0xC0) == 0x80)
+      --start;
+    --start;
+    std::size_t cpIdx = start;
+    uint32_t cp = DecodeUtf8Codepoint(text, cpIdx);
+    if (cp == 0x201D || cp == 0x2019 || cp == 0x300D || cp == 0x300F ||
+        cp == 0x3011 || cp == 0xFF09)
+      return true;
+    if (!IsLeftStickyPunctuationChar(cp))
+      return false;
+    i = start;
   }
-
-  return std::min(text.size(), index + step);
+  return false;
 }
 
-std::vector<std::size_t> GraphemeBoundaries(std::string_view text) {
-  return raym3::v2::EmojiAwareGraphemeBoundaries(text);
+bool IsKinsokuEndChar(uint32_t cp) {
+  return cp == '"' || cp == '(' || cp == '[' || cp == '{' || cp == 0xFF08 ||
+         cp == 0x3014 || cp == 0x3008 || cp == 0x300A || cp == 0x300C ||
+         cp == 0x300E || cp == 0x3010 || cp == 0x3016 || cp == 0x3018 ||
+         cp == 0x301A || cp == 0x201C || cp == 0x2018;
 }
 
-static float DefaultMeasure(std::string_view text,
-                            const TextLayoutOptions &options) {
+bool IsKinsokuStartChar(uint32_t cp) {
+  return cp == 0xFF0C || cp == 0xFF0E || cp == 0xFF01 || cp == 0xFF1A ||
+         cp == 0xFF1B || cp == 0xFF1F || cp == 0x3001 || cp == 0x3002 ||
+         cp == 0x30FB || cp == 0xFF09 || cp == 0x3009 || cp == 0x300B ||
+         cp == 0x300D || cp == 0x300F || cp == 0x3011 || cp == '.' ||
+         cp == ',' || cp == '!' || cp == '?' || cp == ':' || cp == ';';
+}
+
+struct CjkUnit {
+  std::string text;
+  std::size_t start = 0;
+};
+
+std::vector<CjkUnit> BuildBaseCjkUnits(std::string_view segText,
+                                       const AnalysisProfile &profile) {
+  std::vector<CjkUnit> units;
+  std::vector<std::string> unitParts;
+  std::size_t unitStart = 0;
+  bool unitContainsCJK = false;
+  bool unitEndsWithClosingQuote = false;
+  bool unitIsSingleKinsokuEnd = false;
+
+  auto pushUnit = [&]() {
+    if (unitParts.empty())
+      return;
+    std::string text = unitParts.size() == 1 ? unitParts[0]
+                                             : [&]() {
+                                                 std::string joined;
+                                                 for (const auto &p : unitParts)
+                                                   joined += p;
+                                                 return joined;
+                                               }();
+    units.push_back({text, unitStart});
+    unitParts.clear();
+    unitContainsCJK = false;
+    unitEndsWithClosingQuote = false;
+    unitIsSingleKinsokuEnd = false;
+  };
+
+  const auto boundaries = EmojiAwareGraphemeBoundaries(segText);
+  for (std::size_t bi = 0; bi + 1 < boundaries.size(); ++bi) {
+    std::size_t gStart = boundaries[bi];
+    std::string_view grapheme(segText.data() + gStart,
+                              boundaries[bi + 1] - gStart);
+    std::string gStr(grapheme);
+    bool graphemeCJK = IsCJKText(grapheme);
+
+    std::size_t cpIdx = 0;
+    uint32_t cp = DecodeUtf8Codepoint(grapheme, cpIdx);
+
+    if (unitParts.empty()) {
+      unitParts.push_back(gStr);
+      unitStart = gStart;
+      unitContainsCJK = graphemeCJK;
+      unitEndsWithClosingQuote = EndsWithClosingQuote(gStr);
+      unitIsSingleKinsokuEnd = IsKinsokuEndChar(cp);
+      continue;
+    }
+
+    if (unitIsSingleKinsokuEnd || IsKinsokuStartChar(cp) ||
+        IsLeftStickyPunctuationChar(cp) ||
+        (profile.carryCJKAfterClosingQuote && graphemeCJK &&
+         unitEndsWithClosingQuote)) {
+      unitParts.push_back(gStr);
+      unitContainsCJK = unitContainsCJK || graphemeCJK;
+      unitEndsWithClosingQuote = EndsWithClosingQuote(gStr);
+      unitIsSingleKinsokuEnd = false;
+      continue;
+    }
+
+    if (!unitContainsCJK && !graphemeCJK) {
+      unitParts.push_back(gStr);
+      continue;
+    }
+
+    pushUnit();
+    unitParts.push_back(gStr);
+    unitStart = gStart;
+    unitContainsCJK = graphemeCJK;
+    unitIsSingleKinsokuEnd = IsKinsokuEndChar(cp);
+  }
+  pushUnit();
+  return units;
+}
+
+std::vector<CjkUnit>
+MergeKeepAllUnits(std::string_view segText, const std::vector<CjkUnit> &units,
+                  bool breakAfterPunctuation) {
+  if (units.size() <= 1)
+    return units;
+  std::vector<CjkUnit> merged;
+  std::size_t groupStart = static_cast<std::size_t>(-1);
+  bool groupCJK = false;
+
+  auto flush = [&](std::size_t end) {
+    if (groupStart == static_cast<std::size_t>(-1))
+      return;
+    if (groupCJK && groupStart + 1 < end) {
+      std::size_t sourceStart = units[groupStart].start;
+      std::size_t sourceEnd =
+          end < units.size() ? units[end].start : segText.size();
+      merged.push_back(
+          {std::string(segText.substr(sourceStart, sourceEnd - sourceStart)),
+           sourceStart});
+    } else {
+      for (std::size_t j = groupStart; j < end; ++j)
+        merged.push_back(units[j]);
+    }
+    groupStart = static_cast<std::size_t>(-1);
+    groupCJK = false;
+  };
+
+  for (std::size_t i = 0; i < units.size(); ++i) {
+    if (groupStart != static_cast<std::size_t>(-1) &&
+        !CanContinueKeepAllTextRun(units[i - 1].text, breakAfterPunctuation))
+      flush(i);
+    if (groupStart == static_cast<std::size_t>(-1))
+      groupStart = i;
+    groupCJK = groupCJK || IsCJKText(units[i].text);
+  }
+  flush(units.size());
+  return merged;
+}
+
+float DefaultMeasure(std::string_view text, const TextLayoutOptions &options) {
   std::string materialized(text);
   Vector2 size;
   if (!options.fontFamily.empty()) {
-    Font font = FontManager::LoadFontByFamily(options.fontFamily, (int)options.fontSize);
-    size = MeasureTextWithEmoji(font, materialized, options.fontSize, options.letterSpacing);
+    Font font =
+        FontManager::LoadFontByFamily(options.fontFamily, (int)options.fontSize);
+    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
+                                options.letterSpacing);
   } else {
     Font font = Theme::GetFont(options.fontSize, options.weight);
-    size = MeasureTextWithEmoji(font, materialized, options.fontSize, options.letterSpacing);
-  }
-  if (options.letterSpacing != 0.0f && !options.fontFamily.empty() &&
-      materialized.size() > 1) {
-    // letterSpacing already applied via MeasureTextEx spacing param above
-  } else if (options.letterSpacing != 0.0f && materialized.size() > 1) {
-    size.x += options.letterSpacing *
-              static_cast<float>(GraphemeBoundaries(materialized).size() - 2);
+    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
+                                options.letterSpacing);
   }
   return size.x;
 }
 
-static bool IsAsciiSpace(char c) {
-  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+float AddLetterSpacing(float width, std::string_view text, float letterSpacing,
+                       SegmentBreakKind kind) {
+  if (letterSpacing == 0.0f)
+    return width;
+  if (kind == SegmentBreakKind::HardBreak || kind == SegmentBreakKind::Tab)
+    return width;
+  std::size_t graphemeCount = GraphemeBoundaries(text).size() - 1;
+  if (graphemeCount > 1)
+    return width + (static_cast<float>(graphemeCount) - 1.0f) * letterSpacing;
+  return width;
 }
 
-// CJK Unified Ideographs and common extension blocks — each character is its
-// own break opportunity (same policy as pretext's isCJK check).
-static bool IsCJKCodepoint(uint32_t cp) {
-  return (cp >= 0x4E00  && cp <= 0x9FFF)  ||  // CJK Unified Ideographs
-         (cp >= 0x3400  && cp <= 0x4DBF)  ||  // Extension A
-         (cp >= 0x20000 && cp <= 0x2A6DF) ||  // Extension B
-         (cp >= 0x2A700 && cp <= 0x2CEAF) ||  // Extension C/D/E
-         (cp >= 0xF900  && cp <= 0xFAFF)  ||  // Compatibility Ideographs
-         (cp >= 0x3000  && cp <= 0x303F)  ||  // CJK Symbols & Punctuation
-         (cp >= 0x3040  && cp <= 0x309F)  ||  // Hiragana
-         (cp >= 0x30A0  && cp <= 0x30FF)  ||  // Katakana
-         (cp >= 0xAC00  && cp <= 0xD7AF);     // Hangul
-}
+std::vector<float> BuildBreakableFitAdvances(
+    std::string_view text, const MeasureTextCallback &measure,
+    const TextLayoutOptions &options) {
+  const auto boundaries = GraphemeBoundaries(text);
+  if (boundaries.size() <= 2)
+    return {};
 
-// Decode first UTF-8 codepoint at s[i], advance i past it.
-static uint32_t DecodeUtf8(std::string_view s, std::size_t &i) {
-  unsigned char c = static_cast<unsigned char>(s[i]);
-  uint32_t cp;
-  std::size_t extra;
-  if      (c < 0x80)   { cp = c;          extra = 0; }
-  else if (c < 0xC0)   { cp = 0xFFFD;     extra = 0; i++; return cp; }
-  else if (c < 0xE0)   { cp = c & 0x1F;   extra = 1; }
-  else if (c < 0xF0)   { cp = c & 0x0F;   extra = 2; }
-  else                 { cp = c & 0x07;   extra = 3; }
-  i++;
-  for (std::size_t k = 0; k < extra && i < s.size(); ++k, ++i)
-    cp = (cp << 6) | (static_cast<unsigned char>(s[i]) & 0x3F);
-  return cp;
-}
-
-static std::string NormalizeWhitespace(std::string_view text,
-                                       WhiteSpace whiteSpace) {
-  if (whiteSpace == WhiteSpace::PreWrap) {
-    return std::string(text);
+  std::vector<float> advances;
+  advances.reserve(boundaries.size() - 1);
+  float cumulative = 0.0f;
+  for (std::size_t i = 0; i + 1 < boundaries.size(); ++i) {
+    std::string_view grapheme(text.data() + boundaries[i],
+                              boundaries[i + 1] - boundaries[i]);
+    cumulative += measure(grapheme, options);
+    advances.push_back(cumulative);
   }
+  return advances;
+}
 
-  std::string normalized;
-  normalized.reserve(text.size());
-  bool previousWasSpace = false;
-  for (char c : text) {
-    if (IsAsciiSpace(c)) {
-      if (!previousWasSpace) {
-        normalized.push_back(' ');
-      }
-      previousWasSpace = true;
-    } else {
-      normalized.push_back(c);
-      previousWasSpace = false;
-    }
-  }
-  return normalized;
+void PushMeasuredSegment(PreparedText &prepared, std::string text, float width,
+                         float lineEndFitAdvance, float lineEndPaintAdvance,
+                         SegmentBreakKind kind, std::size_t byteStart,
+                         std::vector<float> breakableFitAdvances) {
+  if (kind != SegmentBreakKind::Text && kind != SegmentBreakKind::Space)
+    prepared.simpleLineWalkFastPath = false;
+  if (!breakableFitAdvances.empty())
+    prepared.simpleLineWalkFastPath = false;
+
+  PreparedSegment seg;
+  seg.text = std::move(text);
+  seg.kind = kind;
+  seg.width = width;
+  seg.lineEndFitAdvance = lineEndFitAdvance;
+  seg.lineEndPaintAdvance = lineEndPaintAdvance;
+  seg.byteStart = byteStart;
+  seg.byteEnd = byteStart + seg.text.size();
+  seg.breakableFitAdvances = std::move(breakableFitAdvances);
+  prepared.segments.push_back(std::move(seg));
+}
+
+void PushMeasuredTextSegment(PreparedText &prepared, std::string text,
+                             SegmentBreakKind kind, std::size_t byteStart,
+                             bool wordLike, bool allowOverflowBreaks,
+                             const MeasureTextCallback &measure,
+                             const TextLayoutOptions &options) {
+  float width =
+      AddLetterSpacing(measure(text, options), text, options.letterSpacing, kind);
+
+  float baseFit =
+      (kind == SegmentBreakKind::Space ||
+       kind == SegmentBreakKind::PreservedSpace)
+          ? 0.0f
+          : width;
+  float lineEndFit = baseFit;
+  float lineEndPaint =
+      (kind == SegmentBreakKind::Space) ? 0.0f : width;
+
+  std::vector<float> breakable;
+  if (allowOverflowBreaks && wordLike && text.size() > 1 &&
+      options.wordBreak != WordBreak::KeepAll)
+    breakable = BuildBreakableFitAdvances(text, measure, options);
+
+  PushMeasuredSegment(prepared, std::move(text), width, lineEndFit, lineEndPaint,
+                      kind, byteStart, std::move(breakable));
+}
+
+} // namespace
+
+std::vector<std::size_t> GraphemeBoundaries(std::string_view text) {
+  return EmojiAwareGraphemeBoundaries(text);
 }
 
 PreparedText PrepareText(std::string text, const TextLayoutOptions &options,
                          MeasureTextCallback measure) {
   PreparedText prepared;
   prepared.options = options;
-  prepared.source = NormalizeWhitespace(text, options.whiteSpace);
-  prepared.graphemeBoundaries = GraphemeBoundaries(prepared.source);
+  prepared.simpleLineWalkFastPath = options.letterSpacing == 0.0f;
 
   MeasureTextCallback measureFn =
       measure ? std::move(measure) : MeasureTextCallback(DefaultMeasure);
 
-  // Walk source, emitting runs. Each word/CJK-char/space/hard-break is one run.
-  // CJK characters are individual break opportunities (pretext: isCJK policy).
-  // Spaces are their own run (trailing space on a line is discarded by LayoutText).
-  std::string_view src(prepared.source);
-  std::size_t i = 0;
-  std::size_t wordStart = std::string_view::npos;
+  AnalysisProfile profile = DefaultAnalysisProfile();
+  TextAnalysis analysis =
+      AnalyzeText(text, profile, options.whiteSpace, options.wordBreak);
+  prepared.source = analysis.normalized;
+  prepared.graphemeBoundaries = GraphemeBoundaries(prepared.source);
 
-  auto flushWord = [&](std::size_t end) {
-    if (wordStart == std::string_view::npos || end <= wordStart) return;
-    std::string_view runText = src.substr(wordStart, end - wordStart);
-    prepared.runs.push_back({std::string(runText), wordStart, end,
-                              measureFn(runText, options)});
-    wordStart = std::string_view::npos;
-  };
+  float spaceWidth = measureFn(" ", options);
+  prepared.spaceWidth = spaceWidth;
+  prepared.tabStopAdvance = spaceWidth * 8.0f;
 
-  while (i < src.size()) {
-    unsigned char c = static_cast<unsigned char>(src[i]);
-
-    if (src[i] == '\n') {                       // hard break
-      flushWord(i);
-      prepared.runs.push_back({"\n", i, i + 1, 0.0f});
-      i++;
-    } else if (IsAsciiSpace(src[i])) {          // collapsible space
-      flushWord(i);
-      std::size_t spaceStart = i++;
-      while (i < src.size() && IsAsciiSpace(src[i]) && src[i] != '\n') i++;
-      std::string_view spaceText = src.substr(spaceStart, i - spaceStart);
-      prepared.runs.push_back({std::string(spaceText), spaceStart, i,
-                                measureFn(spaceText, options)});
-    } else if (c >= 0x80) {                     // multi-byte — check CJK
-      std::size_t cpStart = i;
-      uint32_t cp = DecodeUtf8(src, i);
-      if (IsCJKCodepoint(cp)) {                 // CJK: flush pending word, emit alone
-        flushWord(cpStart);
-        std::string_view cpText = src.substr(cpStart, i - cpStart);
-        prepared.runs.push_back({std::string(cpText), cpStart, i,
-                                  measureFn(cpText, options)});
-      } else {                                  // non-CJK multi-byte: accumulate into word
-        if (wordStart == std::string_view::npos) wordStart = cpStart;
-      }
-    } else {                                    // ASCII non-space: accumulate into word
-      if (wordStart == std::string_view::npos) wordStart = i;
-      i++;
+  for (const AnalyzedSegment &seg : analysis.segments) {
+    if (seg.kind == SegmentBreakKind::HardBreak) {
+      PushMeasuredSegment(prepared, seg.text, 0.0f, 0.0f, 0.0f,
+                          SegmentBreakKind::HardBreak, seg.byteStart, {});
+      continue;
     }
+    if (seg.kind == SegmentBreakKind::Tab) {
+      prepared.simpleLineWalkFastPath = false;
+      PushMeasuredSegment(prepared, seg.text, 0.0f, 0.0f, 0.0f,
+                          SegmentBreakKind::Tab, seg.byteStart, {});
+      continue;
+    }
+    if (seg.kind == SegmentBreakKind::Glue) {
+      PushMeasuredTextSegment(prepared, seg.text, SegmentBreakKind::Glue,
+                              seg.byteStart, seg.wordLike, false, measureFn,
+                              options);
+      continue;
+    }
+
+    if (seg.kind == SegmentBreakKind::Text && IsCJKText(seg.text)) {
+      auto units = BuildBaseCjkUnits(seg.text, profile);
+      if (options.wordBreak == WordBreak::KeepAll)
+        units = MergeKeepAllUnits(seg.text, units,
+                                  profile.breakKeepAllAfterPunctuation);
+
+      for (const CjkUnit &unit : units) {
+        bool allowBreak =
+            options.wordBreak == WordBreak::KeepAll || !IsCJKText(unit.text);
+        PushMeasuredTextSegment(
+            prepared, unit.text, SegmentBreakKind::Text,
+            seg.byteStart + unit.start, seg.wordLike, allowBreak, measureFn,
+            options);
+      }
+      continue;
+    }
+
+    PushMeasuredTextSegment(prepared, seg.text, seg.kind, seg.byteStart,
+                            seg.wordLike, true, measureFn, options);
   }
-  flushWord(src.size());
 
   return prepared;
 }
 
 TextLayoutResult LayoutText(const PreparedText &prepared, float maxWidth,
                             MeasureTextCallback measure) {
-  TextLayoutResult result;
   MeasureTextCallback measureFn =
       measure ? std::move(measure) : MeasureTextCallback(DefaultMeasure);
-
-  std::string current;
-  std::size_t lineStart = 0;
-  std::size_t lineEnd = 0;
-  float currentWidth = 0.0f;
-  float y = 0.0f;
-
-  auto pushLine = [&]() {
-    result.lines.push_back({current, lineStart, lineEnd, currentWidth, y});
-    result.width = std::max(result.width, currentWidth);
-    result.height += prepared.options.lineHeight;
-    y += prepared.options.lineHeight;
-    current.clear();
-    currentWidth = 0.0f;
-    lineStart = lineEnd;
-  };
-
-  for (const TextRun &run : prepared.runs) {
-    if (run.text == "\n") {
-      lineEnd = run.byteEnd;
-      pushLine();
-      lineStart = run.byteEnd;
-      lineEnd = run.byteEnd;
-      continue;
-    }
-
-    bool overflows =
-        maxWidth > 0.0f && currentWidth > 0.0f &&
-        currentWidth + run.width > maxWidth;
-
-    if (overflows) {
-      pushLine();
-      lineStart = run.byteStart;
-    }
-
-    if (maxWidth > 0.0f && run.width > maxWidth &&
-        prepared.options.wordBreak == WordBreak::BreakWord) {
-      for (std::size_t i = 0; i + 1 < prepared.graphemeBoundaries.size(); ++i) {
-        std::size_t start = prepared.graphemeBoundaries[i];
-        std::size_t end = prepared.graphemeBoundaries[i + 1];
-        if (start < run.byteStart || end > run.byteEnd)
-          continue;
-
-        std::string_view grapheme(prepared.source.data() + start, end - start);
-        float width = measureFn(grapheme, prepared.options);
-        if (currentWidth > 0.0f && currentWidth + width > maxWidth) {
-          pushLine();
-          lineStart = start;
-        }
-        current.append(grapheme);
-        currentWidth += width;
-        lineEnd = end;
-      }
-      continue;
-    }
-
-    current += run.text;
-    currentWidth += run.width;
-    lineEnd = run.byteEnd;
-  }
-
-  if (!current.empty() || prepared.source.empty()) {
-    pushLine();
-  }
-
-  return result;
+  return LayoutPreparedText(prepared, maxWidth, measureFn, kDefaultLineFitEpsilon);
 }
 
-std::string TextCacheKey(const std::string &text, float fontSize, FontWeight weight,
-                         const std::string &fontFamily) {
-  char buf[32];
-  std::snprintf(buf, sizeof(buf), "%.1f:%d:", fontSize, static_cast<int>(weight));
+std::string TextCacheKey(const std::string &text, float fontSize,
+                         FontWeight weight, const std::string &fontFamily,
+                         WhiteSpace whiteSpace, WordBreak wordBreak,
+                         float letterSpacing) {
+  char buf[96];
+  std::snprintf(buf, sizeof(buf), "%.1f:%d:%d:%d:%.2f:", fontSize,
+                static_cast<int>(weight), static_cast<int>(whiteSpace),
+                static_cast<int>(wordBreak), letterSpacing);
   std::string key(buf);
-  if (!fontFamily.empty()) { key += fontFamily; key += ':'; }
+  if (!fontFamily.empty()) {
+    key += fontFamily;
+    key += ':';
+  }
   return key + text;
+}
+
+float DeterministicTestMeasure(std::string_view text,
+                               const TextLayoutOptions &opts) {
+  float fontSize = opts.fontSize;
+  float width = 0.0f;
+  bool previousWasDecimalDigit = false;
+
+  const auto boundaries = GraphemeBoundaries(text);
+  for (std::size_t i = 0; i + 1 < boundaries.size(); ++i) {
+    std::string ch(text.substr(boundaries[i], boundaries[i + 1] - boundaries[i]));
+
+    if (ch == " ") {
+      width += fontSize * 0.33f;
+      previousWasDecimalDigit = false;
+    } else if (ch == "\t") {
+      width += fontSize * 1.32f;
+      previousWasDecimalDigit = false;
+    } else if (ch == "\uFE0F" || (ch.size() >= 4 && static_cast<unsigned char>(ch[0]) == 0xF0)) {
+      width += fontSize;
+      previousWasDecimalDigit = false;
+    } else {
+      std::size_t cpIdx = 0;
+      uint32_t cp = DecodeUtf8Codepoint(ch, cpIdx);
+      bool isDigit = (cp >= '0' && cp <= '9');
+      if (isDigit) {
+        width += fontSize * (previousWasDecimalDigit ? 0.48f : 0.52f);
+        previousWasDecimalDigit = true;
+      } else if (IsCJKCodepoint(cp)) {
+        width += fontSize;
+        previousWasDecimalDigit = false;
+      } else if (cp == '.' || cp == ',' || cp == '!' || cp == '?' || cp == ';' ||
+                 cp == ':' || cp == '%' || cp == ')' || cp == ']' || cp == '}' ||
+                 cp == '"' || cp == '-' || cp == 0x2026) {
+        width += fontSize * 0.4f;
+        previousWasDecimalDigit = false;
+      } else {
+        width += fontSize * 0.6f;
+        previousWasDecimalDigit = false;
+      }
+    }
+  }
+  return width;
 }
 
 } // namespace raym3::v2

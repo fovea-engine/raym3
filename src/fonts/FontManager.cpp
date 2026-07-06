@@ -18,7 +18,11 @@ float FontManager::dpiScale_ = 1.0f;
 
 void FontManager::SetDpiScale(float scale) {
   v2::Density::SetLayoutDensity(scale);
-  dpiScale_ = v2::Density::GetLayoutDensity();
+  const float newScale = v2::Density::GetLayoutDensity();
+  if (std::fabs(newScale - dpiScale_) > 1e-3f) {
+    InvalidateLiveDeviceCache();
+  }
+  dpiScale_ = newScale;
 }
 float FontManager::GetDpiScale() {
   dpiScale_ = v2::Density::GetLayoutDensity();

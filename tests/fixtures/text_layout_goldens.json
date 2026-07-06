@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "fontSize": 16,
+  "cases": [
+    {
+      "label": "tap-count-ios-9",
+      "text": "Platform: ios · Taps: 9",
+      "maxWidth": 294,
+      "lineHeight": 19,
+      "whiteSpace": "normal",
+      "wordBreak": "normal",
+      "letterSpacing": 0,
+      "lines": [
+        "Platform: ios · Taps: 9"
+      ],
+      "lineCount": 1,
+      "height": 19,
+      "maxLineWidth": 195.84
+    },
+    {
+      "label": "tap-count-ios-10",
+      "text": "Platform: ios · Taps: 10",
+      "maxWidth": 294,
+      "lineHeight": 19,
+      "whiteSpace": "normal",
+      "wordBreak": "normal",
+      "letterSpacing": 0,
+      "lines": [
+        "Platform: ios · Taps: 10"
+      ],
+      "lineCount": 1,
+      "height": 19,
+      "maxLineWidth": 203.52
+    },
+    {
+      "label": "tap-count-ios-121",
+      "text": "Platform: ios · Taps: 121",
+      "maxWidth": 294,
+      "lineHeight": 19,
+      "whiteSpace": "normal",
+      "wordBreak": "normal",
+      "letterSpacing": 0,
+      "lines": [
+        "Platform: ios · Taps: 121"
+      ],
+      "lineCount": 1,
+      "height": 19,
+      "maxLineWidth": 211.20000000000002
+    },
+    {
+      "label": "latin-punctuation-glue",
+      "text": "Performance is critical for this kind of library.",
+      "maxWidth": 200,
+      "lineHeight": 19,
+      "whiteSpace": "normal",
+      "wordBreak": "normal",
+      "letterSpacing": 0,
+      "lines": [
+        "Performance is ",
+        "critical for this kind ",
+        "of library."
+      ],
+      "lineCount": 3,
+      "height": 57,
+      "maxLineWidth": 198.24
+    },
+    {
+      "label": "cjk-wrap",
+      "text": "这是一段中文文本，用于测试文本布局库对中日韩字符的支持。每个字符之间都可以断行。",
+      "maxWidth": 160,
+      "lineHeight": 19,
+      "whiteSpace": "normal",
+      "wordBreak": "normal",
+      "letterSpacing": 0,
+      "lines": [
+        "这是一段中文文本，用",
+        "于测试文本布局库对中",
+        "日韩字符的支持。每个",
+        "字符之间都可以断行。"
+      ],
+      "lineCount": 4,
+      "height": 76,
+      "maxLineWidth": 160
+    },
+    {
+      "label": "pre-wrap-tabs",
+      "text": "Hello\tWorld",
+      "maxWidth": 120,
+      "lineHeight": 19,
+      "whiteSpace": "pre-wrap",
+      "wordBreak": "normal",
+      "letterSpacing": 0,
+      "lines": [
+        "Hello\t",
+        "World"
+      ],
+      "lineCount": 2,
+      "height": 38,
+      "maxLineWidth": 84.48
+    },
+    {
+      "label": "pre-wrap-newlines",
+      "text": "Hello\nWorld",
+      "maxWidth": 200,
+      "lineHeight": 19,
+      "whiteSpace": "pre-wrap",
+      "wordBreak": "normal",
+      "letterSpacing": 0,
+      "lines": [
+        "Hello",
+        "World"
+      ],
+      "lineCount": 2,
+      "height": 38,
+      "maxLineWidth": 48
+    },
+    {
+      "label": "keep-all-cjk-latin",
+      "text": "日本語foo-bar",
+      "maxWidth": 140,
+      "lineHeight": 19,
+      "whiteSpace": "normal",
+      "wordBreak": "keep-all",
+      "letterSpacing": 0,
+      "lines": [
+        "日本語foo-bar"
+      ],
+      "lineCount": 1,
+      "height": 19,
+      "maxLineWidth": 112
+    },
+    {
+      "label": "latin-short",
+      "text": "Alpha beta gamma",
+      "maxWidth": 80,
+      "lineHeight": 19,
+      "whiteSpace": "normal",
+      "wordBreak": "normal",
+      "letterSpacing": 0,
+      "lines": [
+        "Alpha ",
+        "beta ",
+        "gamma"
+      ],
+      "lineCount": 3,
+      "height": 57,
+      "maxLineWidth": 48
+    }
+  ]
+}
