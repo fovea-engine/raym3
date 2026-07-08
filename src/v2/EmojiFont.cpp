@@ -118,6 +118,13 @@ EmojiFont::BackendKind EmojiFont::ActiveBackend() {
 void EmojiFont::EnsureBackend() {
   if (backend_ != Backend::Unresolved) return;
 
+#if defined(__ANDROID__)
+  if (LoadCbdtFont()) {
+    backend_ = Backend::Cbdt;
+    return;
+  }
+#endif
+
   if (rasterizer_) {
     backend_ = Backend::Raster;
     TraceLog(LOG_INFO, "EmojiFont: using OS rasterizer backend");
@@ -134,6 +141,12 @@ void EmojiFont::EnsureBackend() {
 }
 
 void EmojiFont::RegisterCustomEmojiFont(std::vector<std::uint8_t> bytes) {
+#if defined(__ANDROID__)
+  // Android devices can report an OS emoji rasterizer while still drawing
+  // missing-glyph boxes for common emoji. When the app provides bundled emoji
+  // bytes, prefer that deterministic renderer.
+  rasterizer_ = nullptr;
+#endif
   customFontBytes_ = std::move(bytes);
   fontParsed_ = false;
   data_.clear();
