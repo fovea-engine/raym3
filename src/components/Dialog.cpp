@@ -4,6 +4,7 @@
 #include "raym3/raym3.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include <cmath>
 #include <cstring>
 #include <raylib.h>
 #include <sstream>

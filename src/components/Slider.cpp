@@ -6,6 +6,7 @@
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <raylib.h>

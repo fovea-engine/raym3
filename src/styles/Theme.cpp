@@ -1,5 +1,6 @@
 #include "raym3/styles/Theme.h"
 #include "raym3/platform/SystemAppearance.h"
+#include <cstring>
 
 namespace raym3 {
 

@@ -3,6 +3,7 @@
 #include "raym3/v2/Density.h"
 #include "EmbeddedFonts.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <set>
