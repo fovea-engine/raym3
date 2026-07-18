@@ -2,6 +2,7 @@
 
 #include "raym3/styles/Theme.h"
 #include "raym3/v2/IconRenderer.h"
+#include "raym3/v2/Renderer.h"
 #include "raym3/v2/MaterialTokens.h"
 #include <algorithm>
 #include <cmath>
@@ -89,7 +90,8 @@ void PaintCheckbox(const Node &node, float progress, bool pressed) {
   float t = std::clamp(progress, 0.0f, 1.0f);
   bool selected = t >= 0.5f;
   bool disabled = node.disabled;
-  float opacity = disabled ? tokens::kDisabledContentOpacity : 1.0f;
+  float contentOpacity = disabled ? tokens::kDisabledContentOpacity : 1.0f;
+  float opacity = CurrentRenderOpacity() * contentOpacity;
 
   Color border = selected ? Color{0, 0, 0, 0} : scheme.onSurfaceVariant;
   Color fill = scheme.primary;
@@ -132,7 +134,8 @@ void PaintRadio(const Node &node, float progress, bool pressed) {
   float t = std::clamp(progress, 0.0f, 1.0f);
   bool selected = t >= 0.5f;
   bool disabled = node.disabled;
-  float opacity = disabled ? tokens::kDisabledContentOpacity : 1.0f;
+  float contentOpacity = disabled ? tokens::kDisabledContentOpacity : 1.0f;
+  float opacity = CurrentRenderOpacity() * contentOpacity;
   Vector2 center = {visual.x + visual.width * 0.5f, visual.y + visual.height * 0.5f};
   Color color = selected ? scheme.primary : scheme.onSurfaceVariant;
   if (disabled || (pressed && !selected))
@@ -161,7 +164,8 @@ void PaintSwitch(const Node &node, float progress, bool pressed) {
   float t = std::clamp(progress, 0.0f, 1.0f);
   bool selected = t >= 0.5f;
   bool disabled = node.disabled;
-  float opacity = disabled ? tokens::kDisabledContentOpacity : 1.0f;
+  float contentOpacity = disabled ? tokens::kDisabledContentOpacity : 1.0f;
+  float opacity = CurrentRenderOpacity() * contentOpacity;
 
   Color offTrack = scheme.surfaceContainerHighest;
   Color onTrack = scheme.primary;
@@ -181,7 +185,7 @@ void PaintSwitch(const Node &node, float progress, bool pressed) {
   if (t < 0.5f && !disabled) {
     DrawRectangleRoundedLinesEx(
         {track.x + 1.0f, track.y + 1.0f, track.width - 2.0f, track.height - 2.0f},
-        1.0f, 16, 2.0f, scheme.outline);
+        1.0f, 16, 2.0f, ColorAlpha(scheme.outline, opacity));
   }
 
   float thumbSize = tokens::kSwitchInactiveThumbSize +
@@ -200,13 +204,13 @@ void PaintSwitch(const Node &node, float progress, bool pressed) {
   if (pressed && !disabled) {
     DrawCircleV({cx, cy}, tokens::kStateLayerSize * 0.5f,
                 ColorAlpha(selected ? scheme.primary : scheme.onSurface,
-                           tokens::kPressedStateOpacity));
+                           opacity * tokens::kPressedStateOpacity));
   }
 
   DrawRectangleRounded(thumb, 1.0f, 16, ColorAlpha(thumbColor, opacity));
   if (thumbSize >= tokens::kSwitchActiveThumbSize - 0.1f) {
     DrawMaterialIcon(selected ? 0xe5ca : 0xe5cd, thumb,
-                     ColorAlpha(iconColor, opacity), (int)tokens::kSwitchIconSize,
+                     ColorAlpha(iconColor, contentOpacity), (int)tokens::kSwitchIconSize,
                      true);
   }
 }
@@ -215,7 +219,8 @@ void PaintSlider(const Node &node, bool hovered) {
   const auto &scheme = Theme::GetColorScheme();
   const ControlState &st = node.control;
   Rectangle layout = node.layout;
-  float opacity = node.disabled ? tokens::kDisabledContentOpacity : 1.0f;
+  float opacity = CurrentRenderOpacity() *
+      (node.disabled ? tokens::kDisabledContentOpacity : 1.0f);
   float trackX = layout.x;
   float trackW = layout.width;
   float span = st.maxValue - st.minValue;
@@ -252,7 +257,8 @@ void PaintRangeSlider(const Node &node, bool hovered) {
   const auto &scheme = Theme::GetColorScheme();
   const ControlState &st = node.control;
   Rectangle layout = node.layout;
-  float opacity = node.disabled ? tokens::kDisabledContentOpacity : 1.0f;
+  float opacity = CurrentRenderOpacity() *
+      (node.disabled ? tokens::kDisabledContentOpacity : 1.0f);
   float trackX = layout.x;
   float trackW = layout.width;
   float start = std::clamp(st.startValue, 0.0f, 1.0f);

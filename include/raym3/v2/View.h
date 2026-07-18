@@ -98,6 +98,7 @@ struct TextInputProps {
   // return key inserts a newline.
   bool blurOnSubmit = true;
   bool selectTextOnFocus = false;
+  bool contextMenuHidden = false;
   bool autoFocus = false;
   // 'left' | 'center' | 'right' | 'auto'
   std::string textAlign = "auto";
@@ -254,6 +255,12 @@ public:
   float scrollContentHeight = 0.0f;
   float scrollVelocityX = 0.0f;
   float scrollVelocityY = 0.0f;
+  // ScrollView axis. false is the React Native/default vertical behaviour.
+  bool scrollHorizontal = false;
+  bool scrollFollowEnd = false;
+  // An ancestor (e.g. a terminal accessory key bar) can opt taps into keeping
+  // the focused TextInput/IME active, matching RN keyboardShouldPersistTaps.
+  bool keepTextInputFocusOnTap = false;
   bool scrollMomentumEnabled = false;
   // Android-style fling simulation state (ClampingScrollSimulation).
   bool flingActive = false;
@@ -291,6 +298,10 @@ public:
   bool hasScrim = false;
   bool capturesInput = false;
   float overlayDragOffsetY = 0.0f;
+  float bottomSheetDragStartOffsetY = 0.0f;
+  bool bottomSheetHasPresented = false;
+  bool bottomSheetAnimating = false;
+  bool bottomSheetDismissPending = false;
 
   std::optional<Rectangle> anchorRect;
   PopoverPlacement placement = PopoverPlacement::Auto;

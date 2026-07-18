@@ -49,16 +49,19 @@ public:
 
   static Font LoadFont(FontWeight weight = FontWeight::Regular,
                        FontStyle style = FontStyle::Normal, int size = 16);
-  static Font LoadCustomFont(const std::string &path, int size);
+  static Font LoadCustomFont(const std::string &path, int size,
+                             const std::vector<int> &codepoints = {});
 
   // Named font registry — call RegisterFont once at startup, then reference
   // the name in CSS font-family or style.text.fontFamily.
-  static void RegisterFont(const std::string &name, const std::string &path);
+  static void RegisterFont(const std::string &name, const std::string &path,
+                           std::vector<int> codepoints = {});
   // Register a font family from raw bytes (TTF/OTF) instead of a path —
   // needed for assets delivered as bytes (web MEMFS-less runtime load,
   // Android APK asset bytes, or any RayactAsset.bytes() payload). FontManager
   // copies the bytes into its own storage.
-  static void RegisterFontFromMemory(const std::string &name, std::vector<unsigned char> bytes);
+  static void RegisterFontFromMemory(const std::string &name, std::vector<unsigned char> bytes,
+                                     std::vector<int> codepoints = {});
   static Font LoadFontByFamily(const std::string &name, int size);
 
   static bool HasFont(const std::string &name);
@@ -84,13 +87,15 @@ private:
   struct FontSource {
     std::string path;
     std::vector<unsigned char> bytes;
+    std::vector<int> codepoints;
     bool isMemory = false;
   };
   static std::unordered_map<std::string, FontSource> fontRegistry_;
   // Custom font cache: "name:size" → Font
   static std::unordered_map<std::string, Font> customFontCache_;
 
-  static Font LoadCustomFontFromMemory(const std::vector<unsigned char> &bytes, int size);
+  static Font LoadCustomFontFromMemory(const std::vector<unsigned char> &bytes, int size,
+                                       const std::vector<int> &codepoints);
   static void InvalidateCustomFontCache(const std::string &name);
 };
 

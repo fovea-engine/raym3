@@ -96,6 +96,14 @@ bool ShouldKeepTextInputFocused(const NodePtr &tapTarget, bool scrollEngaged,
     return true;
   if (tapTarget && tapTarget->kind == NodeKind::TextInput)
     return true;
+  // ScrollView keyboardShouldPersistTaps applies to every descendant, not
+  // merely to the container itself.
+  for (NodePtr current = tapTarget; current;) {
+    if (current->keepTextInputFocusOnTap)
+      return true;
+    auto it = Ctx().committedParentMap.find(current.get());
+    current = it != Ctx().committedParentMap.end() ? it->second : nullptr;
+  }
   if (pointerTravel > kTouchSlop)
     return true;
   return false;

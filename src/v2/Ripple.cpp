@@ -4,6 +4,7 @@
 #include "raym3/v2/RenderContext.h"
 #include <algorithm>
 #include <cmath>
+#include <rlgl.h>
 #include <vector>
 
 namespace raym3::v2 {
@@ -15,8 +16,100 @@ constexpr float kExpandDuration = 0.225f;
 constexpr float kFadeOutDuration = 0.375f;
 constexpr float kInitialRadiusFraction = 0.30f;
 constexpr float kEndRadiusExtra = 5.0f;
+constexpr int kRippleRows = 24;
+constexpr int kRippleColumns = 32;
 
+struct RippleVertex {
+  Vector2 position;
+  Color color;
+};
 
+static Color RippleColorAt(Vector2 point, Vector2 center, float radius,
+                           Color inner) {
+  float dx = point.x - center.x;
+  float dy = point.y - center.y;
+  float distance = std::sqrt(dx * dx + dy * dy);
+  float strength = std::clamp(1.0f - distance / std::max(0.0001f, radius),
+                              0.0f, 1.0f);
+  Color result = inner;
+  result.a = static_cast<unsigned char>(
+      std::round(static_cast<float>(inner.a) * strength));
+  return result;
+}
+
+static void RoundedRowLimits(Rectangle bounds, float cornerRadius, float y,
+                             float &left, float &right) {
+  float radius = std::clamp(cornerRadius, 0.0f,
+                            std::min(bounds.width, bounds.height) * 0.5f);
+  left = bounds.x;
+  right = bounds.x + bounds.width;
+  if (radius <= 0.0f)
+    return;
+
+  float localY = std::clamp(y - bounds.y, 0.0f, bounds.height);
+  float cornerCenterY = 0.0f;
+  if (localY < radius)
+    cornerCenterY = radius;
+  else if (localY > bounds.height - radius)
+    cornerCenterY = bounds.height - radius;
+  else
+    return;
+
+  float dy = localY - cornerCenterY;
+  float arcX = std::sqrt(std::max(0.0f, radius * radius - dy * dy));
+  float inset = radius - arcX;
+  left += inset;
+  right -= inset;
+}
+
+static RippleVertex RippleGridVertex(Rectangle bounds, float cornerRadius,
+                                     Vector2 center, float rippleRadius,
+                                     Color inner, int row, int column) {
+  float v = static_cast<float>(row) / static_cast<float>(kRippleRows);
+  float y = bounds.y + bounds.height * v;
+  float left = bounds.x;
+  float right = bounds.x + bounds.width;
+  RoundedRowLimits(bounds, cornerRadius, y, left, right);
+  float u = static_cast<float>(column) /
+            static_cast<float>(kRippleColumns);
+  Vector2 point{left + (right - left) * u, y};
+  return {point, RippleColorAt(point, center, rippleRadius, inner)};
+}
+
+static void EmitRippleVertex(const RippleVertex &vertex) {
+  rlColor4ub(vertex.color.r, vertex.color.g, vertex.color.b, vertex.color.a);
+  rlVertex2f(vertex.position.x, vertex.position.y);
+}
+
+static void DrawClippedRipple(Rectangle bounds, float cornerRadius,
+                              Vector2 center, float radius, Color inner) {
+  if (bounds.width <= 0.0f || bounds.height <= 0.0f || radius <= 0.0f)
+    return;
+
+  // The mesh itself has the component's rounded outline, so clipping is
+  // identical on GL, Metal, Vulkan, and WebGPU and does not alter global
+  // scissor/stencil state used by TextInput and scroll containers.
+  rlBegin(RL_TRIANGLES);
+  for (int row = 0; row < kRippleRows; ++row) {
+    for (int column = 0; column < kRippleColumns; ++column) {
+      RippleVertex p00 = RippleGridVertex(bounds, cornerRadius, center, radius,
+                                          inner, row, column);
+      RippleVertex p10 = RippleGridVertex(bounds, cornerRadius, center, radius,
+                                          inner, row, column + 1);
+      RippleVertex p01 = RippleGridVertex(bounds, cornerRadius, center, radius,
+                                          inner, row + 1, column);
+      RippleVertex p11 = RippleGridVertex(bounds, cornerRadius, center, radius,
+                                          inner, row + 1, column + 1);
+      EmitRippleVertex(p00);
+      EmitRippleVertex(p10);
+      EmitRippleVertex(p11);
+      EmitRippleVertex(p00);
+      EmitRippleVertex(p11);
+      EmitRippleVertex(p01);
+    }
+  }
+  rlEnd();
+}
 
 static float SmoothStep(float t) {
   t = std::clamp(t, 0.0f, 1.0f);
@@ -104,8 +197,6 @@ void TickRipples(float dt) {
 }
 
 void PaintRipplesForNode(const Node &node, Rectangle bounds, float cornerRadius) {
-  (void)bounds;
-  (void)cornerRadius;
   NodeId id = IdOf(&node);
   for (const RippleInstance &r : Ctx().ripples) {
     if (r.ownerId != id || r.displayAlpha <= 0.001f)
@@ -116,8 +207,7 @@ void PaintRipplesForNode(const Node &node, Rectangle bounds, float cornerRadius)
       continue;
     float inkA = (float)r.inkColor.a / 255.0f * r.displayAlpha;
     Color inner = ColorAlpha(Color{r.inkColor.r, r.inkColor.g, r.inkColor.b, 255}, inkA);
-    Color outer = ColorAlpha(inner, 0.0f);
-    DrawCircleGradient(center, radius, inner, outer);
+    DrawClippedRipple(bounds, cornerRadius, center, radius, inner);
   }
 }
 

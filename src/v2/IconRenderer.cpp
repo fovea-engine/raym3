@@ -1,4 +1,5 @@
 #include "raym3/v2/IconRenderer.h"
+#include "raym3/v2/Renderer.h"
 
 #include "raym3/config.h"
 #include "raym3/fonts/FontManager.h"
@@ -348,6 +349,7 @@ void DrawIcon(int codepoint, Rectangle bounds, Color color, int sizeDp, bool fil
     return;
   if (sizeDp <= 0)
     sizeDp = (int)std::round(std::min(bounds.width, bounds.height));
+  color = ApplyRenderOpacity(color);
   sizeDp = FontManager::SnapSize(sizeDp);
 
   RegisterIcon(codepoint, sizeDp, filled, setName);

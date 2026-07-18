@@ -60,6 +60,7 @@ bool TextInputCut(Node &node);
 bool TextInputPaste(Node &node);
 bool TextInputReplaceSelection(Node &node, const std::string &text,
                                int composingStart = -1, int composingEnd = -1);
+void TextInputSubmitEditing(Node &node);
 void TextInputSetEditingState(Node &node, const std::string &text,
                               int selectionStart, int selectionEnd,
                               int composingStart, int composingEnd,

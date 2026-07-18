@@ -35,6 +35,13 @@ namespace raym3::v2 {
 
 // M3 default backdrop scrim alpha (style.scrimOpacity overrides per-overlay).
 static constexpr float kDefaultScrimOpacity = 0.32f;
+static thread_local float g_renderOpacity = 1.0f;
+
+float CurrentRenderOpacity() { return g_renderOpacity; }
+
+Color ApplyRenderOpacity(Color color) {
+  return ColorAlpha(color, g_renderOpacity);
+}
 
 // All mutable render/input/text-input state lives in RenderContext (see
 // raym3/v2/RenderContext.h); FixedNode/StackEntry are defined there too.
@@ -675,6 +682,8 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
   if (scrolls) {
     node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
     node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
+    if (node->scrollFollowEnd)
+      node->scrollOffsetY = std::max(0.0f, node->scrollContentHeight - node->layout.height);
   }
 }
 #endif
@@ -817,6 +826,8 @@ static void LayoutFallback(const NodePtr &node, Rectangle bounds) {
   if (scrolls) {
     node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
     node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
+    if (node->scrollFollowEnd)
+      node->scrollOffsetY = std::max(0.0f, node->scrollContentHeight - node->layout.height);
   }
 }
 
@@ -851,7 +862,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
         node.layout.width + (expandedWidth - node.layout.width) * t;
   }
 
-  float opacity = style.opacity.value_or(1.0f);
+  float opacity = CurrentRenderOpacity();
   float radius = style.borderRadius.value_or(0.0f);
   // M3 elevation: render a key (umbra) + ambient (penumbra) drop shadow when a
   // component declares an elevation but no explicit boxShadows. dp value maps
@@ -922,6 +933,17 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
   if (style.backgroundColor) {
     raym3::Renderer::DrawRoundedRectangle(backgroundLayout, radius,
                                           ColorAlpha(*style.backgroundColor, opacity));
+    if (node.role == NodeRole::BottomSheet && radius > 0.0f) {
+      // A modal bottom sheet is attached to the viewport edge. Only its top
+      // corners are rounded; fill the lower radius band so the bottom-left and
+      // bottom-right corners remain square and visually anchored to screen.
+      DrawRectangleRec(
+          {backgroundLayout.x,
+           backgroundLayout.y + std::max(0.0f, backgroundLayout.height - radius),
+           backgroundLayout.width,
+           std::min(radius, backgroundLayout.height)},
+          ColorAlpha(*style.backgroundColor, opacity));
+    }
   }
   if (style.stateLayerColor && node.animStateAlpha > 0.001f) {
     // Use the eased alpha rather than the style's baked opacity so the layer
@@ -956,7 +978,8 @@ static void RenderTextNode(const Node &node, const Style &style) {
   // Reuse the cached PreparedText from Yoga measure phase — no re-measurement.
   const PreparedText& prepared = GetOrPrepare(&node);
   TextLayoutResult layout = LayoutText(prepared, node.layout.width);
-  Color color = style.text.color.value_or(Theme::GetColorScheme().onSurface);
+  Color color = ApplyRenderOpacity(
+      style.text.color.value_or(Theme::GetColorScheme().onSurface));
   // Layout coords are in dp; the font texture was generated at pixel size
   // (size * GetDpiScale()) and we want to sample it 1:1, not 1:(1/dp).
   // So we render OUTSIDE the host's dp-scaling matrix, at the pixel
@@ -1044,6 +1067,8 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   Ctx().lastStats.nodeCount++;
   node->state = ComputeState(*node);
   Style style = EffectiveStyle(*node);
+  const float parentOpacity = g_renderOpacity;
+  g_renderOpacity *= std::clamp(style.opacity.value_or(1.0f), 0.0f, 1.0f);
 
   int effectiveZ = std::max(parentMaxZ, node->zIndex);
   bool occludes = NodeOccludesInput(*node, style);
@@ -1149,16 +1174,9 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
                        HasRipplesForNode(nodeId);
     if (paintRipple) {
       float rippleRadius = style.borderRadius.value_or(0.0f);
-      bool rippleStencil = rippleRadius > 0.0f;
-      if (rippleStencil)
-        raym3::PushRoundedStencil(node->layout, rippleRadius);
-      else
-        PushScissor(node->layout);
+      // Ripple.cpp tessellates the gradient into the component's rounded
+      // outline. It does not depend on backend scissor/stencil behavior.
       PaintRipplesForNode(*node, node->layout, rippleRadius);
-      if (rippleStencil)
-        raym3::PopRoundedStencil();
-      else
-        PopScissor();
     }
   }
 
@@ -1178,8 +1196,8 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     // Background already drawn by DrawNodeBackground with the user's
     // borderRadius. Only add state layer, text, and cursor — no second fill.
     float radius = style.borderRadius.value_or(0.0f);
-    Color textColor =
-        style.text.color.value_or(Theme::GetColorScheme().onSurface);
+    Color textColor = ApplyRenderOpacity(
+        style.text.color.value_or(Theme::GetColorScheme().onSurface));
     float fontSize =
         style.text.fontSize.value_or(Theme::GetTypographyScale().labelLarge);
 
@@ -1190,7 +1208,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
       raym3::Renderer::DrawRoundedRectangle(
           node->layout, radius,
           ColorAlpha(Color{textColor.r, textColor.g, textColor.b, 255},
-                     node->animStateAlpha));
+                     CurrentRenderOpacity() * node->animStateAlpha));
     }
     raym3::Renderer::DrawTextCentered(node->text.c_str(), node->layout,
                                       fontSize, textColor, FontWeight::Medium);
@@ -1323,7 +1341,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   if (node->role == NodeRole::ButtonGroupContainer) {
     int n = (int)children.size();
     float cr      = 20.0f; // pill corner radius
-    float opacity = style.opacity.value_or(1.0f);
+    float opacity = CurrentRenderOpacity();
     const ColorScheme &scheme = Theme::GetColorScheme();
 
     auto DrawSegmentFill = [&](int i, Rectangle r, Color color) {
@@ -1371,7 +1389,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   // trailing rounds right. Fills drawn before children (text/chevron on top).
   if (node->role == NodeRole::SplitButton && children.size() == 2) {
     const ColorScheme &scheme = Theme::GetColorScheme();
-    float opacity = style.opacity.value_or(1.0f);
+    float opacity = CurrentRenderOpacity();
     float h = node->layout.height;
     float cr = h * 0.5f; // full-pill outer ends
     // M3 Expressive split button: small rounded INNER corners + a gap between
@@ -1462,7 +1480,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
 
   // Dividers between segments (drawn on top of fills, under outer border).
   if (node->role == NodeRole::ButtonGroupContainer) {
-    float opacity = style.opacity.value_or(1.0f);
+    float opacity = CurrentRenderOpacity();
     Color divColor = ColorAlpha(Theme::GetColorScheme().outline, opacity);
     for (size_t i = 0; i + 1 < children.size(); ++i) {
       float x = children[i]->layout.x + children[i]->layout.width;
@@ -1516,7 +1534,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   // ButtonGroup/SegmentedButton outer border drawn after stencil pop so it
   // sits on top of selection fills and is never clipped by its own container.
   if (node->role == NodeRole::ButtonGroupContainer) {
-    float opacity  = style.opacity.value_or(1.0f);
+    float opacity  = CurrentRenderOpacity();
     float radius   = style.borderRadius.value_or(20.0f);
     raym3::Renderer::DrawRoundedRectangleEx(
         node->layout, radius,
@@ -1525,6 +1543,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
 
   if (hasTransform)
     rlPopMatrix();
+  g_renderOpacity = parentOpacity;
 }
 
 // Compute screen-relative layout for a fixed-position node.
@@ -1635,6 +1654,30 @@ static void RenderFixedNode(const FixedNode &fn, Rectangle screen) {
   if (!fn.node || fn.node->style.display == Display::None)
     return;
 
+  if (fn.node->role == NodeRole::BottomSheet &&
+      fn.node->bottomSheetHasPresented && fn.node->bottomSheetAnimating) {
+    const float target = fn.node->bottomSheetDismissPending
+        ? std::max(1.0f, fn.node->layout.height)
+        : 0.0f;
+    float dt = GetFrameTime();
+    if (dt <= 0.0f || dt > 0.1f) dt = 0.016f;
+    // Exponential settling remains stable across 60/90/120 Hz displays and
+    // can be interrupted by a new handle drag without discontinuity.
+    const float alpha = 1.0f - std::exp(-18.0f * dt);
+    fn.node->overlayDragOffsetY +=
+        (target - fn.node->overlayDragOffsetY) * alpha;
+    if (std::fabs(target - fn.node->overlayDragOffsetY) < 0.75f) {
+      fn.node->overlayDragOffsetY = target;
+      fn.node->bottomSheetAnimating = false;
+      fn.node->alwaysAnimates = false;
+      if (fn.node->bottomSheetDismissPending) {
+        fn.node->bottomSheetDismissPending = false;
+        if (fn.node->onRequestClose) fn.node->onRequestClose();
+        else if (fn.node->onPress) fn.node->onPress();
+      }
+    }
+  }
+
   // Three-layer modal model:
   //   base content      → z 0..N      (everything else)
   //   scrim backdrop     → z = panelZ-1 (full-screen dismiss target)
@@ -1648,6 +1691,17 @@ static void RenderFixedNode(const FixedNode &fn, Rectangle screen) {
     float scrimAlpha =
         EffectiveStyle(*fn.node).scrimOpacity.value_or(kDefaultScrimOpacity);
     scrimAlpha = std::clamp(scrimAlpha, 0.0f, 1.0f);
+    // A bottom sheet's scrim tracks how far the sheet has slid off-screen
+    // (drag OR the settle animation), so it fades out WITH the sheet
+    // instead of staying fully opaque until the sheet fully clears and then
+    // vanishing in one frame (perceived as the scrim "sticking" briefly
+    // after a swipe-dismiss).
+    if (fn.node->role == NodeRole::BottomSheet) {
+      const float extent = std::max(1.0f, fn.node->layout.height);
+      const float hiddenFraction =
+          std::clamp(fn.node->overlayDragOffsetY / extent, 0.0f, 1.0f);
+      scrimAlpha *= (1.0f - hiddenFraction);
+    }
     int scrimZ = fn.node->zIndex - 1;
     if (scrimAlpha > 0.0f)
       DrawRectangleRec(screen, ColorAlpha(scheme.scrim, scrimAlpha));
@@ -1659,6 +1713,16 @@ static void RenderFixedNode(const FixedNode &fn, Rectangle screen) {
   }
 
   LayoutFixed(fn.node, screen);
+  if (fn.node->role == NodeRole::BottomSheet &&
+      !fn.node->bottomSheetHasPresented) {
+    // Begin below the viewport, then let the next frames settle to the open
+    // detent. The user can grab the handle during this presentation.
+    fn.node->bottomSheetHasPresented = true;
+    fn.node->overlayDragOffsetY = std::max(1.0f, fn.node->layout.height);
+    fn.node->bottomSheetAnimating = true;
+    fn.node->alwaysAnimates = true;
+    LayoutFixed(fn.node, screen);
+  }
   // Fixed roots start a new stacking layer keyed on their own zIndex.
   RenderNode(fn.node, fn.node->zIndex);
 }
@@ -1766,6 +1830,33 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   // after Render() so it reads the snapshot just committed for the current frame.
   Ctx().committedStackOrder = Ctx().stackOrder;
   Ctx().committedParentMap = Ctx().parentMap;
+}
+
+NodePtr CommittedParentOf(const Node *node) {
+  auto it = Ctx().committedParentMap.find(const_cast<Node *>(node));
+  return it != Ctx().committedParentMap.end() ? it->second : nullptr;
+}
+
+void RenderOverlayRepaint(const NodePtr &root, Rectangle bounds) {
+  // Save the input state built by the main Render pass. The repaint below
+  // runs a full Render (it needs the working maps for its own fixed-node
+  // sorting), then we restore both the working and committed snapshots so
+  // hit testing keeps seeing the whole frame, not just this subtree.
+  auto savedStack = std::move(Ctx().stackOrder);
+  auto savedParent = std::move(Ctx().parentMap);
+  auto savedFixed = std::move(Ctx().fixedNodes);
+  auto savedCommittedStack = std::move(Ctx().committedStackOrder);
+  auto savedCommittedParent = std::move(Ctx().committedParentMap);
+  auto savedStats = Ctx().lastStats;
+
+  Render(root, bounds, /*layoutAlreadyComputed=*/true);
+
+  Ctx().stackOrder = std::move(savedStack);
+  Ctx().parentMap = std::move(savedParent);
+  Ctx().fixedNodes = std::move(savedFixed);
+  Ctx().committedStackOrder = std::move(savedCommittedStack);
+  Ctx().committedParentMap = std::move(savedCommittedParent);
+  Ctx().lastStats = savedStats;
 }
 
 namespace {
@@ -2141,8 +2232,10 @@ static NodePtr FindScrollableNodeAt(const NodePtr &node, Vector2 point) {
   }
 
   Style style = EffectiveStyle(*node);
-  if (inBounds && style.overflow == Overflow::Scroll &&
-      node->scrollContentHeight > node->layout.height + 0.5f)
+  bool canScroll = node->scrollHorizontal
+      ? node->scrollContentWidth > node->layout.width + 0.5f
+      : node->scrollContentHeight > node->layout.height + 0.5f;
+  if (inBounds && style.overflow == Overflow::Scroll && canScroll)
     return node;
   return nullptr;
 }
@@ -2163,6 +2256,8 @@ static NodePtr FindScrollableForInput(const NodePtr &root, Vector2 point) {
 static bool ScrollNodeBy(const NodePtr &node, float deltaX, float deltaY) {
   if (!node)
     return false;
+  if (std::abs(deltaY) > 0.01f)
+    node->scrollFollowEnd = false;
   float oldX = node->scrollOffsetX;
   float oldY = node->scrollOffsetY;
   node->scrollOffsetX =
@@ -2339,7 +2434,10 @@ void ResolveScrollInput(const NodePtr &root) {
     float totalDx = pt.x - Ctx().scroll.pressOrigin.x;
     float totalDy = pt.y - Ctx().scroll.pressOrigin.y;
     if (!Ctx().scroll.engaged) {
-      if (std::abs(totalDy) > kTouchSlop && std::abs(totalDy) > std::abs(totalDx)) {
+      const bool horizontal = Ctx().scroll.candidate->scrollHorizontal;
+      const float primary = horizontal ? totalDx : totalDy;
+      const float cross = horizontal ? totalDy : totalDx;
+      if (std::abs(primary) > kTouchSlop && std::abs(primary) > std::abs(cross)) {
         Ctx().scroll.engaged = true;
         ClearPendingPress();
         NodeId focused = GetFocusedId();
@@ -2361,8 +2459,12 @@ void ResolveScrollInput(const NodePtr &root) {
     }
     VelocityTrackerAddSample(GetTime(), pt.y);
     if (Ctx().scroll.engaged) {
+      float dx = pt.x - Ctx().scroll.lastPointer.x;
       float dy = pt.y - Ctx().scroll.lastPointer.y;
-      ScrollNodeBy(Ctx().scroll.candidate, 0.0f, -dy);
+      if (Ctx().scroll.candidate->scrollHorizontal)
+        ScrollNodeBy(Ctx().scroll.candidate, -dx, 0.0f);
+      else
+        ScrollNodeBy(Ctx().scroll.candidate, 0.0f, -dy);
       Ctx().scroll.lastPointer = pt;
     }
     return;
@@ -2385,7 +2487,10 @@ void ResolveScrollInput(const NodePtr &root) {
 
 static constexpr float kBottomSheetDismissThreshold = 80.0f;
 static constexpr float kBottomSheetDismissVelocity = 800.0f;
-static constexpr float kBottomSheetHandleTouchHeight = 48.0f;
+// Include the visible handle and a conventional sheet header in the explicit
+// gesture affordance. Non-interactive sheet surface can also acquire the drag
+// below (buttons/controls keep priority).
+static constexpr float kBottomSheetHandleTouchHeight = 112.0f;
 
 static NodePtr FindBottomSheetRoot(const NodePtr &owner) {
   NodePtr curr = owner;
@@ -2558,22 +2663,20 @@ void ResolveInput(const NodePtr &root) {
       if (Ctx().activeIsBottomSheetDrag) {
         if (p.down) {
           float dy = pt.y - GetDragOrigin().y;
-          an->overlayDragOffsetY = std::max(0.0f, dy);
+          an->overlayDragOffsetY = std::clamp(
+              an->bottomSheetDragStartOffsetY + dy,
+              0.0f, std::max(1.0f, an->layout.height));
           ClearScrollGesture();
         } else {
-          float dt = GetFrameTime();
-          if (dt <= 0.0f || dt > 0.1f)
-            dt = 0.016f;
-          float velocityY = (pt.y - GetDragOrigin().y) / dt;
+          const float velocityY = VelocityTrackerEstimate(GetTime());
           if (an->overlayDragOffsetY > kBottomSheetDismissThreshold ||
               velocityY > kBottomSheetDismissVelocity) {
-            if (an->onRequestClose)
-              an->onRequestClose();
-            else if (an->onPress)
-              an->onPress();
+            an->bottomSheetDismissPending = true;
           } else {
-            an->overlayDragOffsetY = 0.0f;
+            an->bottomSheetDismissPending = false;
           }
+          an->bottomSheetAnimating = true;
+          an->alwaysAnimates = true;
           SetActiveId(0);
           Ctx().activeIsBottomSheetDrag = false;
         }
@@ -2590,7 +2693,7 @@ void ResolveInput(const NodePtr &root) {
           StartRippleFadeOut(activeId);
         const float travel = PointerTravel(GetDragOrigin(), pt);
         if (an->kind != NodeKind::TextInput)
-          DismissTextInputIfNeeded(nullptr, Ctx().scroll.engaged, travel);
+          DismissTextInputIfNeeded(target, Ctx().scroll.engaged, travel);
         ReleaseActive(an, pt, target.get());
         SetActiveId(0);
         Ctx().activeIsScrim = false;
@@ -2630,11 +2733,24 @@ void ResolveInput(const NodePtr &root) {
       }
     }
     NodePtr sheet = FindBottomSheetRoot(owner);
-    if (sheet && !sheet->disabled && PointInBottomSheetHandle(*sheet, pt)) {
+    // Both the handle grip AND the plain surface-drag fallback are gated on
+    // "no real interactive target here" — the 112dp handle band is measured
+    // from the sheet's top edge for an easy-to-grab drag target, but sheet
+    // CONTENT (e.g. a per-screen title bar's Back button) can legitimately
+    // render inside that same band. A real onPress target under the finger
+    // must win, or every screen whose header falls within the handle band
+    // has its controls silently eaten by the drag gesture.
+    const bool noTargetHere = !ownerIsScrim && !target;
+    const bool sheetSurfaceDrag = sheet && noTargetHere;
+    if (sheet && !sheet->disabled && noTargetHere &&
+        (PointInBottomSheetHandle(*sheet, pt) || sheetSurfaceDrag)) {
       SetActiveId(IdOf(sheet));
       Ctx().activeIsScrim = false;
       Ctx().activeIsBottomSheetDrag = true;
-      sheet->overlayDragOffsetY = 0.0f;
+      sheet->bottomSheetAnimating = false;
+      sheet->alwaysAnimates = false;
+      sheet->bottomSheetDismissPending = false;
+      sheet->bottomSheetDragStartOffsetY = sheet->overlayDragOffsetY;
       SetDragOrigin(pt);
       return;
     }
@@ -2669,7 +2785,7 @@ void ResolveInput(const NodePtr &root) {
       } else {
         if (pending->onPress)
           pending->onPress();
-        DismissTextInputIfNeeded(nullptr, false,
+        DismissTextInputIfNeeded(pending, false,
                                  PointerTravel(pressOrigin, pt));
       }
     }

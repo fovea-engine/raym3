@@ -5,6 +5,7 @@
 #include "raym3/styles/Theme.h"
 #include "raym3/v2/Input.h"
 #include "raym3/v2/RenderContext.h"
+#include "raym3/v2/Renderer.h"
 #include "raym3/v2/Style.h"
 
 #include <algorithm>
@@ -419,7 +420,7 @@ static void DrawSelection(Rectangle inputBounds, const char *text, int start,
     float selectionY =
         inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f;
     DrawRectangleRec({selectionX, selectionY, endX - startX, kFieldFontSize},
-                     selectionColor);
+                     ApplyRenderOpacity(selectionColor));
     return;
   }
 
@@ -440,7 +441,7 @@ static void DrawSelection(Rectangle inputBounds, const char *text, int start,
     DrawRectangleRec({origin.x - scrollOffset + sx,
                       origin.y - scrollOffsetY + i * kLineHeight,
                       std::max(1.0f, ex - sx), kFieldFontSize},
-                     selectionColor);
+                     ApplyRenderOpacity(selectionColor));
   }
 }
 
@@ -463,7 +464,7 @@ static void DrawComposingUnderline(Rectangle inputBounds, const char *text,
   ColorScheme &scheme = Theme::GetColorScheme();
   Color underline = scheme.primary;
   underline.a = 255;
-  DrawLineEx({x, y}, {x + width, y}, 2.0f, underline);
+  DrawLineEx({x, y}, {x + width, y}, 2.0f, ApplyRenderOpacity(underline));
 }
 
 static void DrawCursor(Rectangle inputBounds, const char *text, int position,
@@ -505,7 +506,8 @@ static void DrawCursor(Rectangle inputBounds, const char *text, int position,
   }
   DrawLine(static_cast<int>(cursorX), static_cast<int>(cursorY),
            static_cast<int>(cursorX),
-           static_cast<int>(cursorY + kFieldFontSize), cursorColor);
+           static_cast<int>(cursorY + kFieldFontSize),
+           ApplyRenderOpacity(cursorColor));
 }
 
 static void SyncScrollForCaret(Node &node, char *buffer, float textStartX,
@@ -761,6 +763,55 @@ static void HandlePointer(Node &node, const PointerInput &p) {
   }
 }
 
+static void SubmitEditingInternal(Node &node) {
+  char *buffer = TextBuffer(node);
+  int bufferSize = TextBufferSize(node);
+  if (!buffer || bufferSize <= 1)
+    return;
+  if (node.disabled || node.textInput.disabled || node.textInput.readOnly)
+    return;
+
+  TextEditState &edit = node.textEdit;
+  NodeId id = IdOf(&node);
+
+  // React Native parity: multiline fields with blurOnSubmit=false insert a
+  // newline; otherwise submit current text and blur only when blurOnSubmit=true.
+  if (node.textInput.multiline && !node.textInput.blurOnSubmit) {
+    int len = static_cast<int>(std::strlen(buffer));
+    if (!node.textInput.maxLength ||
+        Utf8CodepointCount(std::string(buffer)) < node.textInput.maxLength) {
+      if (edit.selectionStart != -1 && edit.selectionEnd != -1) {
+        SaveToHistory(id, buffer);
+        DeleteSelection(node, buffer);
+        len = static_cast<int>(std::strlen(buffer));
+      } else {
+        SaveToHistory(id, buffer);
+      }
+      edit.cursor = std::clamp(edit.cursor, 0, len);
+      if (len + 1 < bufferSize) {
+        if (edit.cursor < len)
+          std::memmove(&buffer[edit.cursor + 1], &buffer[edit.cursor],
+                       static_cast<size_t>(len - edit.cursor + 1));
+        buffer[edit.cursor] = '\n';
+        edit.cursor += 1;
+      }
+      edit.selectionStart = edit.selectionEnd = -1;
+      edit.composingStart = edit.composingEnd = -1;
+      edit.lastBlinkTime = static_cast<float>(GetTime());
+      CommitBuffer(node, buffer);
+    }
+    return;
+  }
+
+  if (node.textInput.onSubmit)
+    node.textInput.onSubmit(std::string(buffer));
+  if (node.textInput.blurOnSubmit) {
+    edit.isSelecting = false;
+    edit.selectionStart = edit.selectionEnd = -1;
+    Blur();
+  }
+}
+
 static void ProcessKeyboard(Node &node) {
   char *buffer = TextBuffer(node);
   int bufferSize = TextBufferSize(node);
@@ -789,43 +840,8 @@ static void ProcessKeyboard(Node &node) {
     return;
   }
 
-  // Enter: a multiline field that should not blur inserts a newline; otherwise
-  // it fires onSubmit (react-native onSubmitEditing) and, when blurOnSubmit is
-  // set (single-line default), blurs.
   if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
-    if (node.textInput.multiline && !node.textInput.blurOnSubmit) {
-      int len = static_cast<int>(std::strlen(buffer));
-      if (!node.textInput.maxLength ||
-          Utf8CodepointCount(std::string(buffer)) < node.textInput.maxLength) {
-        if (edit.selectionStart != -1 && edit.selectionEnd != -1) {
-          SaveToHistory(id, buffer);
-          DeleteSelection(node, buffer);
-          len = static_cast<int>(std::strlen(buffer));
-        } else {
-          SaveToHistory(id, buffer);
-        }
-        edit.cursor = std::clamp(edit.cursor, 0, len);
-        if (len + 1 < bufferSize) {
-          if (edit.cursor < len)
-            std::memmove(&buffer[edit.cursor + 1], &buffer[edit.cursor],
-                         static_cast<size_t>(len - edit.cursor + 1));
-          buffer[edit.cursor] = '\n';
-          edit.cursor += 1;
-        }
-        edit.selectionStart = edit.selectionEnd = -1;
-        edit.composingStart = edit.composingEnd = -1;
-        edit.lastBlinkTime = static_cast<float>(GetTime());
-        notify();
-      }
-      return;
-    }
-    if (node.textInput.onSubmit)
-      node.textInput.onSubmit(std::string(buffer));
-    if (node.textInput.blurOnSubmit) {
-      edit.isSelecting = false;
-      edit.selectionStart = edit.selectionEnd = -1;
-      Blur();
-    }
+    SubmitEditingInternal(node);
     return;
   }
 
@@ -1226,6 +1242,8 @@ static void ProcessKeyboard(Node &node) {
 
 } // namespace
 
+void TextInputSubmitEditing(Node &node) { SubmitEditingInternal(node); }
+
 void ResyncTextInputBuffer(NodeId nodeId, int cursorPos) {
   (void)cursorPos;
   Ctx().textInputUndo.erase(nodeId);
@@ -1585,32 +1603,35 @@ void PaintTextInput(Node &node) {
 
   ColorScheme &scheme = Theme::GetColorScheme();
   Style style = node.style;
+  const float opacity = CurrentRenderOpacity();
   float cornerRadius =
       style.borderRadius.value_or(Theme::GetShapeTokens().cornerMedium);
 
   if (disabled) {
     if (label) {
       raym3::Renderer::DrawText(label, {bounds.x, bounds.y}, kLabelFloatSize,
-                                scheme.onSurfaceVariant, FontWeight::Regular);
+                                ApplyRenderOpacity(scheme.onSurfaceVariant), FontWeight::Regular);
     }
     raym3::Renderer::DrawRoundedRectangleEx(inputBounds, cornerRadius,
-                                            scheme.outline, 1.0f);
+                                            ApplyRenderOpacity(style.borderColor.value_or(scheme.outline)),
+                                            style.borderWidth.value_or(1.0f));
     if (buffer[0]) {
       Vector2 textPos = {inputBounds.x + kBasePadding * 2.0f,
                          inputBounds.y +
                              (inputBounds.height - kFieldFontSize) / 2.0f};
-      Color disabledText = scheme.onSurface;
+      Color disabledText = style.text.color.value_or(scheme.onSurface);
       disabledText.a = 128;
-      raym3::Renderer::DrawText(buffer, textPos, kFieldFontSize, disabledText,
+      raym3::Renderer::DrawText(buffer, textPos, kFieldFontSize,
+                                ApplyRenderOpacity(disabledText),
                                 FontWeight::Regular);
     } else if (!ti.placeholder.empty()) {
       Vector2 textPos = {inputBounds.x + kBasePadding * 2.0f,
                          inputBounds.y +
                              (inputBounds.height - kFieldFontSize) / 2.0f};
-      Color ph = scheme.onSurfaceVariant;
+      Color ph = style.text.color.value_or(scheme.onSurfaceVariant);
       ph.a = 128;
       raym3::Renderer::DrawText(ti.placeholder.c_str(), textPos, kFieldFontSize,
-                                ph, FontWeight::Regular);
+                                ApplyRenderOpacity(ph), FontWeight::Regular);
     }
     return;
   }
@@ -1629,6 +1650,9 @@ void PaintTextInput(Node &node) {
     float lx = restX + (bounds.x + kBasePadding - restX) * a;
     float fontSize = kLabelRestSize + (kLabelFloatSize - kLabelRestSize) * a;
     Color labelColor = isFocused ? scheme.primary : scheme.onSurfaceVariant;
+    if (style.text.color)
+      labelColor = *style.text.color;
+    labelColor = ApplyRenderOpacity(labelColor);
     raym3::Renderer::DrawText(label, {lx, ly}, fontSize, labelColor,
                               FontWeight::Regular);
   }
@@ -1639,6 +1663,7 @@ void PaintTextInput(Node &node) {
 
   if (ti.variant == TextFieldVariant::Filled && ti.drawBackground) {
     bgColor = style.backgroundColor.value_or(scheme.surfaceContainerHighest);
+    bgColor = ColorAlpha(bgColor, opacity);
     raym3::Renderer::DrawRoundedRectangle(inputBounds, cornerRadius, bgColor);
     if (cornerRadius > 0.0f) {
       DrawRectangleRec({inputBounds.x,
@@ -1648,12 +1673,13 @@ void PaintTextInput(Node &node) {
     }
   }
 
-  Color outlineColor = scheme.outline;
-  float outlineWidth = 1.0f;
+  Color outlineColor = style.borderColor.value_or(scheme.outline);
+  float outlineWidth = style.borderWidth.value_or(1.0f);
   if (isFocused && !ti.readOnly) {
-    outlineColor = scheme.primary;
-    outlineWidth = 2.0f;
+    outlineColor = style.borderColor.value_or(scheme.primary);
+    outlineWidth = style.borderWidth.value_or(2.0f);
   }
+  outlineColor = ApplyRenderOpacity(outlineColor);
 
   if (ti.drawOutline) {
     if (ti.variant == TextFieldVariant::Outlined) {
@@ -1723,13 +1749,14 @@ void PaintTextInput(Node &node) {
                          (inputBounds.height - kFieldFontSize) / 2.0f};
   if (ti.multiline)
     textPos = {origin.x - currentScroll, origin.y - currentScrollY};
-  Color textColor = style.text.color.value_or(scheme.onSurface);
+  Color textColor = ApplyRenderOpacity(style.text.color.value_or(scheme.onSurface));
 
   if (showPlaceholder) {
     Color ph = scheme.onSurfaceVariant;
     ph.a = 180;
     if (ti.hasPlaceholderColor)
       ph = ti.placeholderColor; // RN placeholderTextColor
+    ph = ApplyRenderOpacity(ph);
     raym3::Renderer::DrawText(ti.placeholder.c_str(), textPos, kFieldFontSize,
                               ph, FontWeight::Regular);
   } else if (!isEmpty) {
