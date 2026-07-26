@@ -127,8 +127,18 @@ void Renderer::DrawTextCentered(const char *text, Rectangle bounds,
   Font font = Theme::GetFont(fontSize, weight);
   Vector2 textSize = v2::MeasureTextWithEmoji(font, text ? text : "", fontSize, 0);
 
+  // Optical vertical centering. raylib anchors text at the ascender line and the
+  // measured height (textSize.y == fontSize) spans ascent+descent, so centering
+  // the full box leaves the descender's blank space skewing the visible glyphs
+  // off-centre (text looks bottom-heavy in fixed-height chrome like buttons).
+  // Centre the ascent box instead — lift by half the descender — so the cap/x
+  // height band sits on the true centre, matching web/RN button text.
+  // Roboto (and the M3 label fonts): ascent/(ascent-descent) ≈ 0.79, i.e. the
+  // descender is ~0.21·fontSize; shifting up by descent/2 centres the caps.
+  const float kAscentFraction = 0.79f;
+  const float ascent = fontSize * kAscentFraction;
   Vector2 position = {bounds.x + (bounds.width - textSize.x) / 2.0f,
-                      bounds.y + (bounds.height - textSize.y) / 2.0f};
+                      bounds.y + (bounds.height - ascent) / 2.0f};
 
   v2::DrawTextWithEmoji(font, text ? text : "", position, fontSize, 0, color);
 }

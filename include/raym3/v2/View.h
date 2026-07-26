@@ -275,6 +275,10 @@ public:
   // In-flight CSS transitions (see Transitions.h). Ticked by TickTransitions
   // each rendered frame; pruned on completion. Small N — linear scans.
   std::vector<ActiveTransition> activeTransitions;
+  // Running CSS @keyframes animations (see Animations.h). Ticked by
+  // TickAnimations each rendered frame; pruned on completion (infinite ones
+  // persist). A JS/explicit write to an animated property cancels it.
+  std::vector<ActiveAnimation> activeAnimations;
   ComponentState state = ComponentState::Default;
   std::vector<NodePtr> children;
 
@@ -334,6 +338,12 @@ public:
 
   // Transient per-frame interaction bookkeeping (set by Input.cpp).
   bool hovered = false;
+  // Pressable long-press timing (distinct from TextEditState's text-selection
+  // long-press): pressStartTime is set on press-begin, pressLongFired guards
+  // against firing onLongPress more than once per press and suppresses the
+  // trailing onPress on release (react-native parity).
+  double pressStartTime = 0.0;
+  bool pressLongFired = false;
   Rectangle reportedLayout = {0, 0, 0, 0};
   bool reportedLayoutValid = false;
 

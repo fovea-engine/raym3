@@ -37,6 +37,44 @@ namespace raym3::v2 {
 static constexpr float kDefaultScrimOpacity = 0.32f;
 static thread_local float g_renderOpacity = 1.0f;
 
+// Inherited text color (CSS `color` cascade). A node whose style sets a text
+// color establishes it for its subtree; a Text with no color of its own uses
+// this, falling back to the theme's onSurface. Lets an app set one global
+// (theme-aware) default color high in the tree — like `body { color }` on the
+// web — instead of hardcoding a color on every Text.
+static thread_local std::optional<Color> g_inheritedTextColor;
+
+// Resolve the color for a text draw: the node's own color wins, then the
+// inherited cascade, then the theme default (which flips with light/dark).
+static Color ResolveTextColor(const std::optional<Color> &own) {
+  if (own) return *own;
+  if (g_inheritedTextColor) return *g_inheritedTextColor;
+  return Theme::GetColorScheme().onSurface;
+}
+
+// ─── viewport culling ────────────────────────────────────────────────────────
+// Stack of visible-region rectangles in node->layout (DP) space. Seeded with
+// the render bounds; a clipping node (overflow hidden/scroll) intersects its own
+// rect and pushes it for its subtree. RenderNode skips painting a node whose
+// rect falls outside the current region. Paint-only: layout and the animation
+// tick still run, so animation timelines advance and geometry stays correct —
+// an off-screen animated node returns to view at the right position, it just
+// isn't drawn while off-screen.
+static thread_local std::vector<Rectangle> g_cullStack;
+
+static bool RectsOverlap(const Rectangle& a, const Rectangle& b) {
+  return a.x < b.x + b.width && a.x + a.width > b.x &&
+         a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+static Rectangle IntersectRect(const Rectangle& a, const Rectangle& b) {
+  float x = std::max(a.x, b.x);
+  float y = std::max(a.y, b.y);
+  float r = std::min(a.x + a.width, b.x + b.width);
+  float btm = std::min(a.y + a.height, b.y + b.height);
+  return {x, y, std::max(0.0f, r - x), std::max(0.0f, btm - y)};
+}
+
 float CurrentRenderOpacity() { return g_renderOpacity; }
 
 Color ApplyRenderOpacity(Color color) {
@@ -519,6 +557,12 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
 
   YGNodeStyleSetFlexDirection(
       ygNode, ToYogaFlexDirection(style.flexDirection.value_or(FlexDirection::Column)));
+  if (style.flexWrap) {
+    YGWrap wrap = YGWrapNoWrap;
+    if (*style.flexWrap == FlexWrap::Wrap) wrap = YGWrapWrap;
+    else if (*style.flexWrap == FlexWrap::WrapReverse) wrap = YGWrapWrapReverse;
+    YGNodeStyleSetFlexWrap(ygNode, wrap);
+  }
   if (style.justifyContent)
     YGNodeStyleSetJustifyContent(ygNode, ToYogaJustify(*style.justifyContent));
   if (style.alignItems)
@@ -652,38 +696,50 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
 
   Style style = EffectiveStyle(*node);
   bool scrolls = style.overflow == Overflow::Scroll;
-  if (scrolls) {
-    node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
-    node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
-  } else {
-    node->scrollOffsetX = 0.0f;
-    node->scrollOffsetY = 0.0f;
-  }
 
+  // Measure this frame's content extent from Yoga's own child geometry BEFORE
+  // applying any scroll offset. Yoga has already laid out the whole subtree, so
+  // a direct child's Left/Top/Width/Height are valid here and don't depend on
+  // this node's scrollOffset (that offset is only a translation applied when
+  // committing descendants below). Computing content size up front lets the
+  // clamp — and scrollFollowEnd in particular — use THIS frame's size, so
+  // appending a child while auto-scrolling to the end lands correctly in the
+  // same layout pass instead of clipping the newest row for one frame.
+  uint32_t count = YGNodeGetChildCount(ygNode);
   float contentRight = node->layout.width;
   float contentBottom = node->layout.height;
-  float childParentX = x - node->scrollOffsetX;
-  float childParentY = y - node->scrollOffsetY;
-  uint32_t count = YGNodeGetChildCount(ygNode);
   for (uint32_t i = 0; i < count; ++i) {
     // Fixed-position children are display:none in this Yoga pass (laid out by
-    // LayoutFixed against the viewport instead); writing their 0x0 result here
-    // would clobber the fixed-pass layout that hit-testing and ancestor-clip
-    // checks read.
+    // LayoutFixed against the viewport instead) and don't contribute to
+    // scrollable content.
     if (EffectiveStyle(*node->children[i]).position == PositionType::Fixed)
       continue;
-    StoreYogaLayout(node->children[i], YGNodeGetChild(ygNode, i), childParentX, childParentY);
-    const NodePtr &child = node->children[i];
-    contentRight = std::max(contentRight, child->layout.x - childParentX + child->layout.width);
-    contentBottom = std::max(contentBottom, child->layout.y - childParentY + child->layout.height);
+    YGNodeRef ygChild = YGNodeGetChild(ygNode, i);
+    contentRight = std::max(contentRight, YGNodeLayoutGetLeft(ygChild) + YGNodeLayoutGetWidth(ygChild));
+    contentBottom = std::max(contentBottom, YGNodeLayoutGetTop(ygChild) + YGNodeLayoutGetHeight(ygChild));
   }
   node->scrollContentWidth = contentRight;
   node->scrollContentHeight = contentBottom;
+
   if (scrolls) {
     node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
     node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
     if (node->scrollFollowEnd)
       node->scrollOffsetY = std::max(0.0f, node->scrollContentHeight - node->layout.height);
+  } else {
+    node->scrollOffsetX = 0.0f;
+    node->scrollOffsetY = 0.0f;
+  }
+
+  // Now commit children using the corrected (clamped/followed) offset.
+  float childParentX = x - node->scrollOffsetX;
+  float childParentY = y - node->scrollOffsetY;
+  for (uint32_t i = 0; i < count; ++i) {
+    // Skip Fixed children here too: writing their 0x0 Yoga result would clobber
+    // the fixed-pass layout that hit-testing and ancestor-clip checks read.
+    if (EffectiveStyle(*node->children[i]).position == PositionType::Fixed)
+      continue;
+    StoreYogaLayout(node->children[i], YGNodeGetChild(ygNode, i), childParentX, childParentY);
   }
 }
 #endif
@@ -868,9 +924,6 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
   // component declares an elevation but no explicit boxShadows. dp value maps
   // directly to shadow geometry (FAB/dialog/menu = 3dp, nav/sheets = 2dp).
   float elevation = style.elevation.value_or(0.0f);
-#if defined(__EMSCRIPTEN__)
-  elevation = 0.0f;
-#endif
   if (elevation > 0.0f && style.boxShadows.empty()) {
     struct ElevShadow { float offsetY; float grow; float alpha; };
     const ElevShadow passes[] = {
@@ -890,7 +943,6 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
           ColorAlpha(Color{0, 0, 0, 255}, opacity * p.alpha));
     }
   }
-#if !defined(__EMSCRIPTEN__)
   for (const BoxShadow &shadow : style.boxShadows) {
     if (shadow.inset)
       continue;
@@ -909,7 +961,6 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
           ColorAlpha(shadow.color, opacity * ((float)shadow.color.a / 255.0f) / (float)layers));
     }
   }
-#endif
   if (style.backdropBlur && *style.backdropBlur > 0.0f) {
     // Cross-platform fallback: the retained renderer exposes the style and
     // preserves draw order. Backends with render-target blur can replace this
@@ -945,10 +996,18 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
           ColorAlpha(*style.backgroundColor, opacity));
     }
   }
-  if (style.stateLayerColor && node.animStateAlpha > 0.001f) {
+  // A plain interactive View (onPress, non-material) gets an implicit hover/press
+  // state layer so it dims like a button; its tint comes from CSS
+  // state-layer-color when set, else the content colour. Material components
+  // supply their own stateLayerColor via state styles.
+  const bool implicitStateLayer =
+      node.kind == NodeKind::View && node.onPress != nullptr;
+  if ((style.stateLayerColor || implicitStateLayer) &&
+      node.animStateAlpha > 0.001f) {
     // Use the eased alpha rather than the style's baked opacity so the layer
     // fades in/out smoothly. Color carries the hue; animStateAlpha the opacity.
-    Color sl = *style.stateLayerColor;
+    Color sl = style.stateLayerColor.value_or(
+        style.text.color.value_or(Theme::GetColorScheme().onSurface));
     raym3::Renderer::DrawRoundedRectangle(
         backgroundLayout, radius,
         ColorAlpha(Color{sl.r, sl.g, sl.b, 255}, opacity * node.animStateAlpha));
@@ -978,14 +1037,19 @@ static void RenderTextNode(const Node &node, const Style &style) {
   // Reuse the cached PreparedText from Yoga measure phase — no re-measurement.
   const PreparedText& prepared = GetOrPrepare(&node);
   TextLayoutResult layout = LayoutText(prepared, node.layout.width);
-  Color color = ApplyRenderOpacity(
-      style.text.color.value_or(Theme::GetColorScheme().onSurface));
+  Color color = ApplyRenderOpacity(ResolveTextColor(style.text.color));
   // Layout coords are in dp; the font texture was generated at pixel size
   // (size * GetDpiScale()) and we want to sample it 1:1, not 1:(1/dp).
   // So we render OUTSIDE the host's dp-scaling matrix, at the pixel
   // position. node.layout.x/y is in dp — multiply by dp to get pixels.
   const float dp = Density::GetLayoutDensity();
-  float y = Density::DpToPx(node.layout.y);
+  // Split the leading (line-height minus the em box) equally above and below the
+  // text, so a line's glyphs sit centred in their line box — matching CSS/RN. We
+  // previously top-anchored each line (all leading below), which made text sit
+  // high in its box and look off-centre inside Yoga-centred containers.
+  const float lineHeightDp = prepared.options.lineHeight;
+  const float halfLeadingDp = std::max(0.0f, (lineHeightDp - fontSize) * 0.5f);
+  float y = Density::DpToPx(node.layout.y + halfLeadingDp);
 
   // Resolve font once — custom family or Roboto.
   Font resolvedFont = fontFamily.empty()
@@ -1069,6 +1133,9 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   Style style = EffectiveStyle(*node);
   const float parentOpacity = g_renderOpacity;
   g_renderOpacity *= std::clamp(style.opacity.value_or(1.0f), 0.0f, 1.0f);
+  // Establish this node's text color for its subtree (CSS `color` inheritance).
+  const std::optional<Color> parentInheritedText = g_inheritedTextColor;
+  if (style.text.color) g_inheritedTextColor = style.text.color;
 
   int effectiveZ = std::max(parentMaxZ, node->zIndex);
   bool occludes = NodeOccludesInput(*node, style);
@@ -1084,6 +1151,26 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
       node->reportedLayout = r;
       node->reportedLayoutValid = true;
       node->onLayout(r);
+    }
+  }
+
+  // Viewport culling: skip painting a node whose rect is outside the visible
+  // region. Safe to skip the whole subtree when we are inside a clip container
+  // (absolute descendants can't escape it) or the node itself clips. At the root
+  // (no clip yet) only clipping nodes are subtree-culled, since a non-clipping
+  // node's absolutely-positioned descendants may sit elsewhere on screen.
+  // Layout + onLayout above already ran, and CSS transitions/animations tick on
+  // the whole tree before Render(), so culling never neglects animation state —
+  // it only skips draw calls. Fixed-position overlays paint in a separate pass.
+  {
+    const Rectangle& cull = g_cullStack.back();
+    const bool insideClip = g_cullStack.size() > 1;
+    const bool clips = style.overflow == Overflow::Hidden ||
+                       style.overflow == Overflow::Scroll;
+    if ((insideClip || clips) && !RectsOverlap(node->layout, cull)) {
+      g_renderOpacity = parentOpacity; // restore; normal path restores at end
+      g_inheritedTextColor = parentInheritedText;
+      return;
     }
   }
 
@@ -1106,6 +1193,19 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     dt = 0.016f;
   float targetAlpha =
       style.stateLayerColor ? (float)style.stateLayerColor->a / 255.0f : 0.0f;
+  // Plain interactive Views dim on hover/press. Material components and
+  // first-class controls drive their own state layers (via state styles /
+  // PaintControl), so this only applies to onPress Views. The peak opacity comes
+  // from CSS state-layer-color's alpha when set, else an M3-ish default.
+  if (node->kind == NodeKind::View && node->onPress) {
+    float peak = style.stateLayerColor
+                     ? (float)style.stateLayerColor->a / 255.0f
+                     : 0.14f;
+    bool pressed = IsNodePressed(*node);
+    bool hovered = GetHoveredId() == IdOf(node.get()) ||
+                   NodeOnInputPath(*node, GetHoveredId());
+    targetAlpha = pressed ? peak : (hovered ? peak * 0.6f : 0.0f);
+  }
   if (!node->animInitialized) {
     node->animStateAlpha = targetAlpha;
     node->animSelect = node->selected ? 1.0f : 0.0f;
@@ -1190,14 +1290,17 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   } else if (clipped) {
     PushScissor(node->layout);
   }
+  // Narrow the cull region to this node's rect for its subtree (paint culling,
+  // parallel to the scissor/stencil clip above but in DP space).
+  if (clipped)
+    g_cullStack.push_back(IntersectRect(node->layout, g_cullStack.back()));
 
   switch (node->kind) {
   case NodeKind::Button: {
     // Background already drawn by DrawNodeBackground with the user's
     // borderRadius. Only add state layer, text, and cursor — no second fill.
     float radius = style.borderRadius.value_or(0.0f);
-    Color textColor = ApplyRenderOpacity(
-        style.text.color.value_or(Theme::GetColorScheme().onSurface));
+    Color textColor = ApplyRenderOpacity(ResolveTextColor(style.text.color));
     float fontSize =
         style.text.fontSize.value_or(Theme::GetTypographyScale().labelLarge);
 
@@ -1530,6 +1633,8 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   } else if (clipped) {
     PopScissor();
   }
+  if (clipped && g_cullStack.size() > 1)
+    g_cullStack.pop_back();
 
   // ButtonGroup/SegmentedButton outer border drawn after stencil pop so it
   // sits on top of selection fills and is never clipped by its own container.
@@ -1544,6 +1649,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   if (hasTransform)
     rlPopMatrix();
   g_renderOpacity = parentOpacity;
+  g_inheritedTextColor = parentInheritedText;
 }
 
 // Compute screen-relative layout for a fixed-position node.
@@ -1797,6 +1903,10 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   // Pre-collect all fixed-position overlay nodes recursively before rendering
   CollectFixedNodes(root, Ctx().fixedNodes);
 
+  // Seed viewport culling with the on-screen bounds (DP space).
+  g_cullStack.clear();
+  g_cullStack.push_back(bounds);
+
   RenderNode(root, root ? root->zIndex : 0);
 
   // Fixed-position pass: paint overlay nodes (Dialog, BottomSheet, etc.) on
@@ -1871,6 +1981,10 @@ static bool NodeNeedsAnotherFrame(const NodePtr &node) {
     return true;
   // In-flight CSS transitions (Transitions.cpp).
   if (!node->activeTransitions.empty())
+    return true;
+  // Running CSS @keyframes animations (Animations.cpp) — incl. infinite ones,
+  // which is what keeps a looping animation ticking with no JS involvement.
+  if (!node->activeAnimations.empty())
     return true;
   // Toggle controls (checkbox/switch/radio) mid-transition.
   if (node->control.animTarget >= 0.0f && node->control.anim >= 0.0f &&
@@ -2288,11 +2402,18 @@ static bool NodeSupportsRipple(const Node &node) {
     return node.onPress != nullptr;
   if (IsControlKind(node.kind))
     return false;
+  // A plain interactive View opts into ripples by declaring a CSS ripple-color.
+  if (node.kind == NodeKind::View && node.onPress && node.style.rippleColor)
+    return true;
   return node.inkRipple && node.onPress;
 }
 
 static Color RippleInkForNode(const Node &node) {
   Style style = EffectiveStyle(node);
+  // CSS `ripple-color` wins; otherwise derive the M3 pressed state-layer tint
+  // from the content color.
+  if (style.rippleColor)
+    return *style.rippleColor;
   Color content =
       style.text.color.value_or(Theme::GetColorScheme().onSurface);
   return Theme::GetStateLayerColor(content, ComponentState::Pressed);
@@ -2553,6 +2674,9 @@ static void PressBegin(const NodePtr &target, Vector2 pt, bool isScrim) {
 
   if (n->onPressIn)
     n->onPressIn();
+  // Arm long-press timing (fired per-frame in ResolveInput while held).
+  n->pressStartTime = GetTime();
+  n->pressLongFired = false;
   if (n->onDragStart)
     n->onDragStart(pt);
 
@@ -2618,7 +2742,8 @@ static void ReleaseActive(Node *an, Vector2 pt, const Node *releaseTarget) {
     return;
   }
 
-  if (over && an->onPress) {
+  // A long-press that already fired suppresses the trailing onPress (RN parity).
+  if (over && an->onPress && !an->pressLongFired) {
     // Immediate-captured nodes get onPress on release even after a long
     // drag (the pointer is usually still over them). A node with drag
     // handlers treats real movement as a drag, not a tap — without this a
@@ -2688,6 +2813,15 @@ void ResolveInput(const NodePtr &root) {
           DriveControlDrag(*an, pt);
         if (an->onDragMove)
           an->onDragMove({pt.x - GetDragOrigin().x, pt.y - GetDragOrigin().y});
+        // Long-press: fire once when held past the delay without moving beyond
+        // the touch slop. Movement past slop is treated as a drag/scroll, not a
+        // long-press, matching react-native.
+        if (an->onLongPress && !an->pressLongFired &&
+            GetTime() - an->pressStartTime >= kLongPressDelay &&
+            PointerTravel(GetDragOrigin(), pt) <= kTouchSlop) {
+          an->pressLongFired = true;
+          an->onLongPress();
+        }
       } else {
         if (!Ctx().activeIsScrim)
           StartRippleFadeOut(activeId);

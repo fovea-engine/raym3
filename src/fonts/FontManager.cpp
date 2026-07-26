@@ -10,6 +10,10 @@
 
 namespace raym3 {
 
+// Default codepoint coverage shared by the built-in and custom fonts (defined
+// below): ASCII + Latin Extended + common typographic punctuation/symbols.
+static const std::vector<int>& GetCodepoints();
+
 std::unordered_map<FontKey, Font, FontKeyHash> FontManager::fontCache_;
 std::unordered_map<std::string, FontManager::FontSource> FontManager::fontRegistry_;
 std::unordered_map<std::string, Font>           FontManager::customFontCache_;
@@ -121,9 +125,12 @@ Font FontManager::LoadCustomFont(const std::string &path, int size,
 
   if (!std::filesystem::exists(resolvedPath)) return {0};
   const int pxSize = v2::Density::RasterPixels((float)size);
+  // Default to the shared coverage set (not raylib's ASCII-only default) so a
+  // project font registered without an explicit codepoint list still renders
+  // accented text and common punctuation.
+  const std::vector<int>& cps = codepoints.empty() ? GetCodepoints() : codepoints;
   return LoadFontEx(resolvedPath.c_str(), pxSize,
-                    codepoints.empty() ? nullptr : const_cast<int *>(codepoints.data()),
-                    static_cast<int>(codepoints.size()));
+                    const_cast<int *>(cps.data()), static_cast<int>(cps.size()));
 }
 
 void FontManager::InvalidateCustomFontCache(const std::string &name) {
@@ -173,9 +180,9 @@ Font FontManager::LoadCustomFontFromMemory(const std::vector<unsigned char> &byt
                                            const std::vector<int> &codepoints) {
   if (bytes.empty()) return {0};
   const int pxSize = v2::Density::RasterPixels((float)size);
+  const std::vector<int>& cps = codepoints.empty() ? GetCodepoints() : codepoints;
   return LoadFontFromMemory(".ttf", bytes.data(), (int)bytes.size(), pxSize,
-                            codepoints.empty() ? nullptr : const_cast<int *>(codepoints.data()),
-                            static_cast<int>(codepoints.size()));
+                            const_cast<int *>(cps.data()), static_cast<int>(cps.size()));
 }
 
 Font FontManager::LoadFontByFamily(const std::string &name, int size) {
@@ -206,9 +213,11 @@ void FontManager::UnloadFont(Font font) {
   if (font.texture.id != 0) ::UnloadFont(font);
 }
 
-// Roboto ships ASCII (32-126) + Latin Extended (160-591) only.
-// Loading symbol ranges beyond that produces Raylib "glyph not found" warnings
-// and wastes atlas space — skip them. Icons use a separate font (Material Icons).
+// Roboto ships ASCII (32-126) + Latin Extended (160-591), plus the common
+// General-Punctuation and symbol codepoints below. Ranges beyond what the font
+// actually contains produce Raylib "glyph not found" warnings and waste atlas
+// space, so the punctuation set is a curated list of glyphs Roboto has — not a
+// blanket 0x2000-0x206F range. Icons use a separate font (Material Icons).
 static const std::vector<int>& GetCodepoints() {
   static std::vector<int> cps;
   if (!cps.empty()) return cps;
@@ -217,6 +226,20 @@ static const std::vector<int>& GetCodepoints() {
   };
   addRange(32,  126);   // Basic ASCII
   addRange(160, 591);   // Latin-1 Supplement + Latin Extended A/B
+  // Common typographic punctuation authors reach for (em/en dash, curly quotes,
+  // ellipsis, bullet, dagger, minus, trademark, euro). Without these, text like
+  // "a — b", "don't", or "…" renders as tofu. Only codepoints the bundled Roboto
+  // actually contains are listed — baking absent glyphs (e.g. arrows, ≠≤≥) just
+  // produces the same `?` fallback while wasting atlas slots.
+  for (int cp : {
+      0x2013, 0x2014,                                 // en/em dash
+      0x2018, 0x2019, 0x201A, 0x201C, 0x201D, 0x201E, // curly quotes
+      0x2020, 0x2021, 0x2022, 0x2026, 0x2030,         // dagger, bullet, ellipsis, permille
+      0x2039, 0x203A,                                 // single angle quotes
+      0x20AC, 0x2122, 0x2212                           // euro, trademark, minus
+  }) {
+    cps.push_back(cp);
+  }
   return cps;
 }
 

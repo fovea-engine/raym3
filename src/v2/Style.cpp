@@ -178,6 +178,7 @@ Style MergeStyles(const Style &base, const Style &overrideStyle) {
 
   RAYM3_MERGE_FIELD(display);
   RAYM3_MERGE_FIELD(flexDirection);
+  RAYM3_MERGE_FIELD(flexWrap);
   RAYM3_MERGE_FIELD(justifyContent);
   RAYM3_MERGE_FIELD(alignItems);
   RAYM3_MERGE_FIELD(alignSelf);
@@ -199,6 +200,7 @@ Style MergeStyles(const Style &base, const Style &overrideStyle) {
   RAYM3_MERGE_FIELD(backgroundColor);
   RAYM3_MERGE_FIELD(backgroundGradient);
   RAYM3_MERGE_FIELD(stateLayerColor);
+  RAYM3_MERGE_FIELD(rippleColor);
   RAYM3_MERGE_FIELD(borderColor);
   RAYM3_MERGE_FIELD(borderWidth);
   RAYM3_MERGE_FIELD(borderRadius);
@@ -210,6 +212,7 @@ Style MergeStyles(const Style &base, const Style &overrideStyle) {
   RAYM3_MERGE_FIELD(translateY);
   RAYM3_MERGE_FIELD(scale);
   RAYM3_MERGE_FIELD(transitions);
+  RAYM3_MERGE_FIELD(animations);
 
 #undef RAYM3_MERGE_FIELD
 

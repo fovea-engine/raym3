@@ -50,6 +50,9 @@ void TickScrollMomentum(const NodePtr &root);
 // Flutter-aligned touch slop (logical dp).
 constexpr float kTouchSlop = 18.0f;
 
+// react-native's default long-press delay (seconds).
+constexpr double kLongPressDelay = 0.5;
+
 // --- Queries ---------------------------------------------------------------
 const PointerInput &GetPointer();
 Vector2 PointerDp();

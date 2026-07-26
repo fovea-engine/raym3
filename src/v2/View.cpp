@@ -37,12 +37,21 @@ NodePtr Text(std::string text, const TextProps &props) {
   node->style = props.style;
   if (!node->style.text.fontSize)
     node->style.text.fontSize = Theme::GetTypographyScale().bodyMedium;
-  if (!node->style.text.lineHeight)
-    node->style.text.lineHeight = 20.0f;
+  if (!node->style.text.lineHeight) {
+    // CSS `normal` line-height: proportional to the font size (~1.4×), not a
+    // fixed value. A constant (the old 20dp) collapsed large text (fontSize 30
+    // with lineHeight 20 overlapped) and over-spaced tiny text.
+    const float fs = *node->style.text.fontSize;
+    node->style.text.lineHeight = std::max(fs + 4.0f, fs * 1.4f);
+  }
   if (!node->style.text.letterSpacing)
     node->style.text.letterSpacing = 0.25f;
-  if (!node->style.text.color)
-    node->style.text.color = Theme::GetColorScheme().onSurface;
+  // Deliberately DO NOT bake a colour here. Baking Theme::onSurface at creation
+  // froze the text to whatever scheme was active when the node was built, so a
+  // later light/dark switch could not repaint it, and it also defeated the CSS
+  // `color` cascade (an explicit colour always wins). Leaving it unset lets the
+  // renderer resolve it per frame: own colour → inherited (parent `color`) →
+  // the live theme's onSurface.
   node->stateStyles = props.stateStyles;
   node->motion = props.motion;
   node->disabled = props.disabled;
