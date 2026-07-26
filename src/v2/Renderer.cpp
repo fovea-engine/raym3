@@ -1330,6 +1330,12 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     break;
   case NodeKind::View:
   default:
+    // customRender is a universal post-background hook, not Custom-only: host
+    // embedders (worker canvases, external surfaces) attach painters to
+    // existing view nodes so their content draws inside the tree walk — under
+    // the ambient scissor/stencil clip and at the node's z-order.
+    if (node->customRender)
+      node->customRender(node->layout);
     break;
   }
 
