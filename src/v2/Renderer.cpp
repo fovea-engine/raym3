@@ -1000,8 +1000,14 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
   // state layer so it dims like a button; its tint comes from CSS
   // state-layer-color when set, else the content colour. Material components
   // supply their own stateLayerColor via state styles.
+  //
+  // Nodes carrying a material role are excluded: they paint their own indicator
+  // (a navigation item's pill, for instance, gets DrawStateLayer below), so an
+  // implicit layer on the container would double up and highlight the whole
+  // item box on press.
   const bool implicitStateLayer =
-      node.kind == NodeKind::View && node.onPress != nullptr;
+      node.kind == NodeKind::View && node.onPress != nullptr &&
+      node.role == NodeRole::None;
   if ((style.stateLayerColor || implicitStateLayer) &&
       node.animStateAlpha > 0.001f) {
     // Use the eased alpha rather than the style's baked opacity so the layer
