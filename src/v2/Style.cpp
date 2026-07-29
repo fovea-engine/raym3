@@ -148,8 +148,22 @@ TextStyle MergeTextStyles(const TextStyle &base,
   TextStyle result = base;
   if (overrideStyle.fontSize)
     result.fontSize = overrideStyle.fontSize;
-  if (overrideStyle.lineHeight)
+  // `line-height` is one CSS property with two representations here: an
+  // absolute length and a unitless ratio. Whichever the override declares wins
+  // outright, so `leading-tight` (ratio) genuinely replaces an inherited px
+  // line-height rather than losing to it.
+  if (overrideStyle.lineHeight) {
     result.lineHeight = overrideStyle.lineHeight;
+    result.lineHeightRatio = std::nullopt;
+  }
+  if (overrideStyle.lineHeightRatio) {
+    result.lineHeightRatio = overrideStyle.lineHeightRatio;
+    result.lineHeight = std::nullopt;
+  }
+  if (overrideStyle.maxLines)
+    result.maxLines = overrideStyle.maxLines;
+  if (overrideStyle.overflow)
+    result.overflow = overrideStyle.overflow;
   if (overrideStyle.letterSpacing)
     result.letterSpacing = overrideStyle.letterSpacing;
   if (overrideStyle.weight)
@@ -194,6 +208,13 @@ Style MergeStyles(const Style &base, const Style &overrideStyle) {
   RAYM3_MERGE_FIELD(flexGrow);
   RAYM3_MERGE_FIELD(flexShrink);
   RAYM3_MERGE_FIELD(flexBasis);
+  RAYM3_MERGE_FIELD(widthPercent);
+  RAYM3_MERGE_FIELD(heightPercent);
+  RAYM3_MERGE_FIELD(minWidthPercent);
+  RAYM3_MERGE_FIELD(minHeightPercent);
+  RAYM3_MERGE_FIELD(maxWidthPercent);
+  RAYM3_MERGE_FIELD(maxHeightPercent);
+  RAYM3_MERGE_FIELD(flexBasisPercent);
   RAYM3_MERGE_FIELD(gap);
   RAYM3_MERGE_FIELD(rowGap);
   RAYM3_MERGE_FIELD(columnGap);
@@ -203,6 +224,14 @@ Style MergeStyles(const Style &base, const Style &overrideStyle) {
   RAYM3_MERGE_FIELD(rippleColor);
   RAYM3_MERGE_FIELD(borderColor);
   RAYM3_MERGE_FIELD(borderWidth);
+  RAYM3_MERGE_FIELD(borderTopColor);
+  RAYM3_MERGE_FIELD(borderRightColor);
+  RAYM3_MERGE_FIELD(borderBottomColor);
+  RAYM3_MERGE_FIELD(borderLeftColor);
+  RAYM3_MERGE_FIELD(borderTopWidth);
+  RAYM3_MERGE_FIELD(borderRightWidth);
+  RAYM3_MERGE_FIELD(borderBottomWidth);
+  RAYM3_MERGE_FIELD(borderLeftWidth);
   RAYM3_MERGE_FIELD(borderRadius);
   RAYM3_MERGE_FIELD(backdropBlur);
   RAYM3_MERGE_FIELD(opacity);
@@ -211,6 +240,9 @@ Style MergeStyles(const Style &base, const Style &overrideStyle) {
   RAYM3_MERGE_FIELD(translateX);
   RAYM3_MERGE_FIELD(translateY);
   RAYM3_MERGE_FIELD(scale);
+  // rotation was missing here: a rotated node lost its angle the moment any
+  // other style merged over it (state styles, className refresh, transitions).
+  RAYM3_MERGE_FIELD(rotation);
   RAYM3_MERGE_FIELD(transitions);
   RAYM3_MERGE_FIELD(animations);
 

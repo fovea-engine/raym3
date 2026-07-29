@@ -1,6 +1,7 @@
 #include "raym3/Mutations.h"
 
 #include "raym3/v2/Components.h"
+#include "raym3/v2/Renderer.h"
 
 #include <algorithm>
 
@@ -108,8 +109,15 @@ void ApplyMutations(v2::RenderContext &ctx, MutationBatch &batch,
       break;
     }
     case MutationOp::SetScrollOffset: {
-      if (auto it = nodes.find((int)m.id); it != nodes.end())
+      // NOTE: unlike JS_setScrollOffset this clears neither the in-flight fling
+      // nor scrollFollowEnd, so the write is reverted by the next fling tick.
+      // Traced here; funnelled through ScrollTo() in the scroll-core rework.
+      if (auto it = nodes.find((int)m.id); it != nodes.end()) {
+        v2::ScrollTraceOffsetWrite(*it->second,
+                                   v2::ScrollWriteSource::Mutation, 'y',
+                                   it->second->scrollOffsetY, m.scrollOffsetY);
         it->second->scrollOffsetY = m.scrollOffsetY;
+      }
       break;
     }
     }

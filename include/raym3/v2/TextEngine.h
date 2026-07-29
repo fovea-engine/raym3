@@ -11,6 +11,8 @@ namespace raym3::v2 {
 
 enum class WhiteSpace { Normal, PreWrap };
 enum class WordBreak { Normal, KeepAll, BreakWord };
+// What happens to text that does not fit inside `maxLines`.
+enum class TextOverflow { Clip, Ellipsis, Head, Middle };
 
 enum class SegmentBreakKind {
   Text,
@@ -28,6 +30,11 @@ struct TextLayoutOptions {
   FontWeight weight = FontWeight::Regular;
   WhiteSpace whiteSpace = WhiteSpace::Normal;
   WordBreak wordBreak = WordBreak::Normal;
+  // 0 = unlimited. Clamps the laid-out line count (react-native
+  // `numberOfLines`, CSS `-webkit-line-clamp`).
+  int maxLines = 0;
+  // Applied to the last kept line when maxLines truncates the text.
+  TextOverflow overflow = TextOverflow::Clip;
   std::string fontFamily; // empty = Roboto; non-empty = registered custom font
 };
 

@@ -221,6 +221,78 @@ static TextLayoutResult LayoutGoldenCase(const GoldenCase &golden, float fontSiz
   return LayoutText(prepared, golden.maxWidth, measure);
 }
 
+// numberOfLines / ellipsizeMode. Both were declared on the JS side for a long
+// time and read by nothing, so an unbreakable label wrapped forever instead of
+// ending in an ellipsis.
+static int RunLineClampChecks() {
+  int failures = 0;
+  auto fail = [&](const std::string &label, const std::string &message) {
+    std::cerr << "FAIL [" << label << "] " << message << '\n';
+    ++failures;
+  };
+
+  const std::string text = "the quick brown fox jumps over the lazy dog";
+  const float maxWidth = 120.0f;
+
+  auto layout = [&](int maxLines, raym3::v2::TextOverflow overflow) {
+    TextLayoutOptions opts;
+    opts.fontSize = 16.0f;
+    opts.lineHeight = 19.0f;
+    opts.maxLines = maxLines;
+    opts.overflow = overflow;
+    return LayoutText(PrepareText(text, opts, DeterministicTestMeasure), maxWidth,
+                      DeterministicTestMeasure);
+  };
+
+  const TextLayoutResult unlimited =
+      layout(0, raym3::v2::TextOverflow::Clip);
+  if (unlimited.lines.size() < 3)
+    fail("unclamped", "expected the sample to wrap onto 3+ lines, got " +
+                          std::to_string(unlimited.lines.size()));
+
+  const TextLayoutResult clipped = layout(2, raym3::v2::TextOverflow::Clip);
+  if (clipped.lines.size() != 2)
+    fail("clip", "expected 2 lines, got " + std::to_string(clipped.lines.size()));
+  if (!NearlyEqual(clipped.height, 38.0f))
+    fail("clip", "expected height 38, got " + std::to_string(clipped.height));
+  if (!clipped.lines.empty() &&
+      clipped.lines.back().text != unlimited.lines[1].text)
+    fail("clip", "clip must not rewrite the last line");
+
+  const TextLayoutResult tail = layout(2, raym3::v2::TextOverflow::Ellipsis);
+  if (tail.lines.size() != 2)
+    fail("tail", "expected 2 lines, got " + std::to_string(tail.lines.size()));
+  if (!tail.lines.empty()) {
+    const std::string &last = tail.lines.back().text;
+    if (last.size() < 3 || last.compare(last.size() - 3, 3, "\xE2\x80\xA6") != 0)
+      fail("tail", "last line should end in an ellipsis, got \"" + last + "\"");
+    if (tail.lines.back().width > maxWidth + 0.1f)
+      fail("tail", "ellipsized line must still fit the width");
+  }
+
+  const TextLayoutResult single = layout(1, raym3::v2::TextOverflow::Ellipsis);
+  if (single.lines.size() != 1)
+    fail("single", "expected 1 line, got " + std::to_string(single.lines.size()));
+
+  // A single unbreakable token: the reported symptom was one character per line.
+  TextLayoutOptions wordOpts;
+  wordOpts.fontSize = 16.0f;
+  wordOpts.lineHeight = 19.0f;
+  wordOpts.maxLines = 1;
+  wordOpts.overflow = raym3::v2::TextOverflow::Ellipsis;
+  wordOpts.wordBreak = WordBreak::BreakWord;
+  const TextLayoutResult unbreakable = LayoutText(
+      PrepareText("codegemma:2b-instruct-q4", wordOpts, DeterministicTestMeasure),
+      60.0f, DeterministicTestMeasure);
+  if (unbreakable.lines.size() != 1)
+    fail("unbreakable", "expected 1 line, got " +
+                            std::to_string(unbreakable.lines.size()));
+  if (!unbreakable.lines.empty() && unbreakable.lines[0].width > 60.1f)
+    fail("unbreakable", "clamped line must fit the width");
+
+  return failures;
+}
+
 } // namespace
 
 int main() {
@@ -271,11 +343,14 @@ int main() {
     }
   }
 
+  failures += RunLineClampChecks();
+
   if (failures > 0) {
-    std::cerr << failures << " golden case(s) failed\n";
+    std::cerr << failures << " case(s) failed\n";
     return 1;
   }
 
-  std::cout << "All " << cases.size() << " text layout golden cases passed\n";
+  std::cout << "All " << cases.size()
+            << " text layout golden cases passed, plus line-clamp checks\n";
   return 0;
 }

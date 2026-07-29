@@ -37,10 +37,11 @@ NodePtr Text(std::string text, const TextProps &props) {
   node->style = props.style;
   if (!node->style.text.fontSize)
     node->style.text.fontSize = Theme::GetTypographyScale().bodyMedium;
-  if (!node->style.text.lineHeight) {
+  if (!node->style.text.lineHeight && !node->style.text.lineHeightRatio) {
     // CSS `normal` line-height: proportional to the font size (~1.4×), not a
     // fixed value. A constant (the old 20dp) collapsed large text (fontSize 30
-    // with lineHeight 20 overlapped) and over-spaced tiny text.
+    // with lineHeight 20 overlapped) and over-spaced tiny text. A unitless
+    // ratio is left unresolved here so it still tracks a font size set later.
     const float fs = *node->style.text.fontSize;
     node->style.text.lineHeight = std::max(fs + 4.0f, fs * 1.4f);
   }

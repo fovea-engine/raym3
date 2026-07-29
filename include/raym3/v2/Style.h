@@ -2,6 +2,7 @@
 
 #include "raym3/types.h"
 #include "raym3/v2/TextEngine.h"
+#include <algorithm>
 #include <optional>
 #include <vector>
 #include <raylib.h>
@@ -60,6 +61,14 @@ struct EdgeValues {
 struct TextStyle {
   std::optional<float> fontSize;
   std::optional<float> lineHeight;
+  // Unitless CSS `line-height: 1.5` — a multiple of the resolved font size.
+  // Kept unresolved so a ratio declared in one rule still applies to a font
+  // size declared in another (or set later from JS).
+  std::optional<float> lineHeightRatio;
+  // CSS `-webkit-line-clamp` / react-native `numberOfLines`: 0 = unlimited.
+  std::optional<int> maxLines;
+  // What to do with the overflow when maxLines clips: tail ellipsis or a hard cut.
+  std::optional<TextOverflow> overflow;
   std::optional<float> letterSpacing;
   std::optional<FontWeight> weight;
   std::optional<FontStyle> fontStyle;
@@ -178,6 +187,17 @@ struct Style {
   std::optional<float> flexGrow;
   std::optional<float> flexShrink;
   std::optional<float> flexBasis;
+  // Percentage dimensions (0..100), resolved by Yoga against the parent.
+  // Kept separate from the absolute values above so a style can express
+  // `width: 50%` without overloading the px field; the percent form wins when
+  // both are set.
+  std::optional<float> widthPercent;
+  std::optional<float> heightPercent;
+  std::optional<float> minWidthPercent;
+  std::optional<float> minHeightPercent;
+  std::optional<float> maxWidthPercent;
+  std::optional<float> maxHeightPercent;
+  std::optional<float> flexBasisPercent;
   std::optional<float> gap;
   std::optional<float> rowGap;
   std::optional<float> columnGap;
@@ -197,6 +217,18 @@ struct Style {
   std::optional<Color> rippleColor;
   std::optional<Color> borderColor;
   std::optional<float> borderWidth;
+  // Per-edge overrides. Unset edges fall back to borderColor/borderWidth, so a
+  // uniform border still needs only the two shared fields. Cards that light one
+  // edge (`border-bottom: 1px solid …`, `border-left-color: …`) were previously
+  // inexpressible: the shared fields painted all four sides.
+  std::optional<Color> borderTopColor;
+  std::optional<Color> borderRightColor;
+  std::optional<Color> borderBottomColor;
+  std::optional<Color> borderLeftColor;
+  std::optional<float> borderTopWidth;
+  std::optional<float> borderRightWidth;
+  std::optional<float> borderBottomWidth;
+  std::optional<float> borderLeftWidth;
   std::optional<float> borderRadius;
   std::vector<BoxShadow> boxShadows;
   std::optional<float> backdropBlur;
@@ -221,6 +253,52 @@ struct Style {
 
   TextStyle text;
 };
+
+// CSS `line-height` resolution: an explicit length wins, then a unitless ratio
+// of the font size, then the engine default (~1.43em, CSS `normal`).
+inline float ResolveLineHeight(const TextStyle &text, float fontSize) {
+  if (text.lineHeight) return *text.lineHeight;
+  if (text.lineHeightRatio) return *text.lineHeightRatio * fontSize;
+  return std::max(fontSize + 4.0f, fontSize * 1.43f);
+}
+
+enum class BoxEdge { Top, Right, Bottom, Left };
+
+// Per-edge border resolution: explicit edge value → shared value → fallback.
+inline float ResolveBorderWidth(const Style &style, BoxEdge edge,
+                                float fallback = 0.0f) {
+  const std::optional<float> *perEdge = nullptr;
+  switch (edge) {
+  case BoxEdge::Top:    perEdge = &style.borderTopWidth; break;
+  case BoxEdge::Right:  perEdge = &style.borderRightWidth; break;
+  case BoxEdge::Bottom: perEdge = &style.borderBottomWidth; break;
+  case BoxEdge::Left:   perEdge = &style.borderLeftWidth; break;
+  }
+  if (perEdge && *perEdge) return **perEdge;
+  return style.borderWidth.value_or(fallback);
+}
+
+inline Color ResolveBorderColor(const Style &style, BoxEdge edge,
+                                Color fallback) {
+  const std::optional<Color> *perEdge = nullptr;
+  switch (edge) {
+  case BoxEdge::Top:    perEdge = &style.borderTopColor; break;
+  case BoxEdge::Right:  perEdge = &style.borderRightColor; break;
+  case BoxEdge::Bottom: perEdge = &style.borderBottomColor; break;
+  case BoxEdge::Left:   perEdge = &style.borderLeftColor; break;
+  }
+  if (perEdge && *perEdge) return **perEdge;
+  return style.borderColor.value_or(fallback);
+}
+
+// True when the four edges are not identical — the renderer then has to paint
+// them one at a time instead of using the single rounded-rect stroke.
+inline bool HasPerEdgeBorders(const Style &style) {
+  return style.borderTopWidth || style.borderRightWidth ||
+         style.borderBottomWidth || style.borderLeftWidth ||
+         style.borderTopColor || style.borderRightColor ||
+         style.borderBottomColor || style.borderLeftColor;
+}
 
 struct StateStyles {
   std::optional<Style> hovered;

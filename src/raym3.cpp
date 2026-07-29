@@ -3,10 +3,11 @@
 #include <rlgl.h>
 
 // Raw OpenGL for stencil operations (not wrapped by rlgl)
-#if defined(RAYLIB_USE_RLMT) || defined(RAYLIB_USE_RLWG)
-  // rlmt (Metal) and rlwg (WebGPU) have no GL context — route stencil/clear through
-  // the rlgl-level wrappers their backends implement (rlwg stubs them as no-ops for
-  // now; stencil-based rounded clipping is a later rlwg feature).
+#if defined(RAYLIB_USE_RLMT) || defined(RAYLIB_USE_RLWG) || defined(RAYLIB_USE_RLVK)
+  // rlmt (Metal), rlwg (WebGPU) and rlvk (Vulkan) have no GL context — route
+  // stencil/clear through the rlgl-level wrappers those backends implement.
+  // rlvk implements the full set (keyed stencil pipelines + dynamic reference);
+  // rlwg stubs them as no-ops for now, so it stays on the scissor fallback.
   #define RAYM3_GL_STENCIL_TEST           0x0B90
   #define RAYM3_GL_EQUAL                  0x0202
   #define RAYM3_GL_KEEP                   0x1E00
@@ -148,20 +149,22 @@ void PopScissor() {
 }
 
 void PushRoundedStencil(Rectangle bounds, float radius) {
-#if defined(RAYLIB_USE_RLVK) || defined(RAYLIB_USE_RLWG) || defined(RAYM3_WEBGPU)
-  // Non-GL backends without a real color-mask + stencil implementation must skip
-  // rounded clipping. Otherwise the WHITE mask quad
-  // (DrawRectangleRounded(..., WHITE)) leaks into the color buffer and paints
-  // elevated/rounded elements white.
-  // The rlgl stencil wrappers don't reliably support the nested INCR/DECR clip
-  // (it blanks the frame), and BeginScissorMode works in framebuffer pixels
-  // while these bounds are dp (the Android render is dp-scaled), so a scissor
-  // fallback can clip the wrong region and also blank. Until rounded clipping is
-  // implemented correctly for these backends, skip it entirely: no mask draw
-  // (no white leak), no stencil, no scissor. Cost: ripples/overflow are not
-  // clipped to the rounded shape.
-  (void)bounds;
+#if defined(RAYLIB_USE_RLWG) || defined(RAYM3_WEBGPU)
+  // rlwg stubs the stencil wrappers as no-ops, so a true rounded clip is not
+  // possible there yet. Fall back to the rectangular scissor instead of
+  // skipping clipping entirely — otherwise a child that overflows a rounded
+  // container (ripples, translucent fills, images) is not clipped at all. The
+  // scissor path is safe here: the platform sets FLAG_WINDOW_HIGHDPI, so
+  // BeginScissorMode scales the dp rect to framebuffer pixels exactly like the
+  // dp content-scale applied to geometry (same contract ScrollView clipping
+  // relies on). Cost: the clip is square — content is confined to the box but
+  // corner pixels inside the radius are not masked.
+  // rlvk takes the real stencil path below: its rl* wrappers implement keyed
+  // stencil pipelines with a dynamic reference (the historical "stencil blanks
+  // the frame" on rlvk was a pipeline-cache key collision — raw GL enums
+  // overflowing their bitfields — fixed in rlvk_gl33.inc).
   (void)radius;
+  PushScissor(bounds);
   return;
 #endif
   rlDrawRenderBatchActive(); // flush pending draws before touching GL state
@@ -197,8 +200,9 @@ void PushRoundedStencil(Rectangle bounds, float radius) {
 }
 
 void PopRoundedStencil() {
-#if defined(RAYLIB_USE_RLVK) || defined(RAYLIB_USE_RLWG) || defined(RAYM3_WEBGPU)
-  return; // rounded clipping disabled for this backend (see PushRoundedStencil)
+#if defined(RAYLIB_USE_RLWG) || defined(RAYM3_WEBGPU)
+  PopScissor(); // mirrors the scissor fallback in PushRoundedStencil
+  return;
 #endif
   if (s_stencilStack.empty()) return;
   StencilEntry entry = s_stencilStack.back();

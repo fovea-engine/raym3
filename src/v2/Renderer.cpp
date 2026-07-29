@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdarg>
 #include <cstdlib>
 #include <cstdio>
 #include <unordered_map>
@@ -77,8 +78,18 @@ static Rectangle IntersectRect(const Rectangle& a, const Rectangle& b) {
 
 float CurrentRenderOpacity() { return g_renderOpacity; }
 
+// raylib's ColorAlpha REPLACES the alpha channel (result.a = 255*alpha), which
+// silently discards a colour's own alpha. Every user-supplied colour
+// (background, border, gradient stops, shadows) must instead have the render
+// opacity SCALED into whatever alpha it already carries, or `#RRGGBBAA`,
+// `rgb(r g b / 50%)` and packed 0xRRGGBBAA all paint fully opaque.
+Color ScaleAlpha(Color color, float factor) {
+  const float a = (float)color.a * std::clamp(factor, 0.0f, 1.0f);
+  return Color{color.r, color.g, color.b, (unsigned char)std::lround(std::clamp(a, 0.0f, 255.0f))};
+}
+
 Color ApplyRenderOpacity(Color color) {
-  return ColorAlpha(color, g_renderOpacity);
+  return ScaleAlpha(color, g_renderOpacity);
 }
 
 // All mutable render/input/text-input state lives in RenderContext (see
@@ -112,10 +123,11 @@ static float DefaultNodeHeight(const Node &node) {
     return 40.0f;
   case NodeKind::TextInput:
     return 56.0f;
-  case NodeKind::Text:
-    return node.style.height.value_or(node.style.text.lineHeight.value_or(
-        node.style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium) *
-            1.43f));
+  case NodeKind::Text: {
+    const float fontSize =
+        node.style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium);
+    return node.style.height.value_or(ResolveLineHeight(node.style.text, fontSize));
+  }
   default:
     return 0.0f;
   }
@@ -136,6 +148,42 @@ static float DefaultNodeWidth(const Node &node) {
   default:
     return 0.0f;
   }
+}
+
+// True when EffectiveStyle would return `node.style` unchanged: no interaction
+// state override applies and the nav-rail adjustment does not kick in. This is
+// the overwhelmingly common case (every plain View/Text, every list row).
+static inline bool EffectiveStyleIsBase(const Node &node) {
+  if (node.inNavigationRail && node.role == NodeRole::NavItem) return false;
+  switch (node.state) {
+  case ComponentState::Hovered:  return !node.stateStyles.hovered;
+  case ComponentState::Pressed:  return !node.stateStyles.pressed;
+  case ComponentState::Focused:  return !node.stateStyles.focused;
+  case ComponentState::Disabled: return !node.stateStyles.disabled;
+  default: return true;
+  }
+}
+
+static Style EffectiveStyle(const Node &node);
+
+// Copy-free EffectiveStyle for read-only callers. `Style` is a ~60-optional
+// struct holding vectors and strings, so returning it by value costs a heap
+// allocation per call — and the per-frame layout/paint walks call it several
+// times PER NODE (once for the node, once per child for the Fixed test, once
+// for stretch resolution). Handing back a reference to node.style on the base
+// path removes that entirely; the rare adjusted path fills the caller's
+// scratch. Callers that MUTATE the result must keep using EffectiveStyle.
+static inline const Style &EffectiveStyleRef(const Node &node, Style &scratch) {
+  if (EffectiveStyleIsBase(node)) return node.style;
+  scratch = EffectiveStyle(node);
+  return scratch;
+}
+
+// Fixed-position test without materializing a Style at all.
+static inline bool EffectiveIsFixed(const Node &node) {
+  if (EffectiveStyleIsBase(node)) return node.style.position == PositionType::Fixed;
+  Style scratch;
+  return EffectiveStyleRef(node, scratch).position == PositionType::Fixed;
 }
 
 static Style EffectiveStyle(const Node &node) {
@@ -371,19 +419,29 @@ static const PreparedText& GetOrPrepare(const Node* node) {
       node->kind == NodeKind::TextInput ? WhiteSpace::PreWrap : WhiteSpace::Normal);
   WordBreak wordBreak = node->style.text.wordBreak.value_or(WordBreak::Normal);
   float letterSpacing = node->style.text.letterSpacing.value_or(0.25f);
+  const int maxLines = std::max(0, node->style.text.maxLines.value_or(0));
+  const TextOverflow overflow =
+      node->style.text.overflow.value_or(TextOverflow::Clip);
+  const float lineHeight = ResolveLineHeight(node->style.text, fontSize);
   std::string key = TextCacheKey(node->text, fontSize, weight, family, whiteSpace,
                                  wordBreak, letterSpacing);
+  // The prepared layout bakes lineHeight, the clamp and the ellipsis mode, so
+  // they have to take part in the cache identity — otherwise a node that gains
+  // `numberOfLines` keeps serving its unclamped layout forever.
+  key += ':' + std::to_string(static_cast<int>(lineHeight * 100.0f)) + ':' +
+         std::to_string(maxLines) + ':' + std::to_string(static_cast<int>(overflow));
 
   if (!node->preparedTextCache || node->preparedTextKey != key) {
     TextLayoutOptions opts;
     opts.fontSize   = fontSize;
-    opts.lineHeight = node->style.text.lineHeight.value_or(
-        std::max(fontSize + 4.0f, fontSize * 1.43f));
+    opts.lineHeight = lineHeight;
     opts.letterSpacing = letterSpacing;
     opts.weight     = weight;
     opts.fontFamily = family;
     opts.whiteSpace = whiteSpace;
     opts.wordBreak  = wordBreak;
+    opts.maxLines   = maxLines;
+    opts.overflow   = overflow;
     node->preparedTextCache = PrepareText(node->text, opts);
     node->preparedTextKey   = std::move(key);
   }
@@ -393,6 +451,31 @@ static const PreparedText& GetOrPrepare(const Node* node) {
 static float ClampScrollOffset(float offset, float contentSize, float viewportSize) {
   float maxOffset = std::max(0.0f, contentSize - viewportSize);
   return std::max(0.0f, std::min(offset, maxOffset));
+}
+
+// Clamp both axes to this frame's content size, then apply the follow-end pin.
+// Every layout path routes through here so the two writes stay attributable:
+// the clamp is symmetric, but the follow-end pin only ever pushes toward the
+// bottom, which makes it the prime suspect for direction-dependent behaviour.
+static void ClampScrollOffsetsForLayout(const NodePtr &node,
+                                        bool applyFollowEnd) {
+  const float oldX = node->scrollOffsetX;
+  const float oldY = node->scrollOffsetY;
+  node->scrollOffsetX = ClampScrollOffset(
+      node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
+  node->scrollOffsetY = ClampScrollOffset(
+      node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
+  ScrollTraceOffsetWrite(*node, ScrollWriteSource::Clamp, 'x', oldX,
+                         node->scrollOffsetX);
+  ScrollTraceOffsetWrite(*node, ScrollWriteSource::Clamp, 'y', oldY,
+                         node->scrollOffsetY);
+  if (applyFollowEnd && node->scrollFollowEnd) {
+    const float pinned =
+        std::max(0.0f, node->scrollContentHeight - node->layout.height);
+    ScrollTraceOffsetWrite(*node, ScrollWriteSource::FollowEnd, 'y',
+                           node->scrollOffsetY, pinned);
+    node->scrollOffsetY = pinned;
+  }
 }
 
 static float MeasureNodeHeight(const NodePtr &node, float contentW) {
@@ -535,8 +618,20 @@ static YGSize MeasureTextNode(YGNodeConstRef ygNode, float width,
   return {outW, outH};
 }
 
-static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
-  const Style style = EffectiveStyle(node);
+// True when a child of this node with an auto width will be stretched to the
+// parent's content width — i.e. the parent is a column (width is the cross
+// axis) and it does not opt out of the default `align-items: stretch`.
+static bool StretchesChildWidth(const Style &parentStyle) {
+  const FlexDirection dir = parentStyle.flexDirection.value_or(FlexDirection::Column);
+  const bool column = dir == FlexDirection::Column || dir == FlexDirection::ColumnReverse;
+  if (!column) return false;
+  return !parentStyle.alignItems || *parentStyle.alignItems == Align::Stretch;
+}
+
+static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
+                           bool parentStretchesWidth) {
+  Style effScratch;
+  const Style &style = EffectiveStyleRef(node, effScratch);
 
   if (style.display == Display::None) {
     YGNodeStyleSetDisplay(ygNode, YGDisplayNone);
@@ -579,12 +674,31 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
   // a full-line measure (that ignores wrapping and overflows the parent).
   bool isText = (node.kind == NodeKind::Text);
 
-  if (style.width)
+  // react-native parity: a TextInput has no intrinsic width — it fills the
+  // parent, the way `align-items: stretch` (Yoga's default) sizes any auto-width
+  // child. The old fixed 240dp default made every field the same stubby box
+  // regardless of its container, so every call site had to restate width: '100%'.
+  // The intrinsic width is kept only where stretching cannot happen (a row
+  // parent, or a parent that opts out of stretch) and the node is not flex-sized,
+  // so a field in a row still shows up instead of collapsing to nothing.
+  const bool selfOptsOutOfStretch = style.alignSelf && *style.alignSelf != Align::Stretch;
+  const bool flexSized = style.flexGrow.value_or(0.0f) > 0.0f ||
+                         style.flexBasis.has_value() || style.flexBasisPercent.has_value();
+  const bool widthComesFromParent =
+      (parentStretchesWidth && !selfOptsOutOfStretch) || flexSized;
+  const bool skipIntrinsicWidth = node.kind == NodeKind::TextInput && widthComesFromParent;
+
+  if (style.widthPercent)
+    YGNodeStyleSetWidthPercent(ygNode, *style.widthPercent);
+  else if (style.width)
     YGNodeStyleSetWidth(ygNode, *style.width);
-  else if (!isText && !isRoot && node.children.empty() && DefaultNodeWidth(node) > 0.0f)
+  else if (!isText && !isRoot && node.children.empty() && !skipIntrinsicWidth &&
+           DefaultNodeWidth(node) > 0.0f)
     YGNodeStyleSetWidth(ygNode, DefaultNodeWidth(node));
 
-  if (style.height)
+  if (style.heightPercent)
+    YGNodeStyleSetHeightPercent(ygNode, *style.heightPercent);
+  else if (style.height)
     YGNodeStyleSetHeight(ygNode, *style.height);
   else if (!isText && !isRoot && node.children.empty() && DefaultNodeHeight(node) > 0.0f)
     YGNodeStyleSetHeight(ygNode, DefaultNodeHeight(node));
@@ -594,17 +708,25 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
   // nothing ever overflows. Default the unset min axis to 0 so the parent's
   // flex sizing wins and content overflows internally.
   bool scrolls = style.overflow == Overflow::Scroll;
-  if (style.minWidth)
+  if (style.minWidthPercent)
+    YGNodeStyleSetMinWidthPercent(ygNode, *style.minWidthPercent);
+  else if (style.minWidth)
     YGNodeStyleSetMinWidth(ygNode, *style.minWidth);
   else if (scrolls)
     YGNodeStyleSetMinWidth(ygNode, 0.0f);
-  if (style.minHeight)
+  if (style.minHeightPercent)
+    YGNodeStyleSetMinHeightPercent(ygNode, *style.minHeightPercent);
+  else if (style.minHeight)
     YGNodeStyleSetMinHeight(ygNode, *style.minHeight);
   else if (scrolls)
     YGNodeStyleSetMinHeight(ygNode, 0.0f);
-  if (style.maxWidth)
+  if (style.maxWidthPercent)
+    YGNodeStyleSetMaxWidthPercent(ygNode, *style.maxWidthPercent);
+  else if (style.maxWidth)
     YGNodeStyleSetMaxWidth(ygNode, *style.maxWidth);
-  if (style.maxHeight)
+  if (style.maxHeightPercent)
+    YGNodeStyleSetMaxHeightPercent(ygNode, *style.maxHeightPercent);
+  else if (style.maxHeight)
     YGNodeStyleSetMaxHeight(ygNode, *style.maxHeight);
   if (style.flexGrow)
     YGNodeStyleSetFlexGrow(ygNode, *style.flexGrow);
@@ -624,7 +746,9 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
     YGNodeStyleSetFlexShrink(ygNode, 0.0f);
   else
     YGNodeStyleSetFlexShrink(ygNode, 1.0f);
-  if (style.flexBasis)
+  if (style.flexBasisPercent)
+    YGNodeStyleSetFlexBasisPercent(ygNode, *style.flexBasisPercent);
+  else if (style.flexBasis)
     YGNodeStyleSetFlexBasis(ygNode, *style.flexBasis);
 
   if (style.gap)
@@ -667,10 +791,12 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
   }
 }
 
-static YGNodeRef BuildYogaTree(const NodePtr &node, bool isRoot) {
+static YGNodeRef BuildYogaTree(const NodePtr &node, bool isRoot,
+                               bool parentStretchesWidth = true) {
   YGNodeRef ygNode = YGNodeNew();
+  Ctx().lastStats.yogaNodesBuilt++;
   YGNodeSetContext(ygNode, node.get());
-  ApplyYogaStyle(ygNode, *node, isRoot);
+  ApplyYogaStyle(ygNode, *node, isRoot, parentStretchesWidth);
 
   // Text nodes: let Yoga call MeasureTextNode with the real available width
   // so wrapping and multi-line height are computed correctly.
@@ -678,8 +804,11 @@ static YGNodeRef BuildYogaTree(const NodePtr &node, bool isRoot) {
     YGNodeSetMeasureFunc(ygNode, MeasureTextNode);
   }
 
+  Style stretchScratch;
+  const bool stretchesChildren =
+      StretchesChildWidth(EffectiveStyleRef(*node, stretchScratch));
   for (const NodePtr &child : node->children) {
-    YGNodeRef ygChild = BuildYogaTree(child, false);
+    YGNodeRef ygChild = BuildYogaTree(child, false, stretchesChildren);
     YGNodeInsertChild(ygNode, ygChild, YGNodeGetChildCount(ygNode));
   }
 
@@ -694,7 +823,8 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
   node->layout = {x, y, YGNodeLayoutGetWidth(ygNode),
                   YGNodeLayoutGetHeight(ygNode)};
 
-  Style style = EffectiveStyle(*node);
+  Style effScratch;
+  const Style &style = EffectiveStyleRef(*node, effScratch);
   bool scrolls = style.overflow == Overflow::Scroll;
 
   // Measure this frame's content extent from Yoga's own child geometry BEFORE
@@ -712,7 +842,7 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
     // Fixed-position children are display:none in this Yoga pass (laid out by
     // LayoutFixed against the viewport instead) and don't contribute to
     // scrollable content.
-    if (EffectiveStyle(*node->children[i]).position == PositionType::Fixed)
+    if (EffectiveIsFixed(*node->children[i]))
       continue;
     YGNodeRef ygChild = YGNodeGetChild(ygNode, i);
     contentRight = std::max(contentRight, YGNodeLayoutGetLeft(ygChild) + YGNodeLayoutGetWidth(ygChild));
@@ -722,10 +852,7 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
   node->scrollContentHeight = contentBottom;
 
   if (scrolls) {
-    node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
-    node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
-    if (node->scrollFollowEnd)
-      node->scrollOffsetY = std::max(0.0f, node->scrollContentHeight - node->layout.height);
+    ClampScrollOffsetsForLayout(node, /*applyFollowEnd=*/true);
   } else {
     node->scrollOffsetX = 0.0f;
     node->scrollOffsetY = 0.0f;
@@ -737,7 +864,7 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
   for (uint32_t i = 0; i < count; ++i) {
     // Skip Fixed children here too: writing their 0x0 Yoga result would clobber
     // the fixed-pass layout that hit-testing and ancestor-clip checks read.
-    if (EffectiveStyle(*node->children[i]).position == PositionType::Fixed)
+    if (EffectiveIsFixed(*node->children[i]))
       continue;
     StoreYogaLayout(node->children[i], YGNodeGetChild(ygNode, i), childParentX, childParentY);
   }
@@ -780,8 +907,7 @@ static void LayoutFallback(const NodePtr &node, Rectangle bounds) {
   float contentH = std::max(0.0f, node->layout.height - padTop - padBottom);
   bool scrolls = style.overflow == Overflow::Scroll;
   if (scrolls) {
-    node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
-    node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
+    ClampScrollOffsetsForLayout(node, /*applyFollowEnd=*/false);
     cursorX -= node->scrollOffsetX;
     cursorY -= node->scrollOffsetY;
   } else {
@@ -880,10 +1006,7 @@ static void LayoutFallback(const NodePtr &node, Rectangle bounds) {
   node->scrollContentWidth = contentRight;
   node->scrollContentHeight = contentBottom;
   if (scrolls) {
-    node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
-    node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
-    if (node->scrollFollowEnd)
-      node->scrollOffsetY = std::max(0.0f, node->scrollContentHeight - node->layout.height);
+    ClampScrollOffsetsForLayout(node, /*applyFollowEnd=*/true);
   }
 }
 
@@ -891,6 +1014,7 @@ void UpdateLayout(const NodePtr &root, Rectangle bounds) {
   if (!root)
     return;
 
+  Ctx().lastStats.yogaNodesBuilt = 0;
   MarkNavigationRailContext(root, false, 0.0f);
   MarkNavigationBarContext(root, false);
 
@@ -905,6 +1029,212 @@ void UpdateLayout(const NodePtr &root, Rectangle bounds) {
   LayoutFallback(root, bounds);
 #endif
 }
+
+// --- Retained layout mirror --------------------------------------------------
+// A persistent Yoga tree keyed by Node*, reconciled per call. See Renderer.h.
+// Reuses ApplyYogaStyle / MeasureTextNode / StretchesChildWidth above, so the
+// style mapping can never drift from the per-frame BuildYogaTree path.
+#if RAYM3_USE_YOGA
+namespace {
+
+struct RetainedYG {
+  YGNodeRef yg = nullptr;
+  uint64_t gen = 0;          // mark-and-sweep visit stamp
+  bool textHadPrepared = false;
+};
+std::unordered_map<const Node *, RetainedYG> g_retainedYoga;
+uint64_t g_retainedGen = 0;
+
+// Pristine style source: YGNodeCopyStyle from this blank node resets a reused
+// yoga node to defaults before ApplyYogaStyle re-applies the current style —
+// the retained equivalent of BuildYogaTree starting from a fresh YGNodeNew()
+// (removed style keys must fall back to defaults, not linger).
+YGNodeRef retainedBlankNode() {
+  static YGNodeRef blank = YGNodeNew();
+  return blank;
+}
+
+void retainedReconcile(const NodePtr &node, bool isRoot,
+                       bool parentStretchesWidth,
+                       RetainedLayoutStats &stats) {
+  RetainedYG &r = g_retainedYoga[node.get()];
+  if (!r.yg) {
+    r.yg = YGNodeNew();
+    YGNodeSetContext(r.yg, node.get());
+    if (node->kind == NodeKind::Text)
+      YGNodeSetMeasureFunc(r.yg, MeasureTextNode);
+    stats.yogaNodesCreated++;
+  }
+  r.gen = g_retainedGen;
+  stats.nodesReconciled++;
+
+  // Reset-to-default + re-apply. Yoga's style setters compare before marking
+  // dirty, so an unchanged node stays clean and YGNodeCalculateLayout can
+  // short-circuit its subtree.
+  YGNodeCopyStyle(r.yg, retainedBlankNode());
+  ApplyYogaStyle(r.yg, *node, isRoot, parentStretchesWidth);
+
+  // Text re-measure: the prepared-text cache is invalidated on any text or
+  // text-style change; a missing cache means the measurement is stale.
+  if (node->kind == NodeKind::Text) {
+    const bool prepared = node->preparedTextCache.has_value();
+    if (!prepared || !r.textHadPrepared) YGNodeMarkDirty(r.yg);
+    r.textHadPrepared = prepared;
+  }
+
+  // Children: rebuild the yoga edge list only when it differs from the
+  // retained tree's order (pointer compare — cheap in the common case).
+  const uint32_t ygCount = YGNodeGetChildCount(r.yg);
+  bool same = ygCount == node->children.size();
+  if (same) {
+    for (uint32_t i = 0; i < ygCount; ++i) {
+      auto it = g_retainedYoga.find(node->children[i].get());
+      if (it == g_retainedYoga.end() || YGNodeGetChild(r.yg, i) != it->second.yg) {
+        same = false;
+        break;
+      }
+    }
+  }
+
+  Style stretchScratch;
+  const bool stretches =
+      StretchesChildWidth(EffectiveStyleRef(*node, stretchScratch));
+  for (const NodePtr &child : node->children)
+    retainedReconcile(child, false, stretches, stats);
+
+  if (!same) {
+    YGNodeRemoveAllChildren(r.yg);
+    // re-read: recursion above may have rehashed the map
+    YGNodeRef selfYg = g_retainedYoga[node.get()].yg;
+    for (const NodePtr &child : node->children) {
+      YGNodeRef childYg = g_retainedYoga[child.get()].yg;
+      if (YGNodeRef owner = YGNodeGetOwner(childYg))
+        YGNodeRemoveChild(owner, childYg);
+      YGNodeInsertChild(selfYg, childYg, YGNodeGetChildCount(selfYg));
+    }
+  }
+}
+
+void retainedPrune(RetainedLayoutStats &stats) {
+  for (auto it = g_retainedYoga.begin(); it != g_retainedYoga.end();) {
+    if (it->second.gen != g_retainedGen) {
+      if (it->second.yg) {
+        if (YGNodeRef owner = YGNodeGetOwner(it->second.yg))
+          YGNodeRemoveChild(owner, it->second.yg);
+        YGNodeFree(it->second.yg);
+      }
+      it = g_retainedYoga.erase(it);
+      stats.yogaNodesFreed++;
+    } else {
+      ++it;
+    }
+  }
+}
+
+// Compare in parent-relative coordinates: StoreYogaLayout accumulates parent
+// origins and applies scroll translations to descendants; relative offsets
+// sidestep both (child.x - parent.x + parent.scrollOffset == yoga Left).
+void retainedCompare(const NodePtr &node, const Node *parent, Rectangle bounds,
+                     int &logged, int maxLog, RetainedLayoutStats &stats) {
+  const Style style = EffectiveStyle(*node);
+  if (style.position == PositionType::Fixed) return;  // separate layout pass
+  if (style.display == Display::None) return;
+
+  auto it = g_retainedYoga.find(node.get());
+  if (it == g_retainedYoga.end() || !it->second.yg) return;
+  YGNodeRef yg = it->second.yg;
+
+  constexpr float kEps = 0.75f;
+  const float relX = parent ? node->layout.x - parent->layout.x + parent->scrollOffsetX
+                            : node->layout.x - bounds.x;
+  const float relY = parent ? node->layout.y - parent->layout.y + parent->scrollOffsetY
+                            : node->layout.y - bounds.y;
+  const float dx = std::fabs(relX - YGNodeLayoutGetLeft(yg));
+  const float dy = std::fabs(relY - YGNodeLayoutGetTop(yg));
+  const float dw = std::fabs(node->layout.width - YGNodeLayoutGetWidth(yg));
+  const float dh = std::fabs(node->layout.height - YGNodeLayoutGetHeight(yg));
+  if (dx > kEps || dy > kEps || dw > kEps || dh > kEps) {
+    stats.divergences++;
+    if (logged < maxLog) {
+      logged++;
+      TraceLog(LOG_WARNING,
+               "RETAINED-LAYOUT diverge id=%s kind=%d rel=(%.1f,%.1f %.1fx%.1f) "
+               "retained=(%.1f,%.1f %.1fx%.1f)",
+               node->id.c_str(), (int)node->kind, relX, relY,
+               node->layout.width, node->layout.height,
+               YGNodeLayoutGetLeft(yg), YGNodeLayoutGetTop(yg),
+               YGNodeLayoutGetWidth(yg), YGNodeLayoutGetHeight(yg));
+    }
+  }
+  for (const NodePtr &child : node->children)
+    retainedCompare(child, node.get(), bounds, logged, maxLog, stats);
+}
+
+}  // namespace
+
+// Reconcile + calculate. Shared by verify and authoritative modes; returns the
+// root's retained Yoga node (null when the tree is empty).
+static YGNodeRef retainedCalculate(const NodePtr &root, Rectangle bounds,
+                                   RetainedLayoutStats &stats) {
+  g_retainedGen++;
+  retainedReconcile(root, true, true, stats);
+  retainedPrune(stats);
+  YGNodeRef ygRoot = g_retainedYoga[root.get()].yg;
+  if (!ygRoot) return nullptr;
+  YGNodeStyleSetWidth(ygRoot, bounds.width);
+  YGNodeStyleSetHeight(ygRoot, bounds.height);
+  YGNodeCalculateLayout(ygRoot, bounds.width, bounds.height, YGDirectionLTR);
+  return ygRoot;
+}
+
+RetainedLayoutStats RetainedLayoutVerify(const NodePtr &root, Rectangle bounds,
+                                         int maxLogPerCall) {
+  RetainedLayoutStats stats;
+  if (!root) return stats;
+  if (!retainedCalculate(root, bounds, stats)) return stats;
+  int logged = 0;
+  retainedCompare(root, nullptr, bounds, logged, maxLogPerCall, stats);
+  return stats;
+}
+
+RetainedLayoutStats RetainedUpdateLayout(const NodePtr &root, Rectangle bounds) {
+  RetainedLayoutStats stats;
+  if (!root) return stats;
+  MarkNavigationRailContext(root, false, 0.0f);
+  MarkNavigationBarContext(root, false);
+  YGNodeRef ygRoot = retainedCalculate(root, bounds, stats);
+  if (!ygRoot) return stats;
+  // Same commit walk as the per-frame path: writes node->layout, content
+  // extents, scroll clamp + follow-end. Retained yoga children are kept in
+  // node->children order by retainedReconcile, so the index pairing holds.
+  StoreYogaLayout(root, ygRoot, bounds.x, bounds.y);
+  // Report the mirror's allocation count, not the whole tree: with retained
+  // layout this should be ~0 in steady state and only spike on mount.
+  Ctx().lastStats.yogaNodesBuilt = stats.yogaNodesCreated;
+  return stats;
+}
+
+void RetainedLayoutReset() {
+  for (auto &[node, r] : g_retainedYoga) {
+    (void)node;
+    if (r.yg) {
+      if (YGNodeRef owner = YGNodeGetOwner(r.yg))
+        YGNodeRemoveChild(owner, r.yg);
+      YGNodeFree(r.yg);
+    }
+  }
+  g_retainedYoga.clear();
+}
+#else
+RetainedLayoutStats RetainedLayoutVerify(const NodePtr &, Rectangle, int) {
+  return {};
+}
+RetainedLayoutStats RetainedUpdateLayout(const NodePtr &root, Rectangle bounds) {
+  UpdateLayout(root, bounds);   // no Yoga build: fallback path is already retained-free
+  return {};
+}
+void RetainedLayoutReset() {}
+#endif
 
 static void DrawNodeBackground(const Node &node, const Style &style) {
   if (style.display == Display::None)
@@ -958,7 +1288,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
       };
       raym3::Renderer::DrawRoundedRectangle(
           bounds, radius + grow,
-          ColorAlpha(shadow.color, opacity * ((float)shadow.color.a / 255.0f) / (float)layers));
+          ScaleAlpha(shadow.color, opacity / (float)layers));
     }
   }
   if (style.backdropBlur && *style.backdropBlur > 0.0f) {
@@ -968,8 +1298,8 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
   }
   if (style.backgroundGradient && style.backgroundGradient->stops.size() >= 2) {
     const auto &stops = style.backgroundGradient->stops;
-    Color first = ColorAlpha(stops.front().color, opacity);
-    Color last = ColorAlpha(stops.back().color, opacity);
+    Color first = ScaleAlpha(stops.front().color, opacity);
+    Color last = ScaleAlpha(stops.back().color, opacity);
     float angle = fmodf(style.backgroundGradient->angleDegrees + 360.0f, 360.0f);
     if (angle >= 45.0f && angle < 135.0f) {
       DrawRectangleGradientEx(backgroundLayout, first, last, last, first);
@@ -983,7 +1313,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
   }
   if (style.backgroundColor) {
     raym3::Renderer::DrawRoundedRectangle(backgroundLayout, radius,
-                                          ColorAlpha(*style.backgroundColor, opacity));
+                                          ScaleAlpha(*style.backgroundColor, opacity));
     if (node.role == NodeRole::BottomSheet && radius > 0.0f) {
       // A modal bottom sheet is attached to the viewport edge. Only its top
       // corners are rounded; fill the lower radius band so the bottom-left and
@@ -993,7 +1323,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
            backgroundLayout.y + std::max(0.0f, backgroundLayout.height - radius),
            backgroundLayout.width,
            std::min(radius, backgroundLayout.height)},
-          ColorAlpha(*style.backgroundColor, opacity));
+          ScaleAlpha(*style.backgroundColor, opacity));
     }
   }
   // A plain interactive View (onPress, non-material) gets an implicit hover/press
@@ -1018,9 +1348,64 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
         backgroundLayout, radius,
         ColorAlpha(Color{sl.r, sl.g, sl.b, 255}, opacity * node.animStateAlpha));
   }
-  if (style.borderColor && style.borderWidth.value_or(0.0f) > 0.0f) {
+  bool perEdgeBorders = HasPerEdgeBorders(style);
+  bool borderDrawn = false;
+  if (perEdgeBorders) {
+    // Per-edge fields that RESOLVE identical on all four sides are still a
+    // uniform border — paint it with the rounded stroke so border-radius is
+    // honoured. Only genuinely uneven edges need the square edge-by-edge
+    // painter (corners are square where two differently-lit edges meet, which
+    // is what a per-side CSS border does).
+    const Color fb = style.borderColor.value_or(Color{0, 0, 0, 0});
+    const float w0 = ResolveBorderWidth(style, BoxEdge::Top);
+    const Color c0 = ResolveBorderColor(style, BoxEdge::Top, fb);
+    bool uniform = true;
+    for (BoxEdge e : {BoxEdge::Right, BoxEdge::Bottom, BoxEdge::Left}) {
+      const Color c = ResolveBorderColor(style, e, fb);
+      if (ResolveBorderWidth(style, e) != w0 ||
+          c.r != c0.r || c.g != c0.g || c.b != c0.b || c.a != c0.a) {
+        uniform = false;
+        break;
+      }
+    }
+    if (uniform) {
+      perEdgeBorders = false;
+      // Draw here (not via the shared-field branch below): translucent border
+      // colours must not be stroked twice.
+      if (w0 > 0.0f && c0.a > 0) {
+        raym3::Renderer::DrawRoundedRectangleEx(backgroundLayout, radius,
+                                                ScaleAlpha(c0, opacity), w0);
+      }
+      borderDrawn = true;
+    }
+  }
+  if (perEdgeBorders) {
+    const Color fallback = style.borderColor.value_or(Color{0, 0, 0, 0});
+    const float top    = ResolveBorderWidth(style, BoxEdge::Top);
+    const float right  = ResolveBorderWidth(style, BoxEdge::Right);
+    const float bottom = ResolveBorderWidth(style, BoxEdge::Bottom);
+    const float left   = ResolveBorderWidth(style, BoxEdge::Left);
+    const Rectangle &r = backgroundLayout;
+    if (top > 0.0f) {
+      DrawRectangleRec({r.x, r.y, r.width, top},
+                       ScaleAlpha(ResolveBorderColor(style, BoxEdge::Top, fallback), opacity));
+    }
+    if (bottom > 0.0f) {
+      DrawRectangleRec({r.x, r.y + r.height - bottom, r.width, bottom},
+                       ScaleAlpha(ResolveBorderColor(style, BoxEdge::Bottom, fallback), opacity));
+    }
+    if (left > 0.0f) {
+      DrawRectangleRec({r.x, r.y + top, left, std::max(0.0f, r.height - top - bottom)},
+                       ScaleAlpha(ResolveBorderColor(style, BoxEdge::Left, fallback), opacity));
+    }
+    if (right > 0.0f) {
+      DrawRectangleRec({r.x + r.width - right, r.y + top, right,
+                        std::max(0.0f, r.height - top - bottom)},
+                       ScaleAlpha(ResolveBorderColor(style, BoxEdge::Right, fallback), opacity));
+    }
+  } else if (!borderDrawn && style.borderColor && style.borderWidth.value_or(0.0f) > 0.0f) {
     raym3::Renderer::DrawRoundedRectangleEx(
-        backgroundLayout, radius, ColorAlpha(*style.borderColor, opacity),
+        backgroundLayout, radius, ScaleAlpha(*style.borderColor, opacity),
         *style.borderWidth);
   }
   for (const BoxShadow &shadow : style.boxShadows) {
@@ -1030,7 +1415,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
     raym3::Renderer::DrawRoundedRectangleEx(
         {backgroundLayout.x + shadow.offsetX, backgroundLayout.y + shadow.offsetY,
          backgroundLayout.width, backgroundLayout.height},
-        radius, ColorAlpha(shadow.color, opacity), width);
+        radius, ScaleAlpha(shadow.color, opacity), width);
   }
 }
 
@@ -1136,7 +1521,8 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
 
   Ctx().lastStats.nodeCount++;
   node->state = ComputeState(*node);
-  Style style = EffectiveStyle(*node);
+  Style effScratch;
+  const Style &style = EffectiveStyleRef(*node, effScratch);
   const float parentOpacity = g_renderOpacity;
   g_renderOpacity *= std::clamp(style.opacity.value_or(1.0f), 0.0f, 1.0f);
   // Establish this node's text color for its subtree (CSS `color` inheritance).
@@ -1179,6 +1565,12 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
       return;
     }
   }
+
+  // Survived culling — this node actually paints. Everything above (state,
+  // style resolution, stack-order entry, onLayout) already ran for culled
+  // nodes too, so the gap between paintedCount and nodeCount is the work the
+  // cull does NOT save.
+  Ctx().lastStats.paintedCount++;
 
   // First-class controls: tick toggle animation + paint directly (no
   // customRender / no host-side polling).
@@ -1906,7 +2298,11 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   Ctx().stackOrder.clear();
   Ctx().parentMap.clear();
   Ctx().paintCounter = 0;
+  // UpdateLayout runs before Render in the frame, so the Yoga build count for
+  // this frame is already recorded; don't wipe it with the paint counters.
+  const int yogaBuilt = Ctx().lastStats.yogaNodesBuilt;
   Ctx().lastStats = {};
+  Ctx().lastStats.yogaNodesBuilt = yogaBuilt;
   if (!layoutAlreadyComputed)
     UpdateLayout(root, bounds);
   
@@ -2179,6 +2575,98 @@ NodePtr InteractiveTargetAt(Vector2 point) {
   return InteractiveTargetFrom(e->node);
 }
 
+// --- Scroll diagnostics (RAYACT_SCROLL_TRACE=1) ----------------------------
+
+namespace {
+
+struct ScrollTraceBucket {
+  int writes = 0;
+  float netDelta = 0.0f; // signed sum of (to - from)
+};
+
+struct ScrollTraceState {
+  // Indexed by ScrollWriteSource. Reset per gesture.
+  ScrollTraceBucket buckets[7];
+  double gestureStartTime = 0.0;
+  bool active = false;
+};
+
+ScrollTraceState g_scrollTrace;
+
+const char *ScrollSourceName(ScrollWriteSource s) {
+  switch (s) {
+  case ScrollWriteSource::Drag:      return "drag";
+  case ScrollWriteSource::Wheel:     return "wheel";
+  case ScrollWriteSource::Fling:     return "fling";
+  case ScrollWriteSource::Clamp:     return "clamp";
+  case ScrollWriteSource::FollowEnd: return "followEnd";
+  case ScrollWriteSource::Js:        return "js";
+  case ScrollWriteSource::Mutation:  return "mutation";
+  }
+  return "?";
+}
+
+} // namespace
+
+bool ScrollTraceEnabled() {
+  // Read once: this sits on the fling hot path.
+  static const bool enabled = [] {
+    const char *v = std::getenv("RAYACT_SCROLL_TRACE");
+    return v && v[0] == '1';
+  }();
+  return enabled;
+}
+
+void ScrollTraceEvent(const char *fmt, ...) {
+  if (!ScrollTraceEnabled())
+    return;
+  if (!g_scrollTrace.active) {
+    g_scrollTrace.active = true;
+    g_scrollTrace.gestureStartTime = GetTime();
+  }
+  fprintf(stderr, "[scroll %+7.3fs] ",
+          GetTime() - g_scrollTrace.gestureStartTime);
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+  fputc('\n', stderr);
+}
+
+void ScrollTraceOffsetWrite(const Node &node, ScrollWriteSource source,
+                            char axis, float from, float to) {
+  if (!ScrollTraceEnabled())
+    return;
+  if (from == to)
+    return;
+  ScrollTraceBucket &b = g_scrollTrace.buckets[static_cast<int>(source)];
+  b.writes++;
+  b.netDelta += (to - from);
+  // Per-write detail is noisy during a fling, so only the histogram is printed
+  // at gesture end; individual writes go out only for the non-fling sources
+  // that are supposed to be rare.
+  if (source != ScrollWriteSource::Fling && source != ScrollWriteSource::Drag)
+    ScrollTraceEvent("  write %-9s %c %8.2f -> %8.2f  (%+.2f) node=%p",
+                     ScrollSourceName(source), axis, from, to, to - from,
+                     static_cast<const void *>(&node));
+}
+
+void ScrollTraceFlushGesture(const char *reason) {
+  if (!ScrollTraceEnabled() || !g_scrollTrace.active)
+    return;
+  fprintf(stderr, "[scroll] --- gesture end (%s) ---\n", reason);
+  for (int i = 0; i < 7; ++i) {
+    const ScrollTraceBucket &b = g_scrollTrace.buckets[i];
+    if (b.writes == 0)
+      continue;
+    fprintf(stderr, "[scroll]   %-9s writes=%-4d net=%+9.2f\n",
+            ScrollSourceName(static_cast<ScrollWriteSource>(i)), b.writes,
+            b.netDelta);
+  }
+  fprintf(stderr, "[scroll] ---------------------------\n");
+  g_scrollTrace = ScrollTraceState{};
+}
+
 // --- Scroll input (Flutter-like gesture competition) -----------------------
 
 namespace {
@@ -2272,9 +2760,22 @@ static void StartFling(const NodePtr &node, float velocity) {
   node->flingStartOffsetY = node->scrollOffsetY;
   node->flingDuration = duration;
   node->flingDistance = velocity * duration / kFlingDecelerationRate;
+  ScrollTraceEvent(
+      "fling start  v=%+8.1f dur=%.3fs dist=%+8.1f from=%8.2f max=%8.2f",
+      velocity, duration, node->flingDistance, node->scrollOffsetY,
+      std::max(0.0f, node->scrollContentHeight - node->layout.height));
 }
 
 static void StopFling(const NodePtr &node) {
+  if (node->flingActive) {
+    const float achieved = node->scrollOffsetY - node->flingStartOffsetY;
+    ScrollTraceEvent(
+        "fling stop   requested=%+8.1f achieved=%+8.1f (%.0f%%) at=%8.2f",
+        node->flingDistance, achieved,
+        node->flingDistance != 0.0f ? 100.0f * achieved / node->flingDistance
+                                    : 0.0f,
+        node->scrollOffsetY);
+  }
   node->flingActive = false;
   node->scrollVelocityY = 0.0f;
 }
@@ -2379,7 +2880,8 @@ static NodePtr FindScrollableForInput(const NodePtr &root, Vector2 point) {
   return FindScrollableNodeAt(root, point);
 }
 
-static bool ScrollNodeBy(const NodePtr &node, float deltaX, float deltaY) {
+static bool ScrollNodeBy(const NodePtr &node, float deltaX, float deltaY,
+                         ScrollWriteSource source = ScrollWriteSource::Drag) {
   if (!node)
     return false;
   if (std::abs(deltaY) > 0.01f)
@@ -2392,6 +2894,8 @@ static bool ScrollNodeBy(const NodePtr &node, float deltaX, float deltaY) {
   node->scrollOffsetY =
       ClampScrollOffset(node->scrollOffsetY + deltaY, node->scrollContentHeight,
                         node->layout.height);
+  ScrollTraceOffsetWrite(*node, source, 'x', oldX, node->scrollOffsetX);
+  ScrollTraceOffsetWrite(*node, source, 'y', oldY, node->scrollOffsetY);
   bool changed = std::abs(node->scrollOffsetX - oldX) > 0.01f ||
                  std::abs(node->scrollOffsetY - oldY) > 0.01f;
   if (changed && node->onScroll)
@@ -2403,6 +2907,38 @@ static void ClearScrollGesture() {
   Ctx().scroll.candidate = nullptr;
   Ctx().scroll.engaged = false;
   Ctx().scroll.frameVelocityY = 0.0f;
+}
+
+// A node captured purely because it has pan/drag handlers shares the gesture
+// arena with an ancestor scroller instead of owning it outright. Controls,
+// scrims and value-drivers still take the gesture exclusively: their drag IS
+// the interaction, and there is nothing sensible to hand off.
+static bool ActiveIsSharedDragCapture() {
+  NodeId id = GetActiveId();
+  if (id == 0)
+    return false;
+  if (Ctx().activeIsScrim || Ctx().activeIsBottomSheetDrag)
+    return false;
+  auto *n = reinterpret_cast<Node *>(id);
+  if (!n)
+    return false;
+  if (IsControlKind(n->kind) || n->onValueChange)
+    return false;
+  return n->onDragStart || n->onDragMove || n->onDragEnd;
+}
+
+// Called once the scroll gesture engages while such a node holds the pointer.
+// The node is told the drag ended so it can spring back, then released so the
+// rest of the gesture belongs to the scroller.
+static void YieldSharedDragToScroll(Vector2 pt) {
+  NodeId id = GetActiveId();
+  if (id == 0)
+    return;
+  auto *n = reinterpret_cast<Node *>(id);
+  if (n && n->onDragEnd)
+    n->onDragEnd({pt.x - GetDragOrigin().x, pt.y - GetDragOrigin().y});
+  StartRippleFadeOut(id);
+  SetActiveId(0);
 }
 
 static bool NodeSupportsRipple(const Node &node) {
@@ -2477,13 +3013,20 @@ static void TickScrollMomentumRecurse(const NodePtr &node, float dt) {
         std::max(0.0f, node->scrollContentHeight - node->layout.height);
     float clamped = std::clamp(target, 0.0f, maxOffset);
     if (std::abs(clamped - node->scrollOffsetY) > 0.01f) {
+      ScrollTraceOffsetWrite(*node, ScrollWriteSource::Fling, 'y',
+                             node->scrollOffsetY, clamped);
       node->scrollOffsetY = clamped;
       if (node->onScroll)
         node->onScroll();
     }
     // Hit an edge: stop dead (native clamping behavior, no decay-at-wall).
-    if (done || std::abs(clamped - target) > 0.5f)
+    const bool hitEdge = std::abs(clamped - target) > 0.5f;
+    if (done || hitEdge) {
+      ScrollTraceEvent("fling end reason=%s t=%.3f target=%8.2f clamped=%8.2f",
+                       done ? "duration" : "edge", t, target, clamped);
       StopFling(node);
+      ScrollTraceFlushGesture(done ? "fling-complete" : "fling-edge");
+    }
   } else {
     node->scrollVelocityY = 0.0f;
   }
@@ -2491,7 +3034,7 @@ static void TickScrollMomentumRecurse(const NodePtr &node, float dt) {
   float friction = std::pow(kScrollFriction, dt * 60.0f);
   if (std::abs(node->scrollVelocityX) > kVelocityStopThreshold) {
     float delta = node->scrollVelocityX * dt;
-    ScrollNodeBy(node, delta, 0.0f);
+    ScrollNodeBy(node, delta, 0.0f, ScrollWriteSource::Fling);
     node->scrollVelocityX *= friction;
     if (std::abs(node->scrollVelocityX) < kVelocityStopThreshold)
       node->scrollVelocityX = 0.0f;
@@ -2504,6 +3047,10 @@ static void TickScrollMomentumRecurse(const NodePtr &node, float dt) {
 }
 
 } // namespace
+
+void CancelFling(const NodePtr &node) {
+  if (node) StopFling(node);
+}
 
 void TickScrollMomentum(const NodePtr &root) {
   if (!root)
@@ -2536,12 +3083,19 @@ void ResolveScrollInput(const NodePtr &root) {
   // Wheel / trackpad: no slop, scroll directly.
   if (std::abs(p.wheel) > 0.01f) {
     if (NodePtr target = FindScrollableForInput(root, pt))
-      ScrollNodeBy(target, 0.0f, -p.wheel * kWheelScrollScale);
+      ScrollNodeBy(target, 0.0f, -p.wheel * kWheelScrollScale,
+                   ScrollWriteSource::Wheel);
     return;
   }
 
-  // ResolveInput owns the gesture when an interactive node is captured.
-  if (GetActiveId() != 0) {
+  // ResolveInput owns the gesture when an interactive node is captured — with
+  // one exception. A node captured only because it has drag handlers (a
+  // swipe-to-reveal row, say) would otherwise swallow every touch that starts
+  // on it, so a vertical drag over a list of such rows could never scroll.
+  // Those keep tracking a scroll candidate alongside the drag, and the scroll
+  // takes over below if the movement turns out to be along the scroll axis.
+  const bool sharedDrag = ActiveIsSharedDragCapture();
+  if (GetActiveId() != 0 && !sharedDrag) {
     ClearScrollGesture();
     return;
   }
@@ -2556,6 +3110,9 @@ void ResolveScrollInput(const NodePtr &root) {
       Ctx().scroll.candidate->scrollVelocityX = 0.0f;
       VelocityTrackerReset();
       VelocityTrackerAddSample(GetTime(), pt.y);
+      ScrollTraceEvent("press        at=(%.1f,%.1f) offset=%8.2f followEnd=%d",
+                       pt.x, pt.y, Ctx().scroll.candidate->scrollOffsetY,
+                       Ctx().scroll.candidate->scrollFollowEnd ? 1 : 0);
     }
     return;
   }
@@ -2572,6 +3129,15 @@ void ResolveScrollInput(const NodePtr &root) {
       const float cross = horizontal ? totalDy : totalDx;
       if (std::abs(primary) > kTouchSlop && std::abs(primary) > std::abs(cross)) {
         Ctx().scroll.engaged = true;
+        // The drag node, if any, loses the gesture here: the movement is
+        // primarily along the scroll axis, so the user is scrolling.
+        if (sharedDrag)
+          YieldSharedDragToScroll(pt);
+        // Samples collected before this point came from pre-slop travel and
+        // still enter the least-squares fit below, diluting it.
+        ScrollTraceEvent(
+            "engage       travel=%+.1fdp slop=%.1fdp presamples=%d",
+            primary, kTouchSlop, Ctx().scroll.velocitySampleCount);
         ClearPendingPress();
         NodeId focused = GetFocusedId();
         if (focused) {
@@ -2609,8 +3175,18 @@ void ResolveScrollInput(const NodePtr &root) {
       // Pointer velocity → scroll velocity (drag moves content opposite).
       float pointerVy = VelocityTrackerEstimate(GetTime());
       float scrollVy = -pointerVy;
+      ScrollTraceEvent("release      samples=%d pointerVy=%+8.1f scrollVy=%+8.1f"
+                       " min=%.1f -> %s",
+                       Ctx().scroll.velocitySampleCount, pointerVy, scrollVy,
+                       kMinFlingVelocity,
+                       std::abs(scrollVy) > kMinFlingVelocity ? "fling"
+                                                             : "DROPPED");
       if (std::abs(scrollVy) > kMinFlingVelocity)
         StartFling(Ctx().scroll.candidate, scrollVy);
+      else
+        ScrollTraceFlushGesture("no-fling");
+    } else if (Ctx().scroll.engaged) {
+      ScrollTraceFlushGesture("release-no-momentum");
     }
     ClearScrollGesture();
   }

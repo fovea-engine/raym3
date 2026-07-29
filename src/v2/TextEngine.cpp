@@ -334,11 +334,108 @@ PreparedText PrepareText(std::string text, const TextLayoutOptions &options,
   return prepared;
 }
 
+namespace {
+
+constexpr const char *kEllipsis = "\xE2\x80\xA6"; // U+2026 HORIZONTAL ELLIPSIS
+
+// Shrink `text` (grapheme by grapheme) until it plus the ellipsis fits.
+std::string EllipsizeToWidth(const std::string &text, float maxWidth,
+                             const TextLayoutOptions &options,
+                             const MeasureTextCallback &measure) {
+  if (maxWidth <= 0.0f) return text + kEllipsis;
+  const auto boundaries = GraphemeBoundaries(text);
+  // boundaries.back() == text.size(); walk backwards over grapheme starts.
+  for (std::size_t count = boundaries.empty() ? 0 : boundaries.size() - 1;
+       count > 0; --count) {
+    std::string candidate = text.substr(0, boundaries[count]);
+    // Trailing spaces before an ellipsis read as a typo.
+    while (!candidate.empty() && candidate.back() == ' ') candidate.pop_back();
+    candidate += kEllipsis;
+    if (measure(candidate, options) <= maxWidth) return candidate;
+  }
+  return std::string(kEllipsis);
+}
+
+std::string EllipsizeHead(const std::string &text, float maxWidth,
+                          const TextLayoutOptions &options,
+                          const MeasureTextCallback &measure) {
+  if (maxWidth <= 0.0f) return std::string(kEllipsis) + text;
+  const auto boundaries = GraphemeBoundaries(text);
+  for (std::size_t start = 0; start + 1 < boundaries.size(); ++start) {
+    std::string candidate = std::string(kEllipsis) + text.substr(boundaries[start]);
+    if (measure(candidate, options) <= maxWidth) return candidate;
+  }
+  return std::string(kEllipsis);
+}
+
+std::string EllipsizeMiddle(const std::string &text, float maxWidth,
+                            const TextLayoutOptions &options,
+                            const MeasureTextCallback &measure) {
+  if (maxWidth <= 0.0f) return text + kEllipsis;
+  const auto boundaries = GraphemeBoundaries(text);
+  if (boundaries.size() < 3) return EllipsizeToWidth(text, maxWidth, options, measure);
+  const std::size_t graphemes = boundaries.size() - 1;
+  for (std::size_t drop = 1; drop < graphemes; ++drop) {
+    const std::size_t keepFront = (graphemes - drop + 1) / 2;
+    const std::size_t keepBack = graphemes - drop - keepFront;
+    std::string candidate = text.substr(0, boundaries[keepFront]);
+    candidate += kEllipsis;
+    candidate += text.substr(boundaries[graphemes - keepBack]);
+    if (measure(candidate, options) <= maxWidth) return candidate;
+  }
+  return std::string(kEllipsis);
+}
+
+// react-native `numberOfLines` / CSS `-webkit-line-clamp`. Both props were
+// declared on the JS side for a long time and read by nothing: a label with no
+// break opportunity wrapped forever instead of ending in an ellipsis.
+void ApplyLineClamp(TextLayoutResult &result, const PreparedText &prepared,
+                    float maxWidth, const MeasureTextCallback &measure) {
+  const int maxLines = prepared.options.maxLines;
+  if (maxLines <= 0) return;
+  const std::size_t limit = static_cast<std::size_t>(maxLines);
+  const bool truncated = result.lines.size() > limit;
+  if (truncated) {
+    result.lines.resize(limit);
+    result.height = prepared.options.lineHeight * static_cast<float>(limit);
+    result.width = 0.0f;
+    for (const TextLine &line : result.lines)
+      result.width = std::max(result.width, line.width);
+  }
+  if (result.lines.empty()) return;
+
+  const bool overflows = truncated || (maxWidth > 0.0f && result.width > maxWidth);
+  if (!overflows || prepared.options.overflow == TextOverflow::Clip) return;
+
+  TextLine &last = result.lines.back();
+  const std::string original = last.text;
+  switch (prepared.options.overflow) {
+  case TextOverflow::Head:
+    last.text = EllipsizeHead(original, maxWidth, prepared.options, measure);
+    break;
+  case TextOverflow::Middle:
+    last.text = EllipsizeMiddle(original, maxWidth, prepared.options, measure);
+    break;
+  default:
+    last.text = EllipsizeToWidth(original, maxWidth, prepared.options, measure);
+    break;
+  }
+  last.width = measure(last.text, prepared.options);
+  result.width = 0.0f;
+  for (const TextLine &line : result.lines)
+    result.width = std::max(result.width, line.width);
+}
+
+} // namespace
+
 TextLayoutResult LayoutText(const PreparedText &prepared, float maxWidth,
                             MeasureTextCallback measure) {
   MeasureTextCallback measureFn =
       measure ? std::move(measure) : MeasureTextCallback(DefaultMeasure);
-  return LayoutPreparedText(prepared, maxWidth, measureFn, kDefaultLineFitEpsilon);
+  TextLayoutResult result =
+      LayoutPreparedText(prepared, maxWidth, measureFn, kDefaultLineFitEpsilon);
+  ApplyLineClamp(result, prepared, maxWidth, measureFn);
+  return result;
 }
 
 std::string TextCacheKey(const std::string &text, float fontSize,
