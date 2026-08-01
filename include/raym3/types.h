@@ -41,7 +41,7 @@ enum class ComponentState { Default, Hovered, Pressed, Focused, Disabled };
 
 enum class CardVariant { Elevated, Filled, Outlined };
 
-enum class TextFieldVariant { Filled, Outlined, Underline };
+enum class TextFieldVariant { Filled, Outlined, Underline, Plain };
 
 enum class IconVariation { Filled, Outlined, Round, Sharp, TwoTone };
 

@@ -85,6 +85,10 @@ public:
 private:
   EmojiFont() = default;
   void EnsureBackend();
+  // One-shot check that the injected rasterizer actually produces ink, so a
+  // platform whose fallback chain lacks emoji coverage degrades to the bundled
+  // font instead of rendering blanks forever.
+  bool ProbeRasterizer();
 
   enum class Backend { Unresolved, None, Raster, Cbdt };
   Backend backend_ = Backend::Unresolved;

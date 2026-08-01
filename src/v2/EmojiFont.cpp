@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 
@@ -115,20 +116,39 @@ EmojiFont::BackendKind EmojiFont::ActiveBackend() {
   }
 }
 
+// Draw one well-known emoji through the injected rasterizer and check that any
+// ink came back. A platform can hand us a rasterizer whose font fallback chain
+// has no emoji coverage at all, in which case every cluster would come back
+// blank — better to discover that once, here, and use the bundled font instead
+// of silently rendering nothing for the life of the process.
+bool EmojiFont::ProbeRasterizer() {
+  if (!rasterizer_) return false;
+  int w = 0, h = 0;
+  // U+1F600 GRINNING FACE — in every emoji font since Unicode 6.1.
+  unsigned char *rgba = rasterizer_("\xF0\x9F\x98\x80", 32, &w, &h);
+  if (!rgba || w <= 0 || h <= 0) {
+    if (rgba) std::free(rgba);
+    return false;
+  }
+  bool anyInk = false;
+  for (std::size_t i = 3; i < (std::size_t)w * h * 4 && !anyInk; i += 4)
+    anyInk = rgba[i] != 0;
+  std::free(rgba);
+  return anyInk;
+}
+
 void EmojiFont::EnsureBackend() {
   if (backend_ != Backend::Unresolved) return;
 
-#if defined(__ANDROID__)
-  if (LoadCbdtFont()) {
-    backend_ = Backend::Cbdt;
-    return;
-  }
-#endif
-
   if (rasterizer_) {
-    backend_ = Backend::Raster;
-    TraceLog(LOG_INFO, "EmojiFont: using OS rasterizer backend");
-    return;
+    if (ProbeRasterizer()) {
+      backend_ = Backend::Raster;
+      TraceLog(LOG_INFO, "EmojiFont: using OS rasterizer backend");
+      return;
+    }
+    TraceLog(LOG_WARNING,
+             "EmojiFont: OS rasterizer produced no ink for U+1F600 — "
+             "falling back to a bundled font");
   }
 
   if (LoadCbdtFont()) {
@@ -141,12 +161,12 @@ void EmojiFont::EnsureBackend() {
 }
 
 void EmojiFont::RegisterCustomEmojiFont(std::vector<std::uint8_t> bytes) {
-#if defined(__ANDROID__)
-  // Android devices can report an OS emoji rasterizer while still drawing
-  // missing-glyph boxes for common emoji. When the app provides bundled emoji
-  // bytes, prefer that deterministic renderer.
+  // An app that explicitly ships its own emoji font wants that font, not the
+  // OS one, so drop the rasterizer and let the CBDT path win. (This used to be
+  // Android-only, justified by devices that "report a rasterizer but draw
+  // boxes" — Android had no rasterizer at all back then, and that case is now
+  // handled generically by ProbeRasterizer.)
   rasterizer_ = nullptr;
-#endif
   customFontBytes_ = std::move(bytes);
   fontParsed_ = false;
   data_.clear();

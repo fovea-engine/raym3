@@ -25,7 +25,20 @@ namespace {
 constexpr float kFieldFontSize = 16.0f;
 constexpr float kLabelRestSize = 16.0f;
 constexpr float kLabelFloatSize = 12.0f;
+// M3 text field metrics. The floated label line box, the filled variant's
+// content offsets, and the outlined top strip must stay in lockstep with the
+// native editor insets sent from JS (packages/rayact-react/src/components.ts).
+constexpr float kLabelFloatLineHeight = 16.0f;
 constexpr float kBasePadding = 8.0f;
+constexpr float kContentHorizontal = 16.0f;
+constexpr float kFilledLabelTop = 8.0f;
+constexpr float kFilledInputTop = 24.0f; // kFilledLabelTop + label line height
+constexpr float kFilledInputBottom = 8.0f;
+// Outlined-with-label: the floating label occupies the node's top 16dp and
+// straddles the border drawn 8dp below the node top (Compose model), so the
+// label never paints outside node bounds.
+constexpr float kOutlinedTopStrip = 8.0f;
+constexpr float kNotchPadding = 4.0f;
 constexpr float kLineHeight = 20.0f;
 constexpr int kMaxUndoHistory = 32;
 
@@ -470,7 +483,8 @@ static void DrawComposingUnderline(Rectangle inputBounds, const char *text,
 static void DrawCursor(Rectangle inputBounds, const char *text, int position,
                        float scrollOffset, float lastBlinkTime,
                        float textStartX, Color bgColor, bool passwordMode,
-                       bool multiline, float scrollOffsetY) {
+                       bool multiline, float scrollOffsetY,
+                       const Color *caretColor = nullptr) {
   float blinkCycle = (GetTime() - lastBlinkTime) * 2.0f;
   bool showCursor = (static_cast<int>(blinkCycle) % 2 == 0) ||
                     IsKeyDown(KEY_BACKSPACE) || IsKeyDown(KEY_DELETE) ||
@@ -504,6 +518,9 @@ static void DrawCursor(Rectangle inputBounds, const char *text, int position,
         (0.299f * bgColor.r + 0.587f * bgColor.g + 0.114f * bgColor.b) / 255.0f;
     cursorColor = luminance > 0.5f ? BLACK : WHITE;
   }
+  // An explicit CSS `caret-color` / cursorColor beats the contrast heuristic.
+  if (caretColor)
+    cursorColor = *caretColor;
   DrawLine(static_cast<int>(cursorX), static_cast<int>(cursorY),
            static_cast<int>(cursorX),
            static_cast<int>(cursorY + kFieldFontSize),
@@ -569,16 +586,38 @@ static void SyncScrollForCaret(Node &node, char *buffer, Rectangle inputBounds,
       edit.scrollOffsetY, 0.0f, std::max(0.0f, contentHeight - visibleHeight));
 }
 
-static Rectangle InputBoundsFor(Node &node) {
+// A label only produces M3 chrome (float animation, notch, reserved rows) on
+// the Material variants; Plain fields ignore it entirely.
+static bool HasChromeLabel(const Node &node) {
+  return !node.textInput.label.empty() &&
+         node.textInput.variant != TextFieldVariant::Plain;
+}
+
+// The visual box: fill, outline, and active indicator are drawn on this rect.
+// Outlined-with-label insets the top by kOutlinedTopStrip so the floating
+// label can straddle the border while staying inside node bounds.
+static Rectangle ContainerBoundsFor(Node &node) {
   Rectangle bounds = node.layout;
-  const char *label =
-      node.textInput.label.empty() ? nullptr : node.textInput.label.c_str();
-  Rectangle inputBounds = bounds;
-  if (label) {
-    inputBounds.y += 20.0f;
-    inputBounds.height -= 20.0f;
+  if (HasChromeLabel(node) &&
+      node.textInput.variant == TextFieldVariant::Outlined) {
+    bounds.y += kOutlinedTopStrip;
+    bounds.height -= kOutlinedTopStrip;
   }
-  return inputBounds;
+  return bounds;
+}
+
+// The text/editing region: glyphs, caret, scissor, and scroll math use this.
+// Filled/Underline reserve the floated label row at the container top; the
+// outlined label floats onto the border, so its text region is the container.
+static Rectangle InputBoundsFor(Node &node) {
+  Rectangle bounds = ContainerBoundsFor(node);
+  if (HasChromeLabel(node) &&
+      (node.textInput.variant == TextFieldVariant::Filled ||
+       node.textInput.variant == TextFieldVariant::Underline)) {
+    bounds.y += kFilledInputTop;
+    bounds.height -= kFilledInputTop + kFilledInputBottom;
+  }
+  return bounds;
 }
 
 static void DeleteSelection(Node &node, char *buffer) {
@@ -611,6 +650,11 @@ constexpr float kSelectionAutoScrollSpeed = 600.0f; // px/s past field edges
 
 static void HandlePointer(Node &node, const PointerInput &p) {
   if (node.disabled || node.textInput.disabled || node.textInput.readOnly)
+    return;
+  // The platform editor receives the real touch stream and runs its own
+  // caret placement, long-press word selection, handles, and edit menu.
+  // Duplicating that here would fight it and raise raym3's overlay state.
+  if (node.textInput.nativeEditor)
     return;
   char *buffer = TextBuffer(node);
   if (!buffer)
@@ -818,6 +862,10 @@ static void ProcessKeyboard(Node &node) {
   if (!buffer || bufferSize <= 1)
     return;
   if (node.disabled || node.textInput.disabled || node.textInput.readOnly)
+    return;
+  // The platform editor is the IME client and applies key events itself; the
+  // engine editing model would apply a hardware keystroke a second time.
+  if (node.textInput.nativeEditor)
     return;
 
   TextEditState &edit = node.textEdit;
@@ -1577,7 +1625,7 @@ void ResolveTextInput(const NodePtr &root) {
     NodePtr hoveredNode = FindNodeById(root, hovered);
     if (hoveredNode && hoveredNode->kind == NodeKind::TextInput &&
         !hoveredNode->disabled && !hoveredNode->textInput.disabled &&
-        CheckCollisionPointRec(p.pos, InputBoundsFor(*hoveredNode)))
+        CheckCollisionPointRec(p.pos, ContainerBoundsFor(*hoveredNode)))
       wantIBeam = true;
   }
   if (wantIBeam != Ctx().ibeamCursorActive) {
@@ -1598,100 +1646,194 @@ void PaintTextInput(Node &node) {
 
   bool disabled = ti.disabled || node.disabled;
   Rectangle bounds = node.layout;
-  const char *label = ti.label.empty() ? nullptr : ti.label.c_str();
+  const bool plain = ti.variant == TextFieldVariant::Plain;
+  const char *label = HasChromeLabel(node) ? ti.label.c_str() : nullptr;
+  Rectangle container = ContainerBoundsFor(node);
   Rectangle inputBounds = InputBoundsFor(node);
 
   ColorScheme &scheme = Theme::GetColorScheme();
   Style style = node.style;
   const float opacity = CurrentRenderOpacity();
   float cornerRadius =
-      style.borderRadius.value_or(Theme::GetShapeTokens().cornerMedium);
+      style.borderRadius.value_or(Theme::GetShapeTokens().cornerExtraSmall);
+  bool hasContent = buffer[0] != '\0';
+
+  // Label placement for a given float progress `a` (0 = resting 16sp centered
+  // in the container, 1 = floated 12sp). The x never moves (M3); the outlined
+  // label floats to straddle the border top edge, filled/underline to the
+  // reserved row at the container top.
+  auto labelPlacement = [&](float a, Vector2 &pos, float &fontSize) {
+    float restY = container.y + (container.height - kLabelRestSize) / 2.0f;
+    float floatY = ti.variant == TextFieldVariant::Outlined
+                       ? container.y - kLabelFloatSize * 0.5f
+                       : bounds.y + kFilledLabelTop +
+                             (kLabelFloatLineHeight - kLabelFloatSize) * 0.5f;
+    pos = {bounds.x + kContentHorizontal, restY + (floatY - restY) * a};
+    fontSize = kLabelRestSize + (kLabelFloatSize - kLabelRestSize) * a;
+  };
+  // Top-edge gap for the outlined border, opening in sync with the label
+  // flight. Empty span (0,0) when there is nothing to notch.
+  auto notchSpan = [&](float a) -> std::pair<float, float> {
+    if (!label || ti.variant != TextFieldVariant::Outlined || a <= 0.01f)
+      return {0.0f, 0.0f};
+    float labelW =
+        raym3::Renderer::MeasureText(label, kLabelFloatSize, FontWeight::Regular)
+            .x;
+    float start = container.x + kContentHorizontal - kNotchPadding;
+    return {start, start + a * (labelW + 2.0f * kNotchPadding)};
+  };
 
   if (disabled) {
-    if (label) {
-      raym3::Renderer::DrawText(label, {bounds.x, bounds.y}, kLabelFloatSize,
-                                ApplyRenderOpacity(scheme.onSurfaceVariant), FontWeight::Regular);
+    // M3 disabled: container onSurface 4%, outline/indicator onSurface 12%,
+    // label and text onSurface 38%. No animation — the label freezes at rest
+    // or floated depending on content.
+    float a = hasContent ? 1.0f : 0.0f;
+    if (!plain) {
+      if (ti.variant == TextFieldVariant::Filled && ti.drawBackground) {
+        Color fill = scheme.onSurface;
+        fill.a = 10; // 4%
+        fill = ApplyRenderOpacity(fill);
+        raym3::Renderer::DrawRoundedRectangle(container, cornerRadius, fill);
+        if (cornerRadius > 0.0f)
+          DrawRectangleRec({container.x,
+                            container.y + container.height - cornerRadius,
+                            container.width, cornerRadius},
+                           fill);
+      }
+      if (ti.drawOutline) {
+        Color oc = style.borderColor.value_or(scheme.onSurface);
+        oc.a = 31; // 12%
+        oc = ApplyRenderOpacity(oc);
+        float ow = style.borderWidth.value_or(1.0f);
+        if (ti.variant == TextFieldVariant::Outlined) {
+          auto [notchStart, notchEnd] = notchSpan(a);
+          raym3::Renderer::DrawRoundedRectangleNotched(
+              container, cornerRadius, oc, ow, notchStart, notchEnd);
+        } else {
+          DrawRectangleRec({container.x,
+                            container.y + container.height - ow,
+                            container.width, ow},
+                           oc);
+        }
+      }
+      if (label) {
+        Vector2 pos;
+        float fontSize;
+        labelPlacement(a, pos, fontSize);
+        Color lc = scheme.onSurface;
+        lc.a = 97; // 38%
+        raym3::Renderer::DrawText(label, pos, fontSize, ApplyRenderOpacity(lc),
+                                  FontWeight::Regular);
+      }
     }
-    raym3::Renderer::DrawRoundedRectangleEx(inputBounds, cornerRadius,
-                                            ApplyRenderOpacity(style.borderColor.value_or(scheme.outline)),
-                                            style.borderWidth.value_or(1.0f));
-    if (buffer[0]) {
-      Vector2 textPos = {inputBounds.x + kBasePadding * 2.0f,
+    if (!ti.nativeEditor && hasContent) {
+      Vector2 textPos = {inputBounds.x + kContentHorizontal,
                          inputBounds.y +
                              (inputBounds.height - kFieldFontSize) / 2.0f};
       Color disabledText = style.text.color.value_or(scheme.onSurface);
-      disabledText.a = 128;
+      disabledText.a = 97; // 38%
       raym3::Renderer::DrawText(buffer, textPos, kFieldFontSize,
                                 ApplyRenderOpacity(disabledText),
                                 FontWeight::Regular);
-    } else if (!ti.placeholder.empty()) {
-      Vector2 textPos = {inputBounds.x + kBasePadding * 2.0f,
+    } else if (!ti.nativeEditor && !ti.placeholder.empty() && !label) {
+      Vector2 textPos = {inputBounds.x + kContentHorizontal,
                          inputBounds.y +
                              (inputBounds.height - kFieldFontSize) / 2.0f};
       Color ph = style.text.color.value_or(scheme.onSurfaceVariant);
-      ph.a = 128;
+      ph.a = 97; // 38%
       raym3::Renderer::DrawText(ti.placeholder.c_str(), textPos, kFieldFontSize,
                                 ApplyRenderOpacity(ph), FontWeight::Regular);
     }
     return;
   }
 
+  // Advance the label float before any chrome so the outline notch opens in
+  // the same frame as the label movement.
+  float labelA = 0.0f;
   if (label) {
-    bool hasContent = buffer[0] != '\0';
+    // Match M3's label transition on every platform: rest inside an empty,
+    // unfocused field and float while focused or populated.
     float target = (isFocused || hasContent) ? 1.0f : 0.0f;
     float dtl = GetFrameTime();
     if (dtl <= 0.0f || dtl > 0.1f)
       dtl = 0.016f;
     edit.labelAnim += (target - edit.labelAnim) * std::min(1.0f, dtl * 16.0f);
-    float a = edit.labelAnim;
-    float restY = inputBounds.y + (inputBounds.height - kLabelRestSize) / 2.0f;
-    float ly = restY + (bounds.y - restY) * a;
-    float restX = inputBounds.x + kBasePadding * 2.0f;
-    float lx = restX + (bounds.x + kBasePadding - restX) * a;
-    float fontSize = kLabelRestSize + (kLabelFloatSize - kLabelRestSize) * a;
-    Color labelColor = isFocused ? scheme.primary : scheme.onSurfaceVariant;
-    if (style.text.color)
-      labelColor = *style.text.color;
-    labelColor = ApplyRenderOpacity(labelColor);
-    raym3::Renderer::DrawText(label, {lx, ly}, fontSize, labelColor,
-                              FontWeight::Regular);
+    labelA = edit.labelAnim;
   }
 
   Color bgColor = scheme.surface;
   if (style.backgroundColor)
     bgColor = *style.backgroundColor;
 
-  if (ti.variant == TextFieldVariant::Filled && ti.drawBackground) {
+  if (!plain && ti.variant == TextFieldVariant::Filled && ti.drawBackground) {
     bgColor = style.backgroundColor.value_or(scheme.surfaceContainerHighest);
     bgColor = ColorAlpha(bgColor, opacity);
-    raym3::Renderer::DrawRoundedRectangle(inputBounds, cornerRadius, bgColor);
+    raym3::Renderer::DrawRoundedRectangle(container, cornerRadius, bgColor);
     if (cornerRadius > 0.0f) {
-      DrawRectangleRec({inputBounds.x,
-                        inputBounds.y + inputBounds.height - cornerRadius,
-                        inputBounds.width, cornerRadius},
+      DrawRectangleRec({container.x,
+                        container.y + container.height - cornerRadius,
+                        container.width, cornerRadius},
                        bgColor);
     }
   }
 
-  Color outlineColor = style.borderColor.value_or(scheme.outline);
-  float outlineWidth = style.borderWidth.value_or(1.0f);
-  if (isFocused && !ti.readOnly) {
-    outlineColor = style.borderColor.value_or(scheme.primary);
-    outlineWidth = style.borderWidth.value_or(2.0f);
-  }
-  outlineColor = ApplyRenderOpacity(outlineColor);
-
-  if (ti.drawOutline) {
+  if (!plain && ti.drawOutline) {
     if (ti.variant == TextFieldVariant::Outlined) {
-      raym3::Renderer::DrawRoundedRectangleEx(inputBounds, cornerRadius,
-                                              outlineColor, outlineWidth);
+      Color outlineColor = style.borderColor.value_or(scheme.outline);
+      float outlineWidth = style.borderWidth.value_or(1.0f);
+      if (isFocused && !ti.readOnly) {
+        outlineColor = style.borderColor.value_or(scheme.primary);
+        outlineWidth = style.borderWidth.value_or(2.0f);
+      }
+      auto [notchStart, notchEnd] = notchSpan(labelA);
+      raym3::Renderer::DrawRoundedRectangleNotched(
+          container, cornerRadius, ApplyRenderOpacity(outlineColor),
+          outlineWidth, notchStart, notchEnd);
     } else {
-      DrawRectangleRec({inputBounds.x,
-                        inputBounds.y + inputBounds.height - outlineWidth,
-                        inputBounds.width, outlineWidth},
-                       outlineColor);
+      // M3 filled/underline active indicator: 1dp onSurfaceVariant resting,
+      // 2dp primary while focused.
+      Color indicatorColor =
+          style.borderColor.value_or(scheme.onSurfaceVariant);
+      float indicatorWidth = style.borderWidth.value_or(1.0f);
+      if (isFocused && !ti.readOnly) {
+        indicatorColor = style.borderColor.value_or(scheme.primary);
+        indicatorWidth = style.borderWidth.value_or(2.0f);
+      }
+      DrawRectangleRec({container.x,
+                        container.y + container.height - indicatorWidth,
+                        container.width, indicatorWidth},
+                       ApplyRenderOpacity(indicatorColor));
     }
   }
+
+  // Paint the label after the container. Filled fields otherwise cover their
+  // own resting/floating label with the opaque surfaceContainerHighest fill.
+  if (label) {
+    Vector2 pos;
+    float fontSize;
+    labelPlacement(labelA, pos, fontSize);
+    // The resting label occupies the placeholder's spot and reads as the
+    // field's hint, so `placeholder-color` (CSS / style prop / RN
+    // placeholderTextColor) dresses it — otherwise a Material variant could
+    // only be tinted through `color`, which also repaints the typed text.
+    // A focused field still goes primary unless the caller was explicit.
+    Color labelColor = isFocused ? scheme.primary : scheme.onSurfaceVariant;
+    if (style.text.color)
+      labelColor = *style.text.color;
+    if (style.placeholderColor)
+      labelColor = *style.placeholderColor;
+    if (ti.hasPlaceholderColor)
+      labelColor = ti.placeholderColor;
+    labelColor = ApplyRenderOpacity(labelColor);
+    raym3::Renderer::DrawText(label, pos, fontSize, labelColor,
+                              FontWeight::Regular);
+  }
+
+  // A visible mobile UITextField/UITextView/EditText owns the editing layer.
+  // The Material chrome above deliberately remains renderer-owned so variants,
+  // theme defaults, focus/disabled states, and draw* toggles stay identical.
+  if (ti.nativeEditor)
+    return;
 
   float textStartX = inputBounds.x + kBasePadding * 2.0f;
   float textEndX = inputBounds.x + inputBounds.width - kBasePadding * 2.0f;
@@ -1731,7 +1873,9 @@ void PaintTextInput(Node &node) {
     DrawSelection(inputBounds, buffer, edit.selectionStart, edit.selectionEnd,
                   currentScroll, textStartX - inputBounds.x, ti.passwordMode,
                   ti.multiline, currentScrollY,
-                  ti.hasSelectionColor ? &ti.selectionColor : nullptr);
+                  ti.hasSelectionColor  ? &ti.selectionColor
+                  : style.selectionColor ? &*style.selectionColor
+                                         : nullptr);
     if (!ti.multiline) {
       DrawComposingUnderline(inputBounds, buffer, edit.composingStart,
                              edit.composingEnd, currentScroll,
@@ -1740,7 +1884,12 @@ void PaintTextInput(Node &node) {
   }
 
   bool isEmpty = buffer[0] == '\0';
-  bool showPlaceholder = isEmpty && !ti.placeholder.empty() && !label;
+  // A plain field renders no label chrome, so the label doubles as its hint —
+  // the same fallback the mobile/web editors use, so switching variants never
+  // silently changes the text the user reads.
+  const std::string &hintText =
+      (plain && !ti.label.empty()) ? ti.label : ti.placeholder;
+  bool showPlaceholder = isEmpty && !hintText.empty() && !label;
   auto lines = BuildLineMetrics(buffer, ti.passwordMode);
   Vector2 origin =
       TextOrigin(inputBounds, ti.multiline, static_cast<int>(lines.size()));
@@ -1754,11 +1903,13 @@ void PaintTextInput(Node &node) {
   if (showPlaceholder) {
     Color ph = scheme.onSurfaceVariant;
     ph.a = 180;
+    if (style.placeholderColor)
+      ph = *style.placeholderColor; // CSS `placeholder-color` / style prop
     if (ti.hasPlaceholderColor)
-      ph = ti.placeholderColor; // RN placeholderTextColor
+      ph = ti.placeholderColor; // RN placeholderTextColor wins over CSS
     ph = ApplyRenderOpacity(ph);
-    raym3::Renderer::DrawText(ti.placeholder.c_str(), textPos, kFieldFontSize,
-                              ph, FontWeight::Regular);
+    raym3::Renderer::DrawText(hintText.c_str(), textPos, kFieldFontSize, ph,
+                              FontWeight::Regular);
   } else if (!isEmpty) {
     if (ti.multiline) {
       for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
@@ -1785,9 +1936,12 @@ void PaintTextInput(Node &node) {
 
   // RN caretHidden suppresses the blinking cursor.
   if (isFocused && !ti.readOnly && !ti.caretHidden) {
+    const Color *caret = ti.hasCursorColor  ? &ti.cursorColor
+                         : style.caretColor ? &*style.caretColor
+                                            : nullptr;
     DrawCursor(inputBounds, buffer, edit.cursor, currentScroll,
                edit.lastBlinkTime, textStartX - inputBounds.x, bgColor,
-               ti.passwordMode, ti.multiline, currentScrollY);
+               ti.passwordMode, ti.multiline, currentScrollY, caret);
   }
 
   if (scissorActive)

@@ -222,6 +222,9 @@ Style MergeStyles(const Style &base, const Style &overrideStyle) {
   RAYM3_MERGE_FIELD(backgroundGradient);
   RAYM3_MERGE_FIELD(stateLayerColor);
   RAYM3_MERGE_FIELD(rippleColor);
+  RAYM3_MERGE_FIELD(placeholderColor);
+  RAYM3_MERGE_FIELD(caretColor);
+  RAYM3_MERGE_FIELD(selectionColor);
   RAYM3_MERGE_FIELD(borderColor);
   RAYM3_MERGE_FIELD(borderWidth);
   RAYM3_MERGE_FIELD(borderTopColor);
@@ -253,6 +256,10 @@ Style MergeStyles(const Style &base, const Style &overrideStyle) {
   result.inset = MergeEdges(base.inset, overrideStyle.inset);
   if (!overrideStyle.boxShadows.empty())
     result.boxShadows = overrideStyle.boxShadows;
+  // `background` is not a per-layer cascade: a declaration replaces the whole
+  // layer list, as in CSS.
+  if (!overrideStyle.backgroundLayers.empty())
+    result.backgroundLayers = overrideStyle.backgroundLayers;
   result.text = MergeTextStyles(base.text, overrideStyle.text);
   return result;
 }

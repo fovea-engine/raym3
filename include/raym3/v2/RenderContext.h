@@ -1,6 +1,7 @@
 #pragma once
 
 #include "raym3/v2/Input.h"
+#include "raym3/v2/ExternalView.h"
 #include "raym3/v2/Renderer.h"
 #include "raym3/v2/View.h"
 
@@ -103,6 +104,7 @@ struct InputState {
   // the finger didn't scroll and stayed within touch slop.
   bool dismissTapActive = false;
   Vector2 dismissTapOrigin = {0, 0};
+  int pendingExternalViewId = 0;
 };
 
 struct RenderContext {
@@ -112,6 +114,19 @@ struct RenderContext {
   std::vector<StackEntry> stackOrder;
   std::unordered_map<Node *, NodePtr> parentMap;
   int paintCounter = 0;
+
+  // Optional, screen-scoped native-view compositor. The owning engine installs
+  // this and sets surfaceId before Render(); it must not be shared through a
+  // process-global callback because navigation roots can render concurrently.
+  ExternalViewEmbedder *externalViewEmbedder = nullptr;
+  uint64_t surfaceId = 0;
+  std::vector<ExternalViewMutator> externalViewMutators;
+  int externalViewCount = 0;
+  // Per-frame: external view id -> regions of later framework content drawn on
+  // top of it. Computed once before the paint walk (see
+  // CollectExternalViewOcclusions); drives both overlay allocation and the
+  // host's pointer hit-testing.
+  std::unordered_map<int, std::vector<Rectangle>> externalViewOcclusions;
 
   // Committed (double-buffered) input state. Input ownership queries read
   // these instead of the live stackOrder/parentMap, which are only partially
@@ -153,5 +168,8 @@ struct RenderContext {
 RenderContext &Ctx();
 // Pass nullptr to restore the default process-wide context.
 void SetCurrentRenderContext(RenderContext *ctx);
+// The explicitly bound context, or nullptr when the thread is on the default
+// fallback context (i.e. outside a render pass).
+RenderContext *GetCurrentRenderContext();
 
 } // namespace raym3::v2

@@ -82,11 +82,42 @@ struct TextStyle {
 struct LinearGradientStop {
   Color color;
   float position = 0.0f;
+  // An author-written position (`red 40%`) pins the stop; an unpositioned stop is
+  // spread evenly between its pinned neighbours, per css-images-3.
+  bool hasPosition = false;
 };
 
+enum class GradientKind : uint8_t { Linear, Conic };
+
+// One CSS <gradient>. `angleDegrees` is the axis for linear-gradient and the
+// `from` angle for conic-gradient; `centerX/centerY` is conic's `at <position>`
+// as a fraction of the painting area.
 struct LinearGradient {
+  GradientKind kind = GradientKind::Linear;
   float angleDegrees = 180.0f;
+  float centerX = 0.5f;
+  float centerY = 0.5f;
   std::vector<LinearGradientStop> stops;
+};
+
+// CSS box areas, used by background-clip / background-origin.
+//
+// `BorderArea` is css-backgrounds-4's `background-clip: border-area`: the layer is
+// confined to the border ring itself. It exists because the older idiom (a
+// gradient in border-box covered by a padding-box layer) only hides the
+// gradient's interior when the covering fill is OPAQUE — over a translucent
+// surface the gradient washes through, in browsers too. Only `border-area`, or a
+// `mask-composite: exclude` pair, gives a gradient stroke over a see-through fill.
+// `border-image` cannot: per spec it ignores border-radius.
+enum class BoxArea : uint8_t { BorderBox, PaddingBox, ContentBox, BorderArea };
+
+// One `background` layer. Layers paint back-to-front: the LAST layer in the list
+// is painted first, matching CSS, where the first layer is topmost.
+struct BackgroundLayer {
+  std::optional<Color> color;
+  std::optional<LinearGradient> gradient;
+  BoxArea clip = BoxArea::BorderBox;
+  BoxArea origin = BoxArea::PaddingBox;
 };
 
 struct BoxShadow {
@@ -208,6 +239,11 @@ struct Style {
 
   std::optional<Color> backgroundColor;
   std::optional<LinearGradient> backgroundGradient;
+  // Multi-layer `background`. When non-empty this REPLACES the single
+  // backgroundColor/backgroundGradient pair for painting; those two stay for the
+  // many call sites (material components, TextInput, transitions, the binary
+  // style keys) that only ever need one flat fill.
+  std::vector<BackgroundLayer> backgroundLayers;
   // Hover/press overlay tint (RGB), alpha = press intensity. On plain
   // interactive Views this drives the hover/press dim; unset = a sensible
   // default derived from the content color.
@@ -215,6 +251,14 @@ struct Style {
   // Ink-ripple color for interactive Views (CSS `ripple-color`). Presence also
   // opts a plain View+onPress into ripples.
   std::optional<Color> rippleColor;
+  // Text-field editing colors, settable from CSS (`placeholder-color`,
+  // `caret-color`, `selection-color`) or the style prop. They live on Style —
+  // not just TextInputProps — so a stylesheet class can dress a field the same
+  // way it dresses everything else, and so the engine can forward the resolved
+  // values to a platform editor.
+  std::optional<Color> placeholderColor;
+  std::optional<Color> caretColor;
+  std::optional<Color> selectionColor;
   std::optional<Color> borderColor;
   std::optional<float> borderWidth;
   // Per-edge overrides. Unset edges fall back to borderColor/borderWidth, so a

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "raym3/types.h"
+#include "raym3/v2/ExternalView.h"
 #include "raym3/v2/Style.h"
 #include "raym3/v2/TextEngine.h"
 #include <functional>
@@ -117,6 +118,10 @@ struct TextInputProps {
   // parent (e.g. a search bar) owns the single state layer. See
   // TextFieldOptions.
   bool drawStateLayer = true;
+  // Mobile hosts can supply a real transparent native editor. Raym3 still
+  // paints the Material container, label, outline, and state layer, but leaves
+  // glyphs, selection, composing text, and the caret to that editor.
+  bool nativeEditor = false;
   std::function<void(const std::string &)> onChange;
   std::function<void()> onFocus;
   std::function<void()> onBlur;
@@ -224,6 +229,10 @@ public:
   int zIndex = 0;
   bool inkRipple = false;
   std::function<void()> onPress;
+  int externalViewId = 0;
+  bool externalViewPreservesFrameworkUnderlay = false;
+  ExternalViewHitTestBehavior externalViewHitTestBehavior =
+      ExternalViewHitTestBehavior::Opaque;
 
   std::string text;
   ButtonVariant buttonVariant = ButtonVariant::Filled;

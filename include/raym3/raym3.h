@@ -32,6 +32,9 @@ void PopScissor();
 void PushRoundedStencil(Rectangle bounds, float radius);
 void PopRoundedStencil();
 Rectangle GetCurrentScissorBounds();
+// Rebuild the current logical scissor/rounded-stencil state after a renderer
+// target switch without mutating either logical stack.
+void ReplayCurrentClips();
 
 void SetScissorDebug(bool enabled);
 bool IsScissorDebug();

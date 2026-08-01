@@ -10,6 +10,7 @@
 #include "raym3/styles/Theme.h"
 #include "raym3/v2/Controls.h"
 #include "raym3/v2/Density.h"
+#include "raym3/v2/Gradient.h"
 #include "raym3/v2/Input.h"
 #include "raym3/v2/MaterialTokens.h"
 #include "raym3/v2/Ripple.h"
@@ -62,6 +63,38 @@ static Color ResolveTextColor(const std::optional<Color> &own) {
 // an off-screen animated node returns to view at the right position, it just
 // isn't drawn while off-screen.
 static thread_local std::vector<Rectangle> g_cullStack;
+
+static std::array<float, 9> MultiplyTransform(
+    const std::array<float, 9> &a, const std::array<float, 9> &b) {
+  std::array<float, 9> out{};
+  for (int row = 0; row < 3; ++row)
+    for (int col = 0; col < 3; ++col)
+      for (int k = 0; k < 3; ++k)
+        out[row * 3 + col] += a[row * 3 + k] * b[k * 3 + col];
+  return out;
+}
+
+static std::array<float, 9> NodeTransform(const Node &node,
+                                          const Style &style) {
+  constexpr float kPi = 3.14159265358979323846f;
+  const float radians = style.rotation.value_or(0.0f) * kPi / 180.0f;
+  const float cosine = std::cos(radians);
+  const float sine = std::sin(radians);
+  const float scale = style.scale.value_or(1.0f);
+  const float cx = node.layout.x + node.layout.width * 0.5f;
+  const float cy = node.layout.y + node.layout.height * 0.5f;
+  const float tx = style.translateX.value_or(0.0f);
+  const float ty = style.translateY.value_or(0.0f);
+  const std::array<float, 9> toOrigin = {1, 0, -cx, 0, 1, -cy, 0, 0, 1};
+  const std::array<float, 9> rotateScale = {
+      cosine * scale, -sine * scale, 0,
+      sine * scale, cosine * scale, 0,
+      0, 0, 1};
+  const std::array<float, 9> fromOrigin = {
+      1, 0, cx + tx, 0, 1, cy + ty, 0, 0, 1};
+  return MultiplyTransform(fromOrigin,
+                           MultiplyTransform(rotateScale, toOrigin));
+}
 
 static bool RectsOverlap(const Rectangle& a, const Rectangle& b) {
   return a.x < b.x + b.width && a.x + a.width > b.x &&
@@ -121,8 +154,19 @@ static float DefaultNodeHeight(const Node &node) {
   switch (node.kind) {
   case NodeKind::Button:
     return 40.0f;
-  case NodeKind::TextInput:
-    return 56.0f;
+  case NodeKind::TextInput: {
+    // Material variants have a fixed 56dp container. A plain field is
+    // react-native's TextInput: no intrinsic minimum of its own, sized by the
+    // text line box plus whatever padding the caller set (Yoga heights are
+    // border-box, so padding is added here).
+    if (node.textInput.variant != TextFieldVariant::Plain)
+      return 56.0f;
+    const float fontSize = node.style.text.fontSize.value_or(16.0f);
+    float height = ResolveLineHeight(node.style.text, fontSize);
+    if (node.textInput.multiline)
+      height *= 2.0f;
+    return height + node.style.padding.Top() + node.style.padding.Bottom();
+  }
   case NodeKind::Text: {
     const float fontSize =
         node.style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium);
@@ -496,7 +540,19 @@ static float MeasureNodeHeight(const NodePtr &node, float contentW) {
     return textH;
   }
 
-  if (node->children.empty()) {
+  // A text input's native-editor overlay child is absolutely positioned and
+  // contributes no content height — keep the intrinsic size (see the Yoga
+  // path's hasLayoutChildren).
+  const bool measuresFromChildren =
+      node->kind == NodeKind::TextInput
+          ? std::any_of(node->children.begin(), node->children.end(),
+                        [](const NodePtr &child) {
+                          return child && child->style.position.value_or(
+                                              PositionType::Relative) !=
+                                              PositionType::Absolute;
+                        })
+          : !node->children.empty();
+  if (!measuresFromChildren) {
     float h = DefaultNodeHeight(*node);
     if (style.minHeight) h = std::max(h, *style.minHeight);
     if (style.maxHeight) h = std::min(h, *style.maxHeight);
@@ -681,6 +737,19 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
   // The intrinsic width is kept only where stretching cannot happen (a row
   // parent, or a parent that opts out of stretch) and the node is not flex-sized,
   // so a field in a row still shows up instead of collapsing to nothing.
+  // A text input's only child on mobile is the absolutely-positioned native
+  // editor overlay; it is not content and must not suppress the field's
+  // intrinsic size the way real children do (that is what collapsed every
+  // unstyled TextInput to zero height on Android/iOS).
+  const bool hasLayoutChildren =
+      node.kind == NodeKind::TextInput
+          ? std::any_of(node.children.begin(), node.children.end(),
+                        [](const NodePtr &child) {
+                          return child && child->style.position.value_or(
+                                              PositionType::Relative) !=
+                                              PositionType::Absolute;
+                        })
+          : !node.children.empty();
   const bool selfOptsOutOfStretch = style.alignSelf && *style.alignSelf != Align::Stretch;
   const bool flexSized = style.flexGrow.value_or(0.0f) > 0.0f ||
                          style.flexBasis.has_value() || style.flexBasisPercent.has_value();
@@ -692,7 +761,7 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
     YGNodeStyleSetWidthPercent(ygNode, *style.widthPercent);
   else if (style.width)
     YGNodeStyleSetWidth(ygNode, *style.width);
-  else if (!isText && !isRoot && node.children.empty() && !skipIntrinsicWidth &&
+  else if (!isText && !isRoot && !hasLayoutChildren && !skipIntrinsicWidth &&
            DefaultNodeWidth(node) > 0.0f)
     YGNodeStyleSetWidth(ygNode, DefaultNodeWidth(node));
 
@@ -700,7 +769,7 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
     YGNodeStyleSetHeightPercent(ygNode, *style.heightPercent);
   else if (style.height)
     YGNodeStyleSetHeight(ygNode, *style.height);
-  else if (!isText && !isRoot && node.children.empty() && DefaultNodeHeight(node) > 0.0f)
+  else if (!isText && !isRoot && !hasLayoutChildren && DefaultNodeHeight(node) > 0.0f)
     YGNodeStyleSetHeight(ygNode, DefaultNodeHeight(node));
 
   // Scroll containers must not report their content as their min-size, or the
@@ -1236,6 +1305,122 @@ RetainedLayoutStats RetainedUpdateLayout(const NodePtr &root, Rectangle bounds) 
 void RetainedLayoutReset() {}
 #endif
 
+// Per-edge border painter: each side keeps its own width and colour, and the
+// corners are stroked as quarter rings so border-radius CURVES the stroke.
+// The previous version painted four square bands and clipped them to the
+// rounded outer contour, which cut the corners off (a diagonal nick) instead of
+// bending the line around them. The arc is split at 45deg per corner — the same
+// miter CSS uses when the two sides differ in width or colour.
+static void DrawPerEdgeBorder(const Rectangle &box, float cornerRadius,
+                              float top, float right, float bottom, float left,
+                              Color cTop, Color cRight, Color cBottom,
+                              Color cLeft) {
+  const float r = std::max(
+      0.0f, std::min(cornerRadius, std::min(box.width, box.height) * 0.5f));
+  if (r <= 0.0f) {
+    // Square box: butt-join the bands so translucent colours don't double-blend
+    // where two sides meet.
+    if (top > 0.0f)
+      DrawRectangleRec({box.x, box.y, box.width, top}, cTop);
+    if (bottom > 0.0f)
+      DrawRectangleRec({box.x, box.y + box.height - bottom, box.width, bottom},
+                       cBottom);
+    const float vy = box.y + top;
+    const float vh = std::max(0.0f, box.height - top - bottom);
+    if (left > 0.0f)
+      DrawRectangleRec({box.x, vy, left, vh}, cLeft);
+    if (right > 0.0f)
+      DrawRectangleRec({box.x + box.width - right, vy, right, vh}, cRight);
+    return;
+  }
+
+  const int segs = 16;
+  const float hSpan = std::max(0.0f, box.width - 2.0f * r);
+  const float vSpan = std::max(0.0f, box.height - 2.0f * r);
+  if (top > 0.0f && hSpan > 0.0f)
+    DrawRectangleRec({box.x + r, box.y, hSpan, top}, cTop);
+  if (bottom > 0.0f && hSpan > 0.0f)
+    DrawRectangleRec({box.x + r, box.y + box.height - bottom, hSpan, bottom},
+                     cBottom);
+  if (left > 0.0f && vSpan > 0.0f)
+    DrawRectangleRec({box.x, box.y + r, left, vSpan}, cLeft);
+  if (right > 0.0f && vSpan > 0.0f)
+    DrawRectangleRec({box.x + box.width - right, box.y + r, right, vSpan},
+                     cRight);
+
+  // raylib angles: 0deg = +x, 90deg = +y (down). Two adjoining edges meet at the
+  // CSS Backgrounds 3 §6.2 transition line — the ray from the box's outer corner
+  // to its inner corner — and each side keeps its own solid colour, exactly as
+  // browsers and RN paint it. The split is at 45deg only when the two widths are
+  // equal; a 6px edge meeting a 1px one turns almost the whole arc over to the
+  // thick side. (A smooth colour ramp across the corner would look nicer on a
+  // tilt-lit border, but it is not what CSS specifies, and the idiom that IS
+  // spec — a conic-gradient painted into border-box under a padding-box layer —
+  // gets that effect without redefining border-*-color.)
+  auto corner = [&](Vector2 c, float a0, float wA, Color colA, float wB,
+                    Color colB) {
+    const float span = 90.0f;
+    // Fraction of the arc belonging to edge A (the edge at the arc's START angle).
+    // The transition line runs from the box's outer corner to its inner corner,
+    // which sits at (wA, wB) in the corner's local axes, so it lies atan2(wA, wB)
+    // off A's own direction: the THICKER edge takes most of the arc. Verified
+    // against Chrome with a 10px/2px pair — the 10px side wraps the corner and the
+    // 2px side keeps only a sliver. Degenerate pairs fall back to the midpoint.
+    float split = 0.5f;
+    if (wA > 0.0f || wB > 0.0f)
+      split = std::atan2(wA, wB) / ((float)M_PI * 0.5f);
+    split = std::clamp(split, 0.0f, 1.0f);
+    const float mid = a0 + span * split;
+    if (wA > 0.0f && colA.a > 0 && mid > a0)
+      DrawRing(c, std::max(0.0f, r - wA), r, a0, mid, segs, colA);
+    if (wB > 0.0f && colB.a > 0 && a0 + span > mid)
+      DrawRing(c, std::max(0.0f, r - wB), r, mid, a0 + span, segs, colB);
+  };
+  const Vector2 tl{box.x + r, box.y + r};
+  const Vector2 tr{box.x + box.width - r, box.y + r};
+  const Vector2 br{box.x + box.width - r, box.y + box.height - r};
+  const Vector2 bl{box.x + r, box.y + box.height - r};
+  corner(tl, 180.0f, left, cLeft, top, cTop);
+  corner(tr, 270.0f, top, cTop, right, cRight);
+  corner(br, 0.0f, right, cRight, bottom, cBottom);
+  corner(bl, 90.0f, bottom, cBottom, left, cLeft);
+
+  // An edge thicker than the radius: its arc bottoms out at inner radius 0, so a
+  // wedge is left between the quarter disc and the straight run. Fill it with
+  // that edge's colour (no overlap with the bands or the arcs by construction).
+  if (top > r) {
+    if (left < r)
+      DrawRectangleRec({box.x + left, box.y + r, r - left, top - r}, cTop);
+    if (right < r)
+      DrawRectangleRec({box.x + box.width - r, box.y + r, r - right, top - r},
+                       cTop);
+  }
+  if (bottom > r) {
+    const float y = box.y + box.height - bottom;
+    if (left < r)
+      DrawRectangleRec({box.x + left, y, r - left, bottom - r}, cBottom);
+    if (right < r)
+      DrawRectangleRec({box.x + box.width - r, y, r - right, bottom - r},
+                       cBottom);
+  }
+  if (left > r) {
+    if (top < r)
+      DrawRectangleRec({box.x + r, box.y + top, left - r, r - top}, cLeft);
+    if (bottom < r)
+      DrawRectangleRec({box.x + r, box.y + box.height - r, left - r,
+                        r - bottom},
+                       cLeft);
+  }
+  if (right > r) {
+    const float x = box.x + box.width - right;
+    if (top < r)
+      DrawRectangleRec({x, box.y + top, right - r, r - top}, cRight);
+    if (bottom < r)
+      DrawRectangleRec({x, box.y + box.height - r, right - r, r - bottom},
+                       cRight);
+  }
+}
+
 static void DrawNodeBackground(const Node &node, const Style &style) {
   if (style.display == Display::None)
     return;
@@ -1296,22 +1481,97 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
     // preserves draw order. Backends with render-target blur can replace this
     // with an actual sampled backdrop pass without changing the public API.
   }
-  if (style.backgroundGradient && style.backgroundGradient->stops.size() >= 2) {
-    const auto &stops = style.backgroundGradient->stops;
-    Color first = ScaleAlpha(stops.front().color, opacity);
-    Color last = ScaleAlpha(stops.back().color, opacity);
-    float angle = fmodf(style.backgroundGradient->angleDegrees + 360.0f, 360.0f);
-    if (angle >= 45.0f && angle < 135.0f) {
-      DrawRectangleGradientEx(backgroundLayout, first, last, last, first);
-    } else if (angle >= 225.0f && angle < 315.0f) {
-      DrawRectangleGradientEx(backgroundLayout, last, first, first, last);
-    } else if (angle >= 135.0f && angle < 225.0f) {
-      DrawRectangleGradientEx(backgroundLayout, last, last, first, first);
-    } else {
-      DrawRectangleGradientEx(backgroundLayout, first, first, last, last);
+  // ── background layers ──────────────────────────────────────────────────────
+  // A layer is confined to its CSS box area. Painting a gradient into border-box
+  // and then covering the middle with a padding-box layer is how the web draws a
+  // gradient border that follows border-radius — `border-image` cannot, because
+  // per spec it ignores the radius.
+  auto areaBox = [&](BoxArea area, float &areaRadius) -> Rectangle {
+    if (area == BoxArea::BorderBox || area == BoxArea::BorderArea) {
+      areaRadius = radius;
+      return backgroundLayout;
     }
+    float t = ResolveBorderWidth(style, BoxEdge::Top);
+    float rt = ResolveBorderWidth(style, BoxEdge::Right);
+    float b = ResolveBorderWidth(style, BoxEdge::Bottom);
+    float l = ResolveBorderWidth(style, BoxEdge::Left);
+    if (area == BoxArea::ContentBox) {
+      t += style.padding.Top();
+      rt += style.padding.Right();
+      b += style.padding.Bottom();
+      l += style.padding.Left();
+    }
+    // CSS shrinks each corner's radius by its own adjoining border width, giving
+    // an ellipse per corner. With one shared radius, subtracting the LARGEST
+    // inset is the safe rounding: too small only lets a sliver of the outer layer
+    // show at the corners, whereas too large would let the inner layer overlap
+    // and hide the stroke it is supposed to reveal.
+    areaRadius = std::max(0.0f, radius - std::max(std::max(t, rt), std::max(b, l)));
+    return Rectangle{backgroundLayout.x + l, backgroundLayout.y + t,
+                     std::max(0.0f, backgroundLayout.width - l - rt),
+                     std::max(0.0f, backgroundLayout.height - t - b)};
+  };
+  auto paintLayer = [&](const BackgroundLayer &layer) {
+    float originRadius = radius;
+    const Rectangle originBox = areaBox(layer.origin, originRadius);
+    if (layer.clip == BoxArea::BorderArea) {
+      // Ring-only layer. A flat colour is expressed as a two-stop gradient so
+      // both cases share the annulus painter.
+      LinearGradient solid;
+      const LinearGradient *paint = nullptr;
+      if (layer.gradient && !layer.gradient->stops.empty()) {
+        paint = &*layer.gradient;
+      } else if (layer.color) {
+        solid.stops.push_back({*layer.color, 0.0f, true});
+        solid.stops.push_back({*layer.color, 1.0f, true});
+        paint = &solid;
+      }
+      if (!paint)
+        return;
+      float innerRadius = radius;
+      const Rectangle innerBox = areaBox(BoxArea::PaddingBox, innerRadius);
+      DrawGradientBorderArea(backgroundLayout, radius, innerBox, innerRadius,
+                             *paint, opacity, &originBox);
+      return;
+    }
+    float clipRadius = radius;
+    const Rectangle clipBox = areaBox(layer.clip, clipRadius);
+    if (clipBox.width <= 0.0f || clipBox.height <= 0.0f)
+      return;
+    if (layer.gradient && !layer.gradient->stops.empty()) {
+      DrawGradientRoundedRect(clipBox, clipRadius, *layer.gradient, opacity,
+                              &originBox);
+    } else if (layer.color) {
+      raym3::Renderer::DrawRoundedRectangle(clipBox, clipRadius,
+                                            ScaleAlpha(*layer.color, opacity));
+    }
+  };
+  if (!style.backgroundLayers.empty()) {
+    // `background-color` sits UNDER every layer, clipped by the last layer's clip
+    // box (CSS Backgrounds 3 §3.10) — including `border-area`, which confines the
+    // colour to the ring as well.
+    if (style.backgroundColor) {
+      BackgroundLayer colorLayer;
+      colorLayer.color = *style.backgroundColor;
+      colorLayer.clip = style.backgroundLayers.back().clip;
+      colorLayer.origin = colorLayer.clip == BoxArea::BorderArea
+                              ? BoxArea::BorderBox
+                              : colorLayer.clip;
+      paintLayer(colorLayer);
+    }
+    // CSS paints the FIRST layer on top, so walk the list backwards.
+    for (auto it = style.backgroundLayers.rbegin();
+         it != style.backgroundLayers.rend(); ++it)
+      paintLayer(*it);
+  } else if (style.backgroundGradient &&
+             !style.backgroundGradient->stops.empty()) {
+    // Legacy single-gradient field, now through the same painter. This fixes two
+    // long-standing gaps: DrawRectangleGradientEx interpolated only the first and
+    // last stop (mid-stops were dropped), and it ignored border-radius.
+    DrawGradientRoundedRect(backgroundLayout, radius, *style.backgroundGradient,
+                            opacity);
   }
-  if (style.backgroundColor) {
+  if (style.backgroundColor && style.backgroundLayers.empty()) {
     raym3::Renderer::DrawRoundedRectangle(backgroundLayout, radius,
                                           ScaleAlpha(*style.backgroundColor, opacity));
     if (node.role == NodeRole::BottomSheet && radius > 0.0f) {
@@ -1353,9 +1613,8 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
   if (perEdgeBorders) {
     // Per-edge fields that RESOLVE identical on all four sides are still a
     // uniform border — paint it with the rounded stroke so border-radius is
-    // honoured. Only genuinely uneven edges need the square edge-by-edge
-    // painter (corners are square where two differently-lit edges meet, which
-    // is what a per-side CSS border does).
+    // honoured. Genuinely uneven edges use the edge-by-edge painter below,
+    // clipped to the same rounded outer contour as the background.
     const Color fb = style.borderColor.value_or(Color{0, 0, 0, 0});
     const float w0 = ResolveBorderWidth(style, BoxEdge::Top);
     const Color c0 = ResolveBorderColor(style, BoxEdge::Top, fb);
@@ -1385,24 +1644,16 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
     const float right  = ResolveBorderWidth(style, BoxEdge::Right);
     const float bottom = ResolveBorderWidth(style, BoxEdge::Bottom);
     const float left   = ResolveBorderWidth(style, BoxEdge::Left);
-    const Rectangle &r = backgroundLayout;
-    if (top > 0.0f) {
-      DrawRectangleRec({r.x, r.y, r.width, top},
-                       ScaleAlpha(ResolveBorderColor(style, BoxEdge::Top, fallback), opacity));
-    }
-    if (bottom > 0.0f) {
-      DrawRectangleRec({r.x, r.y + r.height - bottom, r.width, bottom},
-                       ScaleAlpha(ResolveBorderColor(style, BoxEdge::Bottom, fallback), opacity));
-    }
-    if (left > 0.0f) {
-      DrawRectangleRec({r.x, r.y + top, left, std::max(0.0f, r.height - top - bottom)},
-                       ScaleAlpha(ResolveBorderColor(style, BoxEdge::Left, fallback), opacity));
-    }
-    if (right > 0.0f) {
-      DrawRectangleRec({r.x + r.width - right, r.y + top, right,
-                        std::max(0.0f, r.height - top - bottom)},
-                       ScaleAlpha(ResolveBorderColor(style, BoxEdge::Right, fallback), opacity));
-    }
+    // Uneven edges: geometric painter — straight runs stop at the corner boxes
+    // and quarter rings bend the stroke around the radius. No stencil clip: the
+    // stroke never leaves the rounded contour, so this also works on backends
+    // whose stencil wrappers are no-ops (rlwg).
+    DrawPerEdgeBorder(
+        backgroundLayout, radius, top, right, bottom, left,
+        ScaleAlpha(ResolveBorderColor(style, BoxEdge::Top, fallback), opacity),
+        ScaleAlpha(ResolveBorderColor(style, BoxEdge::Right, fallback), opacity),
+        ScaleAlpha(ResolveBorderColor(style, BoxEdge::Bottom, fallback), opacity),
+        ScaleAlpha(ResolveBorderColor(style, BoxEdge::Left, fallback), opacity));
   } else if (!borderDrawn && style.borderColor && style.borderWidth.value_or(0.0f) > 0.0f) {
     raym3::Renderer::DrawRoundedRectangleEx(
         backgroundLayout, radius, ScaleAlpha(*style.borderColor, opacity),
@@ -1525,6 +1776,15 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   const Style &style = EffectiveStyleRef(*node, effScratch);
   const float parentOpacity = g_renderOpacity;
   g_renderOpacity *= std::clamp(style.opacity.value_or(1.0f), 0.0f, 1.0f);
+  const size_t parentMutatorCount = Ctx().externalViewMutators.size();
+  const float localOpacity =
+      std::clamp(style.opacity.value_or(1.0f), 0.0f, 1.0f);
+  if (Ctx().externalViewEmbedder && localOpacity < 1.0f) {
+    ExternalViewMutator mutator;
+    mutator.kind = ExternalViewMutatorKind::Opacity;
+    mutator.opacity = localOpacity;
+    Ctx().externalViewMutators.push_back(mutator);
+  }
   // Establish this node's text color for its subtree (CSS `color` inheritance).
   const std::optional<Color> parentInheritedText = g_inheritedTextColor;
   if (style.text.color) g_inheritedTextColor = style.text.color;
@@ -1562,6 +1822,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     if ((insideClip || clips) && !RectsOverlap(node->layout, cull)) {
       g_renderOpacity = parentOpacity; // restore; normal path restores at end
       g_inheritedTextColor = parentInheritedText;
+      Ctx().externalViewMutators.resize(parentMutatorCount);
       return;
     }
   }
@@ -1662,6 +1923,12 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     rlRotatef(style.rotation.value_or(0.0f), 0.0f, 0.0f, 1.0f);
     rlScalef(sc, sc, 1.0f);
     rlTranslatef(-cx, -cy, 0.0f);
+    if (Ctx().externalViewEmbedder) {
+      ExternalViewMutator mutator;
+      mutator.kind = ExternalViewMutatorKind::Transform;
+      mutator.transform = NodeTransform(*node, style);
+      Ctx().externalViewMutators.push_back(mutator);
+    }
   }
 
   DrawNodeBackground(*node, style);
@@ -1688,10 +1955,46 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   } else if (clipped) {
     PushScissor(node->layout);
   }
+  if (Ctx().externalViewEmbedder && clipped) {
+    ExternalViewMutator mutator;
+    mutator.kind = useStencil ? ExternalViewMutatorKind::ClipRoundedRect
+                              : ExternalViewMutatorKind::ClipRect;
+    mutator.rect = node->layout;
+    mutator.radius = clipRadius;
+    Ctx().externalViewMutators.push_back(mutator);
+  }
   // Narrow the cull region to this node's rect for its subtree (paint culling,
   // parallel to the scissor/stencil clip above but in DP space).
   if (clipped)
     g_cullStack.push_back(IntersectRect(node->layout, g_cullStack.back()));
+
+  bool embeddedExternalView = false;
+  if (node->externalViewId != 0 && Ctx().externalViewEmbedder) {
+    ExternalViewComposition composition;
+    composition.externalViewId = node->externalViewId;
+    composition.bounds = node->layout;
+    composition.preservesFrameworkUnderlay =
+        node->externalViewPreservesFrameworkUnderlay;
+    composition.hitTestBehavior = node->externalViewHitTestBehavior;
+    composition.mutators = Ctx().externalViewMutators;
+    if (auto it = Ctx().externalViewOcclusions.find(node->externalViewId);
+        it != Ctx().externalViewOcclusions.end()) {
+      composition.occludingRegions = it->second;
+    }
+    // Nothing painted over this view: the host can leave the current target
+    // selected and skip the overlay entirely.
+    composition.requiresOverlay = !composition.occludingRegions.empty();
+    embeddedExternalView =
+        Ctx().externalViewEmbedder->CompositeExternalView(composition);
+    if (embeddedExternalView) {
+      Ctx().externalViewCount++;
+      // Selecting an overlay starts a new physical color/depth/stencil target.
+      // Restore the still-active logical clips without adding duplicate stack
+      // entries, so later Rayact content is sliced exactly at this boundary.
+      if (Ctx().externalViewEmbedder->RequiresClipReplay())
+        raym3::ReplayCurrentClips();
+    }
+  }
 
   switch (node->kind) {
   case NodeKind::Button: {
@@ -1723,7 +2026,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     RenderTextInputNode(*node);
     break;
   case NodeKind::Custom:
-    if (node->customRender)
+    if (node->customRender && !embeddedExternalView)
       node->customRender(node->layout);
     break;
   case NodeKind::View:
@@ -2054,6 +2357,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     rlPopMatrix();
   g_renderOpacity = parentOpacity;
   g_inheritedTextColor = parentInheritedText;
+  Ctx().externalViewMutators.resize(parentMutatorCount);
 }
 
 // Compute screen-relative layout for a fixed-position node.
@@ -2288,16 +2592,77 @@ static void CollectFixedNodes(const NodePtr &node, std::vector<FixedNode> &fixed
   }
 }
 
+static bool HasRenderableExternalView(const NodePtr &node, Rectangle bounds) {
+  if (!node || node->style.display == Display::None)
+    return false;
+  if (node->externalViewId != 0 && RectsOverlap(node->layout, bounds))
+    return true;
+  for (const NodePtr &child : node->children)
+    if (HasRenderableExternalView(child, bounds))
+      return true;
+  return false;
+}
+
+// True when a node puts pixels of its own on screen. A pure layout container
+// contributes nothing, so it must not force a platform view onto an overlay.
+// Deliberately conservative: anything uncertain counts as painting, because a
+// false positive only costs the overlay we would have allocated anyway, while a
+// false negative would draw framework content *underneath* a platform view.
+static bool NodePaintsContent(const NodePtr &node) {
+  if (!node) return false;
+  if (node->externalViewId != 0) return false;   // the platform view itself
+  const Style &style = node->style;
+  if (style.backgroundColor && style.backgroundColor->a > 0) return true;
+  if (style.backgroundGradient) return true;
+  if (!node->text.empty()) return true;
+  if (style.borderWidth.value_or(0.0f) > 0.0f) return true;
+  if (node->customRender) return true;
+  if (node->inkRipple) return true;
+  return false;
+}
+
+// Collect, for every external view, the regions of later-painted framework
+// content that overlap it. Paint order is this DFS, so "later" is simply
+// "visited after"; fixed-position nodes paint in a pass after the whole tree,
+// so they count against every view regardless of tree position.
+static void CollectExternalViewOcclusions(
+    const NodePtr &node, Rectangle viewport,
+    std::vector<std::pair<int, Rectangle>> &seenViews,
+    std::unordered_map<int, std::vector<Rectangle>> &out) {
+  if (!node || node->style.display == Display::None) return;
+
+  if (node->externalViewId != 0) {
+    if (RectsOverlap(node->layout, viewport))
+      seenViews.emplace_back(node->externalViewId, node->layout);
+    // A platform view's own subtree is its content, not framework content
+    // drawn over it.
+    return;
+  }
+
+  if (!seenViews.empty() && NodePaintsContent(node)) {
+    for (const auto &[viewId, viewRect] : seenViews) {
+      if (!RectsOverlap(node->layout, viewRect)) continue;
+      out[viewId].push_back(IntersectRect(node->layout, viewRect));
+    }
+  }
+
+  for (const NodePtr &child : node->children)
+    CollectExternalViewOcclusions(child, viewport, seenViews, out);
+}
+
 void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   float dt = GetFrameTime();
   if (dt <= 0.0f || dt > 0.1f)
     dt = 0.016f;
   TickRipples(dt);
 
+  ExternalViewEmbedder *installedEmbedder = Ctx().externalViewEmbedder;
   Ctx().fixedNodes.clear();
   Ctx().stackOrder.clear();
   Ctx().parentMap.clear();
   Ctx().paintCounter = 0;
+  Ctx().externalViewMutators.clear();
+  Ctx().externalViewCount = 0;
   // UpdateLayout runs before Render in the frame, so the Yoga build count for
   // this frame is already recorded; don't wipe it with the paint counters.
   const int yogaBuilt = Ctx().lastStats.yogaNodesBuilt;
@@ -2305,6 +2670,36 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   Ctx().lastStats.yogaNodesBuilt = yogaBuilt;
   if (!layoutAlreadyComputed)
     UpdateLayout(root, bounds);
+  const bool hasExternalViews =
+      installedEmbedder && HasRenderableExternalView(root, bounds);
+  if (!hasExternalViews) {
+    Ctx().externalViewEmbedder = nullptr;
+    // Still run an empty embedder frame: the host hides platform views and
+    // overlay surfaces that were composited by the PREVIOUS tree during
+    // begin/end reconciliation. Skipping it entirely leaves stale editors and
+    // overlay layers (with old screen pixels) on top of the new screen after
+    // a navigation away from the last external view.
+    if (installedEmbedder) {
+      installedEmbedder->BeginFrame(Ctx().surfaceId, bounds,
+                                    Ctx().platformDensity);
+      installedEmbedder->EndFrame(Ctx().surfaceId);
+    }
+  }
+  Ctx().externalViewOcclusions.clear();
+  if (Ctx().externalViewEmbedder) {
+    // Work out what actually covers each platform view before painting, so a
+    // view with nothing on top of it costs no overlay surface at all.
+    std::vector<std::pair<int, Rectangle>> seenViews;
+    CollectExternalViewOcclusions(root, bounds, seenViews,
+                                  Ctx().externalViewOcclusions);
+  }
+  if (Ctx().externalViewEmbedder) {
+    ExternalViewMutator densityTransform;
+    densityTransform.kind = ExternalViewMutatorKind::Transform;
+    const float density = std::max(0.0001f, Ctx().platformDensity);
+    densityTransform.transform = {density, 0, 0, 0, density, 0, 0, 0, 1};
+    Ctx().externalViewMutators.push_back(densityTransform);
+  }
   
   BuildParentMap(root, Ctx().parentMap);
 
@@ -2314,6 +2709,10 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   // Seed viewport culling with the on-screen bounds (DP space).
   g_cullStack.clear();
   g_cullStack.push_back(bounds);
+
+  if (Ctx().externalViewEmbedder)
+    Ctx().externalViewEmbedder->BeginFrame(Ctx().surfaceId, bounds,
+                                           Ctx().platformDensity);
 
   RenderNode(root, root ? root->zIndex : 0);
 
@@ -2342,6 +2741,10 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   }
 
   PaintTextSelectionOverlay(root);
+
+  if (Ctx().externalViewEmbedder)
+    Ctx().externalViewEmbedder->EndFrame(Ctx().surfaceId);
+  Ctx().externalViewEmbedder = installedEmbedder;
 
   // Commit the fully-built stack for input queries. Inline OwnsInput calls made
   // during the next frame's tree walk read this complete snapshot; HitTest runs
@@ -2423,7 +2826,11 @@ static bool NodeNeedsAnotherFrame(const NodePtr &node) {
   }
   if (node->kind == NodeKind::TextInput && GetFocusedId() == IdOf(node))
     return true;
-  if (node->kind == NodeKind::TextInput && !node->textInput.label.empty()) {
+  // Plain fields ignore the label (no float chrome) and disabled fields draw
+  // it frozen — neither advances labelAnim, so don't pump frames for them.
+  if (node->kind == NodeKind::TextInput && !node->textInput.label.empty() &&
+      node->textInput.variant != TextFieldVariant::Plain &&
+      !node->textInput.disabled && !node->disabled) {
     char *buf = node->textInput.buffer
                     ? node->textInput.buffer
                     : (node->inputBuffer.empty() ? nullptr : node->inputBuffer.data());
@@ -2909,6 +3316,20 @@ static void ClearScrollGesture() {
   Ctx().scroll.frameVelocityY = 0.0f;
 }
 
+static void ClearPendingPress();
+
+static void ResolveExternalViewGesture(bool accepted) {
+  const int externalViewId = Ctx().input.pendingExternalViewId;
+  if (externalViewId == 0)
+    return;
+  if (Ctx().externalViewEmbedder)
+    Ctx().externalViewEmbedder->OnGestureDecision(externalViewId, accepted);
+  Ctx().input.pendingExternalViewId = 0;
+  if (Ctx().scroll.pendingPressTarget &&
+      Ctx().scroll.pendingPressTarget->externalViewId == externalViewId)
+    ClearPendingPress();
+}
+
 // A node captured purely because it has pan/drag handlers shares the gesture
 // arena with an ancestor scroller instead of owning it outright. Controls,
 // scrims and value-drivers still take the gesture exclusively: their drag IS
@@ -3077,6 +3498,12 @@ void ResolveScrollInput(const NodePtr &root) {
   const PointerInput &p = GetPointer();
   Vector2 pt = p.pos;
 
+  if (p.cancelled) {
+    ResolveExternalViewGesture(false);
+    ClearScrollGesture();
+    return;
+  }
+
   if (modalOpen && !FindScrollableForInput(root, pt))
     ClearScrollGesture();
 
@@ -3113,6 +3540,10 @@ void ResolveScrollInput(const NodePtr &root) {
       ScrollTraceEvent("press        at=(%.1f,%.1f) offset=%8.2f followEnd=%d",
                        pt.x, pt.y, Ctx().scroll.candidate->scrollOffsetY,
                        Ctx().scroll.candidate->scrollFollowEnd ? 1 : 0);
+    } else {
+      // Nothing in Rayact can claim a scroll, so release the original native
+      // event sequence immediately instead of imposing a one-frame/tap delay.
+      ResolveExternalViewGesture(true);
     }
     return;
   }
@@ -3129,6 +3560,7 @@ void ResolveScrollInput(const NodePtr &root) {
       const float cross = horizontal ? totalDy : totalDx;
       if (std::abs(primary) > kTouchSlop && std::abs(primary) > std::abs(cross)) {
         Ctx().scroll.engaged = true;
+        ResolveExternalViewGesture(false);
         // The drag node, if any, loses the gesture here: the movement is
         // primarily along the scroll axis, so the user is scrolling.
         if (sharedDrag)
@@ -3188,6 +3620,8 @@ void ResolveScrollInput(const NodePtr &root) {
     } else if (Ctx().scroll.engaged) {
       ScrollTraceFlushGesture("release-no-momentum");
     }
+    if (!Ctx().scroll.engaged)
+      ResolveExternalViewGesture(true);
     ClearScrollGesture();
   }
 }
@@ -3348,6 +3782,23 @@ void ResolveInput(const NodePtr &root) {
   Vector2 pt = p.pos;
   Ctx().lastStats.hitTestCount++;
 
+  if (p.cancelled) {
+    if (NodeId active = GetActiveId()) {
+      auto* node = reinterpret_cast<Node*>(active);
+      if (node && node->onPressOut) node->onPressOut();
+      if (node) {
+        node->control.dragging = false;
+        node->pressLongFired = false;
+      }
+    }
+    SetActiveId(0);
+    SetPendingPressId(0);
+    Ctx().scroll.pendingPressTarget = nullptr;
+    Ctx().input.dismissTapActive = false;
+    ResolveExternalViewGesture(false);
+    return;
+  }
+
   const Node *rootNode = root.get();
   if (NodeId fid = GetFocusedId()) {
     auto *fn = reinterpret_cast<Node *>(fid);
@@ -3446,8 +3897,10 @@ void ResolveInput(const NodePtr &root) {
     if (NodeId fid = GetFocusedId()) {
       auto *fn = reinterpret_cast<Node *>(fid);
       if (fn && fn->kind == NodeKind::TextInput) {
-        const bool onTextInput =
-            target && target->kind == NodeKind::TextInput;
+        // Descendants count: the mobile native editor is an external-view
+        // child of the text-input node, and tapping it must not arm the
+        // tap-outside dismissal.
+        const bool onTextInput = target && NodeOrAncestorIsTextInput(target);
         if (!onTextInput) {
           Ctx().input.dismissTapActive = true;
           Ctx().input.dismissTapOrigin = pt;
@@ -3477,6 +3930,12 @@ void ResolveInput(const NodePtr &root) {
       return;
     }
     if (target) {
+      if (owner && owner->externalViewId != 0 &&
+          owner->externalViewHitTestBehavior !=
+              ExternalViewHitTestBehavior::Transparent &&
+          Ctx().externalViewEmbedder) {
+        Ctx().input.pendingExternalViewId = owner->externalViewId;
+      }
       if (NeedsImmediateCapture(*target, ownerIsScrim)) {
         SetActiveId(IdOf(target));
         PressBegin(target, pt, ownerIsScrim);
@@ -3494,6 +3953,9 @@ void ResolveInput(const NodePtr &root) {
   if (p.released && Ctx().scroll.pendingPressTarget && !Ctx().scroll.engaged) {
     NodePtr pending = Ctx().scroll.pendingPressTarget;
     Vector2 pressOrigin = Ctx().scroll.pendingPressOrigin;
+    const bool nativePlatformView =
+        pending->externalViewId != 0 && Ctx().externalViewEmbedder;
+    ResolveExternalViewGesture(true);
     FinishPendingPress();
     if (PointerTravel(pressOrigin, pt) <= kTouchSlop &&
         InteractiveTargetFrom(InputOwnerAt(pt)) == pending) {
@@ -3504,7 +3966,7 @@ void ResolveInput(const NodePtr &root) {
         } else {
           RequestFocus(pending);
         }
-      } else {
+      } else if (!nativePlatformView) {
         if (pending->onPress)
           pending->onPress();
         DismissTextInputIfNeeded(pending, false,

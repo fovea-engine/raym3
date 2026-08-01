@@ -27,12 +27,13 @@ struct PointerInput {
   bool down = false;
   bool pressed = false;  // down edge this frame
   bool released = false; // up edge this frame
+  bool cancelled = false;
   float wheel = 0.0f;
 };
 
 // Latch the raw pointer for this frame. Coordinates must already be in dp.
 void BeginInputFrame(Vector2 posDp, bool down, bool pressed, bool released,
-                     float wheel);
+                     float wheel, bool cancelled = false);
 
 // Resolve hover/active/focus + fire interaction callbacks. Call AFTER Render()
 // so the committed stack (with effective z) is current.
@@ -83,6 +84,9 @@ void RequestFocus(const NodePtr &node);
 void Blur();
 
 // TextField keyboard policy: keep focus unless the user taps outside (not scroll/drag).
+// True when the node or any committed-tree ancestor is a TextInput (the
+// mobile native editor is an external-view child of the text-input node).
+bool NodeOrAncestorIsTextInput(const NodePtr &node);
 bool ShouldKeepTextInputFocused(const NodePtr &tapTarget, bool scrollEngaged,
                                 float pointerTravel);
 void DismissTextInputIfNeeded(const NodePtr &tapTarget, bool scrollEngaged,

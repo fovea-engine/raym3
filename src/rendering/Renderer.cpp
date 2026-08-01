@@ -10,8 +10,12 @@ constexpr int kRoundedRectSegments = 16;
 
 // Uniform border thickness: raylib's DrawRectangleRoundedLinesEx uses 1px line
 // arcs when lineThick <= 1, so corners look thinner than straight edges.
+// notchStart/notchEnd cut a gap out of the top edge (M3 outlined text field
+// label notch); pass notchEnd <= notchStart for an uninterrupted frame.
 static void DrawRoundedBorderFrame(Rectangle bounds, float cornerRadius,
-                                   float lineWidth, Color color) {
+                                   float lineWidth, Color color,
+                                   float notchStart = 0.0f,
+                                   float notchEnd = 0.0f) {
   if (lineWidth <= 0.0f)
     return;
 
@@ -32,7 +36,19 @@ static void DrawRoundedBorderFrame(Rectangle bounds, float cornerRadius,
   // corner arcs (DrawRing) and the fill (DrawRectangleRounded) stay on the float
   // position — the border then misaligns/shimmers against the fill while scrolling.
   if (bounds.width > 2.0f * r) {
-    DrawRectangleRec({bounds.x + r, bounds.y, bounds.width - 2.0f * r, w}, color);
+    const float topLeft = bounds.x + r;
+    const float topRight = bounds.x + bounds.width - r;
+    if (notchEnd > notchStart) {
+      const float leftSpanEnd = std::clamp(notchStart, topLeft, topRight);
+      const float rightSpanStart = std::clamp(notchEnd, topLeft, topRight);
+      if (leftSpanEnd > topLeft)
+        DrawRectangleRec({topLeft, bounds.y, leftSpanEnd - topLeft, w}, color);
+      if (topRight > rightSpanStart)
+        DrawRectangleRec({rightSpanStart, bounds.y, topRight - rightSpanStart, w},
+                         color);
+    } else {
+      DrawRectangleRec({topLeft, bounds.y, topRight - topLeft, w}, color);
+    }
     DrawRectangleRec({bounds.x + r, bounds.y + bounds.height - w,
                       bounds.width - 2.0f * r, w}, color);
   }
@@ -69,6 +85,13 @@ void Renderer::DrawRoundedRectangle(Rectangle bounds, float cornerRadius,
 void Renderer::DrawRoundedRectangleEx(Rectangle bounds, float cornerRadius,
                                       Color color, float lineWidth) {
   DrawRoundedBorderFrame(bounds, cornerRadius, lineWidth, color);
+}
+
+void Renderer::DrawRoundedRectangleNotched(Rectangle bounds, float cornerRadius,
+                                           Color color, float lineWidth,
+                                           float notchStart, float notchEnd) {
+  DrawRoundedBorderFrame(bounds, cornerRadius, lineWidth, color, notchStart,
+                         notchEnd);
 }
 
 void Renderer::DrawElevatedRectangle(Rectangle bounds, float cornerRadius,

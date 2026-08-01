@@ -20,6 +20,9 @@ void ForgetInputNode(Node *n) {
     in.focused = 0;
   if (in.pendingPress == id)
     in.pendingPress = 0;
+  if (n->externalViewId != 0 &&
+      in.pendingExternalViewId == n->externalViewId)
+    in.pendingExternalViewId = 0;
   if (c.lastFocusedTextInput == id)
     c.lastFocusedTextInput = 0;
   if (c.scroll.candidate.get() == n)
@@ -29,12 +32,13 @@ void ForgetInputNode(Node *n) {
 }
 
 void BeginInputFrame(Vector2 posDp, bool down, bool pressed, bool released,
-                     float wheel) {
+                     float wheel, bool cancelled) {
   PointerInput &pointer = Ctx().input.pointer;
   pointer.pos = posDp;
   pointer.down = down;
   pointer.pressed = pressed;
   pointer.released = released;
+  pointer.cancelled = cancelled;
   pointer.wheel = wheel;
   Ctx().input.textSelectionOverlayConsumedPointer = false;
 }
@@ -85,6 +89,20 @@ void SetFocusedNode(const NodePtr &node) {
 void RequestFocus(const NodePtr &node) { SetFocusedNode(node); }
 void Blur() { Ctx().input.focused = 0; }
 
+// A tap on a TextInput's own subtree counts as a tap on the field. The mobile
+// native editor is an external-view CHILD of the raym3 text-input node, so a
+// tap that focuses the real editor must not read as "tap outside" and blur
+// the chrome the JS focus event is about to (or just did) focus.
+bool NodeOrAncestorIsTextInput(const NodePtr &node) {
+  for (NodePtr current = node; current;) {
+    if (current->kind == NodeKind::TextInput)
+      return true;
+    auto it = Ctx().committedParentMap.find(current.get());
+    current = it != Ctx().committedParentMap.end() ? it->second : nullptr;
+  }
+  return false;
+}
+
 bool ShouldKeepTextInputFocused(const NodePtr &tapTarget, bool scrollEngaged,
                                 float pointerTravel) {
   if (GetFocusedId() == 0)
@@ -94,7 +112,7 @@ bool ShouldKeepTextInputFocused(const NodePtr &tapTarget, bool scrollEngaged,
     return true;
   if (scrollEngaged)
     return true;
-  if (tapTarget && tapTarget->kind == NodeKind::TextInput)
+  if (tapTarget && NodeOrAncestorIsTextInput(tapTarget))
     return true;
   // ScrollView keyboardShouldPersistTaps applies to every descendant, not
   // merely to the container itself.

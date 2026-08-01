@@ -11,4 +11,8 @@ void SetCurrentRenderContext(RenderContext *ctx) {
   s_currentContext = ctx ? ctx : &s_defaultContext;
 }
 
+RenderContext *GetCurrentRenderContext() {
+  return s_currentContext == &s_defaultContext ? nullptr : s_currentContext;
+}
+
 } // namespace raym3::v2

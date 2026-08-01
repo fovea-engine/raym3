@@ -247,6 +247,48 @@ Rectangle GetCurrentScissorBounds() {
   return s_scissorStack.back();
 }
 
+void ReplayCurrentClips() {
+#if defined(RAYLIB_USE_RLWG) || defined(RAYM3_WEBGPU)
+  if (!s_scissorStack.empty()) {
+    const Rectangle bounds = s_scissorStack.back();
+    BeginScissorMode((int)bounds.x, (int)bounds.y,
+                     (int)bounds.width, (int)bounds.height);
+  }
+  return;
+#else
+  rlDrawRenderBatchActive();
+  EndScissorMode();
+  if (s_stencilStack.empty()) {
+    glDisable(GL_STENCIL_TEST);
+  } else {
+    glEnable(GL_STENCIL_TEST);
+    glStencilMask(0xFF);
+    for (size_t index = 0; index < s_stencilStack.size(); ++index) {
+      const StencilEntry &entry = s_stencilStack[index];
+      glStencilFunc(GL_EQUAL, (int)index, 0xFF);
+      glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
+      glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+      glDepthMask(GL_FALSE);
+      float minDim = std::min(entry.bounds.width, entry.bounds.height);
+      float roundness = minDim > 0.0f
+          ? std::min(1.0f, (entry.radius * 2.0f) / minDim) : 0.0f;
+      DrawRectangleRounded(entry.bounds, roundness, 32, WHITE);
+      rlDrawRenderBatchActive();
+    }
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_TRUE);
+    glStencilFunc(GL_EQUAL, (int)s_stencilStack.size(), 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    glStencilMask(0x00);
+  }
+  if (!s_scissorStack.empty()) {
+    const Rectangle bounds = s_scissorStack.back();
+    BeginScissorMode((int)bounds.x, (int)bounds.y,
+                     (int)bounds.width, (int)bounds.height);
+  }
+#endif
+}
+
 void SetScissorDebug(bool enabled) { s_scissorDebugEnabled = enabled; }
 bool IsScissorDebug() { return s_scissorDebugEnabled; }
 

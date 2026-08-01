@@ -31,6 +31,12 @@ Node *FocusedTextInput() {
   auto *node = reinterpret_cast<Node *>(id);
   if (!node || node->kind != NodeKind::TextInput)
     return nullptr;
+  // A field backed by a real platform editor owns its own selection UI: the
+  // UITextField/EditText draws the caret, the drag handles, and the
+  // cut/copy/paste menu. Painting raym3's overlay on top would double every
+  // one of them, so the renderer stays out of the way entirely.
+  if (node->textInput.nativeEditor)
+    return nullptr;
   return node;
 }
 
