@@ -82,6 +82,16 @@ std::uint32_t DecodeUtf8(std::string_view s, std::size_t &i) {
   return cp;
 }
 
+// ISO country/region flags are exactly two Regional Indicator symbols.
+inline bool IsFlagClusterUtf8(std::string_view utf8) {
+  std::size_t i = 0;
+  if (i >= utf8.size()) return false;
+  const std::uint32_t a = DecodeUtf8(utf8, i);
+  if (i >= utf8.size()) return false;
+  const std::uint32_t b = DecodeUtf8(utf8, i);
+  return i == utf8.size() && IsRegionalIndicator(a) && IsRegionalIndicator(b);
+}
+
 // Canonical raster size for OS/CBDT backends — drawn at this px, scaled at draw time.
 static constexpr int kRasterPx = 128;
 
@@ -119,8 +129,7 @@ EmojiFont::BackendKind EmojiFont::ActiveBackend() {
 // Draw one well-known emoji through the injected rasterizer and check that any
 // ink came back. A platform can hand us a rasterizer whose font fallback chain
 // has no emoji coverage at all, in which case every cluster would come back
-// blank — better to discover that once, here, and use the bundled font instead
-// of silently rendering nothing for the life of the process.
+// blank — better to discover that once here than silently render nothing.
 bool EmojiFont::ProbeRasterizer() {
   if (!rasterizer_) return false;
   int w = 0, h = 0;
@@ -146,9 +155,19 @@ void EmojiFont::EnsureBackend() {
       TraceLog(LOG_INFO, "EmojiFont: using OS rasterizer backend");
       return;
     }
+    // OS-capable platforms (Apple / Android / Windows) must not silently pull
+    // in a bundled ~10 MB CBDT font. Only an explicit loadEmoji() /
+    // RegisterCustomEmojiFont seed opts into CBDT when a rasterizer was set.
+    if (customFontBytes_.empty()) {
+      TraceLog(LOG_WARNING,
+               "EmojiFont: OS rasterizer produced no ink for U+1F600 — "
+               "no emoji backend (bundled CBDT is not used as automatic fallback)");
+      backend_ = Backend::None;
+      return;
+    }
     TraceLog(LOG_WARNING,
              "EmojiFont: OS rasterizer produced no ink for U+1F600 — "
-             "falling back to a bundled font");
+             "using RegisterCustomEmojiFont bytes");
   }
 
   if (LoadCbdtFont()) {
@@ -169,6 +188,8 @@ void EmojiFont::RegisterCustomEmojiFont(std::vector<std::uint8_t> bytes) {
   rasterizer_ = nullptr;
   customFontBytes_ = std::move(bytes);
   fontParsed_ = false;
+  flagsFontResolved_ = false;
+  flagsFontOk_ = false;
   data_.clear();
   cmap_.clear();
   strike_.clear();
@@ -193,8 +214,8 @@ bool EmojiFont::LoadCbdtFont() {
         "/usr/share/fonts/noto/NotoColorEmoji.ttf",                 // openSUSE / Arch
         "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
         "/usr/share/fonts/NotoColorEmoji.ttf",
-        // Bundled fallback (shipped with the app on Linux when system font absent;
-        // always present on non-Linux since CBDT is only used there as last resort)
+        // Bundled / MEMFS paths — Linux desktop packages and the web embed.
+        // Apple / Android / Windows use an OS rasterizer and do not ship this file.
         std::string(RAYM3_RESOURCE_DIR) + "/fonts/NotoColorEmoji.ttf",
         "./resources/fonts/NotoColorEmoji.ttf",
         "./raym3/resources/fonts/NotoColorEmoji.ttf",
@@ -217,6 +238,65 @@ bool EmojiFont::LoadCbdtFont() {
     std::fclose(f);
   }
 
+  return ParseLoadedCbdtFont(path);
+}
+
+bool EmojiFont::LoadFlagsCbdtFont() {
+  if (flagsFontResolved_) return flagsFontOk_;
+  flagsFontResolved_ = true;
+
+  // Full/custom CBDT already parsed (Linux / loadEmoji) — it has flags too.
+  if (fontParsed_ && !cmap_.empty() && !strike_.empty()) {
+    flagsFontOk_ = true;
+    return true;
+  }
+  if (fontParsed_) {
+    flagsFontOk_ = false;
+    return false;
+  }
+
+  const std::vector<std::string> candidates = {
+      std::string(RAYM3_RESOURCE_DIR) + "/fonts/NotoColorEmoji-Flags.ttf",
+      "./resources/fonts/NotoColorEmoji-Flags.ttf",
+      "./raym3/resources/fonts/NotoColorEmoji-Flags.ttf",
+      "NotoColorEmoji-Flags.ttf",
+  };
+  std::string path;
+  for (const auto &c : candidates)
+    if (std::filesystem::exists(c)) { path = c; break; }
+  if (path.empty()) {
+    flagsFontOk_ = false;
+    return false;
+  }
+
+  FILE *f = std::fopen(path.c_str(), "rb");
+  if (!f) {
+    flagsFontOk_ = false;
+    return false;
+  }
+  std::fseek(f, 0, SEEK_END);
+  long sz = std::ftell(f);
+  std::fseek(f, 0, SEEK_SET);
+  if (sz <= 0) {
+    std::fclose(f);
+    flagsFontOk_ = false;
+    return false;
+  }
+  data_.resize((std::size_t)sz);
+  if (std::fread(data_.data(), 1, (std::size_t)sz, f) != (std::size_t)sz) {
+    std::fclose(f);
+    data_.clear();
+    flagsFontOk_ = false;
+    return false;
+  }
+  std::fclose(f);
+
+  fontParsed_ = true;
+  flagsFontOk_ = ParseLoadedCbdtFont(path);
+  return flagsFontOk_;
+}
+
+bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
   const std::uint8_t *base = data_.data();
   const std::size_t total = data_.size();
   if (total < 12) return false;
@@ -424,7 +504,9 @@ bool EmojiFont::LoadCbdtFont() {
   bool ok = !cmap_.empty() && !strike_.empty();
   if (ok) {
     bool isSystem = path.find(RAYM3_RESOURCE_DIR) == std::string::npos &&
-                    path.find("./") != 0 && path != "NotoColorEmoji.ttf";
+                    path.find("./") != 0 && path != "NotoColorEmoji.ttf" &&
+                    path != "NotoColorEmoji-Flags.ttf" &&
+                    path.find("<custom") == std::string::npos;
     TraceLog(LOG_INFO,
              "EmojiFont: loaded CBDT %s (%s, cmap ranges=%zu, ligatures=%zu, strike ppem=%.0f)",
              path.c_str(), isSystem ? "system" : "bundled",
@@ -621,6 +703,17 @@ const EmojiFont::Glyph *EmojiFont::GetCluster(std::string_view clusterUtf8) {
   Glyph g;
 
   if (backend_ == Backend::Raster) {
+    // Segoe UI Emoji has no ISO flag artwork — RI pairs render as "US"/"JP".
+    // Prefer the small bundled flags CBDT for those clusters only.
+    if (IsFlagClusterUtf8(key) && LoadFlagsCbdtFont()) {
+      std::uint16_t glyphId = ShapeCluster(key);
+      if (glyphId != 0 && DecodeGlyphBitmap(glyphId, g)) {
+        auto &stored = clusterCache_[key] = g;
+        return &stored;
+      }
+      g = Glyph{};
+    }
+
     int w = 0, h = 0;
     unsigned char *rgba = rasterizer_(key.c_str(), kRasterPx, &w, &h);
     if (!rgba || w <= 0 || h <= 0) {
@@ -689,10 +782,17 @@ void DrawTextWithEmoji(Font font, std::string_view utf8, Vector2 pos,
       const float box = fontSize;
       const EmojiFont::Glyph *g = ef.GetCluster(sub);
       if (g && g->texture.id != 0) {
-        float aspect = g->pngHeight > 0 ? (float)g->pngWidth / (float)g->pngHeight : 1.0f;
+        float aspect =
+            g->pngHeight > 0 ? (float)g->pngWidth / (float)g->pngHeight : 1.0f;
         float h = box, w = box * aspect;
+        // Keep ink inside the advance box — wide CBDT flags (e.g. 136×128) used
+        // to draw with dx < x and clip against the parent scissor/padding.
+        if (w > box) {
+          w = box;
+          h = box / aspect;
+        }
         float dx = x + (box - w) * 0.5f;
-        float dy = pos.y + fontSize * 0.08f;
+        float dy = pos.y + fontSize * 0.08f + (box - h) * 0.5f;
         Rectangle src = {0, 0, (float)g->pngWidth, (float)g->pngHeight};
         Rectangle dst = {dx, dy, w, h};
         DrawTexturePro(g->texture, src, dst, {0, 0}, 0.0f, WHITE);

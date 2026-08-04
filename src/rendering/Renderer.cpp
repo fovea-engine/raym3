@@ -2,6 +2,7 @@
 #include "raym3/fonts/FontManager.h"
 #include "raym3/styles/Theme.h"
 #include "raym3/v2/EmojiFont.h"
+#include <algorithm>   // std::clamp — libc++ leaks it via other headers, MSVC's STL does not
 #include <cmath>
 
 namespace raym3 {

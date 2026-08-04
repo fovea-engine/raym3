@@ -1,9 +1,12 @@
 #pragma once
 
 #include "raym3/types.h"
+#include <cstdint>
 #include <raylib.h>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace raym3 {
@@ -47,10 +50,22 @@ public:
   static void SetDpiScale(float scale);
   static float GetDpiScale();
 
+  // Bumped whenever an atlas is rebuilt (lazy glyph growth or DPI reload).
+  // Include in PreparedText cache keys so pretext widths cannot go stale.
+  static std::uint64_t FontGeneration();
+
   static Font LoadFont(FontWeight weight = FontWeight::Regular,
                        FontStyle style = FontStyle::Normal, int size = 16);
   static Font LoadCustomFont(const std::string &path, int size,
                              const std::vector<int> &codepoints = {});
+
+  // Ensure every codepoint in `utf8` is present in the default-family atlas
+  // for (weight, style, size). Must run before MeasureTextEx / prepare.
+  static void EnsureGlyphsForText(FontWeight weight, FontStyle style, int size,
+                                  std::string_view utf8);
+  // Same for a registered custom family (size only; no style axis).
+  static void EnsureGlyphsForFamily(std::string_view name, int size,
+                                    std::string_view utf8);
 
   // Named font registry — call RegisterFont once at startup, then reference
   // the name in CSS font-family or style.text.fontFamily.
@@ -60,7 +75,8 @@ public:
   // needed for assets delivered as bytes (web MEMFS-less runtime load,
   // Android APK asset bytes, or any RayactAsset.bytes() payload). FontManager
   // copies the bytes into its own storage.
-  static void RegisterFontFromMemory(const std::string &name, std::vector<unsigned char> bytes,
+  static void RegisterFontFromMemory(const std::string &name,
+                                     std::vector<unsigned char> bytes,
                                      std::vector<int> codepoints = {});
   static Font LoadFontByFamily(const std::string &name, int size);
 
@@ -71,32 +87,45 @@ public:
 
   static Font GetDefaultFont() { return defaultFont_; }
 
-  // Snap size to a quantization bucket (≤72 px). Sizes >72 returned as-is.
-  // Snapping is in the *device-independent* (dp) space — texture is loaded at
-  // SnapSize(dpi_size) * GetDpiScale() so the bucket matches the layout.
+  // Exact integer dp size (min 1). Lazy ASCII atlases keep memory bounded, so
+  // coarse bucket snapping is no longer needed.
   static int SnapSize(int size);
 
 private:
-  static Font LoadRobotoFont(FontWeight weight, FontStyle style, int size);
-  static std::unordered_map<FontKey, Font, FontKeyHash> fontCache_;
-  static Font defaultFont_;
-  static bool initialized_;
-  static float dpiScale_;
+  struct CachedFont {
+    Font font = {0};
+    std::unordered_set<int> codepoints;
+  };
 
-  // Custom font registry: name → source (path or in-memory bytes)
   struct FontSource {
     std::string path;
     std::vector<unsigned char> bytes;
     std::vector<int> codepoints;
     bool isMemory = false;
   };
-  static std::unordered_map<std::string, FontSource> fontRegistry_;
-  // Custom font cache: "name:size" → Font
-  static std::unordered_map<std::string, Font> customFontCache_;
 
-  static Font LoadCustomFontFromMemory(const std::vector<unsigned char> &bytes, int size,
+  static Font LoadDefaultUiFont(FontWeight weight, FontStyle style, int size,
+                                const std::vector<int> &codepoints);
+  static Font BakeFont(FontWeight weight, FontStyle style, int size,
+                       const std::vector<int> &codepoints);
+  static Font LoadCustomFontFromMemory(const std::vector<unsigned char> &bytes,
+                                       int size,
                                        const std::vector<int> &codepoints);
   static void InvalidateCustomFontCache(const std::string &name);
+  static std::vector<int> AsciiSeed();
+  static bool UnionCodepointsFromUtf8(std::unordered_set<int> &set,
+                                      std::string_view utf8);
+  static std::vector<int> SortedCodepoints(const std::unordered_set<int> &set);
+
+  static std::unordered_map<FontKey, CachedFont, FontKeyHash> fontCache_;
+  static Font defaultFont_;
+  static bool initialized_;
+  static float dpiScale_;
+  static std::uint64_t fontGeneration_;
+
+  static std::unordered_map<std::string, FontSource> fontRegistry_;
+  // Custom font cache: "name:size" → CachedFont
+  static std::unordered_map<std::string, CachedFont> customFontCache_;
 };
 
 } // namespace raym3

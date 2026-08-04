@@ -2,6 +2,7 @@
 
 #include "raym3/types.h"
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -28,6 +29,7 @@ struct TextLayoutOptions {
   float lineHeight = 20.0f;
   float letterSpacing = 0.0f;
   FontWeight weight = FontWeight::Regular;
+  FontStyle fontStyle = FontStyle::Normal;
   WhiteSpace whiteSpace = WhiteSpace::Normal;
   WordBreak wordBreak = WordBreak::Normal;
   // 0 = unlimited. Clamps the laid-out line count (react-native
@@ -35,7 +37,8 @@ struct TextLayoutOptions {
   int maxLines = 0;
   // Applied to the last kept line when maxLines truncates the text.
   TextOverflow overflow = TextOverflow::Clip;
-  std::string fontFamily; // empty = Roboto; non-empty = registered custom font
+  // empty = platform UI font (or embedded Roboto on web); else registered family
+  std::string fontFamily;
 };
 
 struct PreparedSegment {
@@ -86,7 +89,9 @@ std::string TextCacheKey(const std::string &text, float fontSize, FontWeight wei
                          const std::string &fontFamily = {},
                          WhiteSpace whiteSpace = WhiteSpace::Normal,
                          WordBreak wordBreak = WordBreak::Normal,
-                         float letterSpacing = 0.0f);
+                         float letterSpacing = 0.0f,
+                         FontStyle fontStyle = FontStyle::Normal,
+                         std::uint64_t fontGeneration = 0);
 
 // Deterministic measure for golden tests (ports pretext layout.test.ts measureWidth).
 float DeterministicTestMeasure(std::string_view text, const TextLayoutOptions &opts);

@@ -170,6 +170,10 @@ TextStyle MergeTextStyles(const TextStyle &base,
     result.weight = overrideStyle.weight;
   if (overrideStyle.fontStyle)
     result.fontStyle = overrideStyle.fontStyle;
+  if (overrideStyle.underline)
+    result.underline = overrideStyle.underline;
+  if (overrideStyle.lineThrough)
+    result.lineThrough = overrideStyle.lineThrough;
   if (overrideStyle.alignment)
     result.alignment = overrideStyle.alignment;
   if (overrideStyle.color)

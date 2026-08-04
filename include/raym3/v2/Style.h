@@ -72,6 +72,8 @@ struct TextStyle {
   std::optional<float> letterSpacing;
   std::optional<FontWeight> weight;
   std::optional<FontStyle> fontStyle;
+  std::optional<bool> underline;
+  std::optional<bool> lineThrough;
   std::optional<TextAlignment> alignment;
   std::optional<Color> color;
   std::optional<std::string> fontFamily; // named font registered via registerFont()

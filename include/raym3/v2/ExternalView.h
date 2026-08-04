@@ -33,6 +33,15 @@ struct ExternalViewMutator {
   float opacity = 1.0f;
 };
 
+// A framework-painted shape above a platform view. Retaining the authored
+// corner radius matters on hosts that implement paint ordering with real
+// window/DOM holes: reducing a pill button to its bounding rectangle exposes
+// the framework background around its rounded corners.
+struct ExternalViewOcclusion {
+  Rectangle rect = {0, 0, 0, 0};
+  float radius = 0.0f;
+};
+
 struct ExternalViewComposition {
   int externalViewId = 0;
   Rectangle bounds = {0, 0, 0, 0};
@@ -51,7 +60,7 @@ struct ExternalViewComposition {
   //    `requiresOverlay`).
   //  - Hit testing: the host must let pointer events through to the framework
   //    inside these regions, or content drawn above the view is unclickable.
-  std::vector<Rectangle> occludingRegions;
+  std::vector<ExternalViewOcclusion> occludingRegions;
 
   // False when nothing paints over this view, so the embedder should skip
   // acquiring/selecting an overlay surface. It must still return true from

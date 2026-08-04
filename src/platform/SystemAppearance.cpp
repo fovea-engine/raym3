@@ -5,6 +5,19 @@
 #include <functional>
 #include <thread>
 
+// Platform headers belong at global scope. Including <windows.h> inside
+// namespace raym3 nests every Windows SDK declaration in it, so the COM headers
+// see an incomplete ::_GUID and fail to compile.
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#elif !defined(__APPLE__) && !defined(__ANDROID__)
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#endif
+
 namespace raym3 {
 
 static std::function<void(bool)> g_onChange;
@@ -17,14 +30,6 @@ void platformStartWatcher(std::function<void()> signalChange);
 void platformStopWatcher();
 #elif defined(__ANDROID__)
 bool platformReadSystemDarkMode();
-#elif defined(__EMSCRIPTEN__)
-#include <emscripten.h>
-#elif defined(_WIN32)
-#include <windows.h>
-#else
-#include <cstdio>
-#include <cstdlib>
-#include <string>
 #endif
 
 bool SystemAppearance::IsDarkMode() {

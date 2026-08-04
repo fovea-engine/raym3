@@ -458,6 +458,7 @@ static ComponentState ComputeState(const Node &node) {
 static const PreparedText& GetOrPrepare(const Node* node) {
   float fontSize = node->style.text.fontSize.value_or(16.0f);
   FontWeight weight = node->style.text.weight.value_or(FontWeight::Regular);
+  FontStyle fontStyle = node->style.text.fontStyle.value_or(FontStyle::Normal);
   const std::string& family = node->style.text.fontFamily.value_or(std::string{});
   WhiteSpace whiteSpace = node->style.text.whiteSpace.value_or(
       node->kind == NodeKind::TextInput ? WhiteSpace::PreWrap : WhiteSpace::Normal);
@@ -468,7 +469,8 @@ static const PreparedText& GetOrPrepare(const Node* node) {
       node->style.text.overflow.value_or(TextOverflow::Clip);
   const float lineHeight = ResolveLineHeight(node->style.text, fontSize);
   std::string key = TextCacheKey(node->text, fontSize, weight, family, whiteSpace,
-                                 wordBreak, letterSpacing);
+                                 wordBreak, letterSpacing, fontStyle,
+                                 FontManager::FontGeneration());
   // The prepared layout bakes lineHeight, the clamp and the ellipsis mode, so
   // they have to take part in the cache identity — otherwise a node that gains
   // `numberOfLines` keeps serving its unclamped layout forever.
@@ -481,6 +483,7 @@ static const PreparedText& GetOrPrepare(const Node* node) {
     opts.lineHeight = lineHeight;
     opts.letterSpacing = letterSpacing;
     opts.weight     = weight;
+    opts.fontStyle  = fontStyle;
     opts.fontFamily = family;
     opts.whiteSpace = whiteSpace;
     opts.wordBreak  = wordBreak;
@@ -1675,7 +1678,10 @@ static void RenderTextNode(const Node &node, const Style &style) {
       style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium);
   float letterSpacing = style.text.letterSpacing.value_or(0.25f);
   FontWeight weight = style.text.weight.value_or(FontWeight::Regular);
+  FontStyle fontStyle = style.text.fontStyle.value_or(FontStyle::Normal);
   std::string fontFamily = style.text.fontFamily.value_or(std::string{});
+  const bool underline = style.text.underline.value_or(false);
+  const bool lineThrough = style.text.lineThrough.value_or(false);
   // Reuse the cached PreparedText from Yoga measure phase — no re-measurement.
   const PreparedText& prepared = GetOrPrepare(&node);
   TextLayoutResult layout = LayoutText(prepared, node.layout.width);
@@ -1693,9 +1699,14 @@ static void RenderTextNode(const Node &node, const Style &style) {
   const float halfLeadingDp = std::max(0.0f, (lineHeightDp - fontSize) * 0.5f);
   float y = Density::DpToPx(node.layout.y + halfLeadingDp);
 
-  // Resolve font once — custom family or Roboto.
+  if (fontFamily.empty()) {
+    FontManager::EnsureGlyphsForText(weight, fontStyle, (int)fontSize,
+                                     node.text);
+  } else {
+    FontManager::EnsureGlyphsForFamily(fontFamily, (int)fontSize, node.text);
+  }
   Font resolvedFont = fontFamily.empty()
-      ? Theme::GetFont(fontSize, weight)
+      ? Theme::GetFont(fontSize, weight, fontStyle)
       : FontManager::LoadFontByFamily(fontFamily, (int)fontSize);
 
   // Draw text in pixel space: the font texture was generated at size * dp, so
@@ -1709,6 +1720,11 @@ static void RenderTextNode(const Node &node, const Style &style) {
   rlPushMatrix();
   rlScalef(1.0f / dp, 1.0f / dp, 1.0f);
 
+  const float thicknessPx =
+      std::max(1.0f, Density::DpToPx(std::max(1.0f, fontSize * 0.06f)));
+  const float underlineOffsetPx = Density::DpToPx(fontSize * 0.12f);
+  const float strikeOffsetPx = Density::DpToPx(fontSize * 0.35f);
+
   for (const TextLine &line : layout.lines) {
     float x = Density::DpToPx(node.layout.x);
     TextAlignment alignment = style.text.alignment.value_or(TextAlignment::Left);
@@ -1720,6 +1736,15 @@ static void RenderTextNode(const Node &node, const Style &style) {
     DrawTextWithEmoji(resolvedFont, line.text, {x, y},
                       Density::DpToPx(fontSize),
                       Density::DpToPx(letterSpacing), color);
+    const float lineWidthPx = Density::DpToPx(line.width);
+    if (underline && lineWidthPx > 0.0f) {
+      const float uy = y + Density::DpToPx(fontSize) + underlineOffsetPx;
+      DrawLineEx({x, uy}, {x + lineWidthPx, uy}, thicknessPx, color);
+    }
+    if (lineThrough && lineWidthPx > 0.0f) {
+      const float sy = y + strikeOffsetPx;
+      DrawLineEx({x, sy}, {x + lineWidthPx, sy}, thicknessPx, color);
+    }
     y += Density::DpToPx(prepared.options.lineHeight);
   }
 
@@ -2615,6 +2640,10 @@ static bool NodePaintsContent(const NodePtr &node) {
   if (style.backgroundColor && style.backgroundColor->a > 0) return true;
   if (style.backgroundGradient) return true;
   if (!node->text.empty()) return true;
+  // TextInput paints its own field chrome, glyphs and caret from TextInputProps
+  // rather than the generic Style fields above. Count its full bounds as a
+  // framework layer so a platform view underneath cannot steal its clicks.
+  if (node->kind == NodeKind::TextInput) return true;
   if (style.borderWidth.value_or(0.0f) > 0.0f) return true;
   if (node->customRender) return true;
   if (node->inkRipple) return true;
@@ -2628,7 +2657,7 @@ static bool NodePaintsContent(const NodePtr &node) {
 static void CollectExternalViewOcclusions(
     const NodePtr &node, Rectangle viewport,
     std::vector<std::pair<int, Rectangle>> &seenViews,
-    std::unordered_map<int, std::vector<Rectangle>> &out) {
+    std::unordered_map<int, std::vector<ExternalViewOcclusion>> &out) {
   if (!node || node->style.display == Display::None) return;
 
   if (node->externalViewId != 0) {
@@ -2640,9 +2669,16 @@ static void CollectExternalViewOcclusions(
   }
 
   if (!seenViews.empty() && NodePaintsContent(node)) {
+    const Style occlusionStyle = EffectiveStyle(*node);
+    const float radius = std::max(
+        0.0f, occlusionStyle.borderRadius.value_or(0.0f));
     for (const auto &[viewId, viewRect] : seenViews) {
       if (!RectsOverlap(node->layout, viewRect)) continue;
-      out[viewId].push_back(IntersectRect(node->layout, viewRect));
+      const Rectangle intersection = IntersectRect(node->layout, viewRect);
+      out[viewId].push_back({
+          intersection,
+          std::min(radius,
+                   std::min(intersection.width, intersection.height) * 0.5f)});
     }
   }
 

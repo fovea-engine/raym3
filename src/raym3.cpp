@@ -304,8 +304,8 @@ void Initialize() {
   Theme::Initialize();
   SvgRenderer::Initialize(nullptr); // Auto-detect resource path
 
-#if defined(__APPLE__)
-  // Wire the OS emoji rasterizer on Apple platforms (macOS now; iOS future).
+#if defined(__APPLE__) || defined(_WIN32)
+  // Apple: CoreText (Apple Color Emoji). Windows: DirectWrite/D2D (Segoe UI Emoji).
   raym3::v2::EmojiFont::Instance().SetRasterizer(raym3::v2::PlatformRasterizeEmoji);
 #endif
 

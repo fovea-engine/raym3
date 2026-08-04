@@ -193,6 +193,24 @@ if(APPLE)
     )
 endif()
 
+# EmojiRasterizerWindows.cpp is matched by GLOB_RECURSE; empty TU off-Windows.
+# PUBLIC so the final exe (static raym3) picks up DWrite/D2D/WIC/D3D at link time.
+if(WIN32)
+    target_link_libraries(raym3 PUBLIC dwrite d2d1 windowscodecs ole32 d3d11 dxgi)
+endif()
+
+# Optional fontconfig for Linux system-UI font resolution.
+if(UNIX AND NOT APPLE AND NOT ANDROID AND NOT EMSCRIPTEN)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(RAYM3_FONTCONFIG QUIET fontconfig)
+        if(RAYM3_FONTCONFIG_FOUND)
+            target_include_directories(raym3 PRIVATE ${RAYM3_FONTCONFIG_INCLUDE_DIRS})
+            target_link_libraries(raym3 PRIVATE ${RAYM3_FONTCONFIG_LIBRARIES})
+        endif()
+    endif()
+endif()
+
 set_target_properties(raym3 PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
@@ -285,9 +303,12 @@ else()
     target_compile_definitions(raym3 PRIVATE RAYM3_EMBED_RESOURCES=0)
 endif()
 
+# Material / emoji fonts only — Roboto ships embedded for web and is not
+# packaged for native hosts (those use the platform UI face).
 install(DIRECTORY resources/fonts
     DESTINATION share/raym3/resources
     FILES_MATCHING PATTERN "*.ttf"
+    PATTERN "Roboto" EXCLUDE
 )
 
 if(RAYM3_INSTALL_ALL_ICONS)

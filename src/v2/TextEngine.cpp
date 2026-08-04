@@ -176,12 +176,17 @@ float DefaultMeasure(std::string_view text, const TextLayoutOptions &options) {
   std::string materialized(text);
   Vector2 size;
   if (!options.fontFamily.empty()) {
+    FontManager::EnsureGlyphsForFamily(options.fontFamily,
+                                       (int)options.fontSize, materialized);
     Font font =
         FontManager::LoadFontByFamily(options.fontFamily, (int)options.fontSize);
     size = MeasureTextWithEmoji(font, materialized, options.fontSize,
                                 options.letterSpacing);
   } else {
-    Font font = Theme::GetFont(options.fontSize, options.weight);
+    FontManager::EnsureGlyphsForText(options.weight, options.fontStyle,
+                                     (int)options.fontSize, materialized);
+    Font font =
+        Theme::GetFont(options.fontSize, options.weight, options.fontStyle);
     size = MeasureTextWithEmoji(font, materialized, options.fontSize,
                                 options.letterSpacing);
   }
@@ -441,11 +446,14 @@ TextLayoutResult LayoutText(const PreparedText &prepared, float maxWidth,
 std::string TextCacheKey(const std::string &text, float fontSize,
                          FontWeight weight, const std::string &fontFamily,
                          WhiteSpace whiteSpace, WordBreak wordBreak,
-                         float letterSpacing) {
-  char buf[96];
-  std::snprintf(buf, sizeof(buf), "%.1f:%d:%d:%d:%.2f:", fontSize,
-                static_cast<int>(weight), static_cast<int>(whiteSpace),
-                static_cast<int>(wordBreak), letterSpacing);
+                         float letterSpacing, FontStyle fontStyle,
+                         std::uint64_t fontGeneration) {
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "%.1f:%d:%d:%d:%d:%.2f:%llu:", fontSize,
+                static_cast<int>(weight), static_cast<int>(fontStyle),
+                static_cast<int>(whiteSpace), static_cast<int>(wordBreak),
+                letterSpacing,
+                static_cast<unsigned long long>(fontGeneration));
   std::string key(buf);
   if (!fontFamily.empty()) {
     key += fontFamily;

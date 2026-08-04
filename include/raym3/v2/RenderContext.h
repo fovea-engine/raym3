@@ -126,7 +126,7 @@ struct RenderContext {
   // top of it. Computed once before the paint walk (see
   // CollectExternalViewOcclusions); drives both overlay allocation and the
   // host's pointer hit-testing.
-  std::unordered_map<int, std::vector<Rectangle>> externalViewOcclusions;
+  std::unordered_map<int, std::vector<ExternalViewOcclusion>> externalViewOcclusions;
 
   // Committed (double-buffered) input state. Input ownership queries read
   // these instead of the live stackOrder/parentMap, which are only partially

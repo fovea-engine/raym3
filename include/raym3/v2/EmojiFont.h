@@ -14,13 +14,20 @@ namespace raym3::v2 {
 //
 //   • OS rasterization (preferred, zero bundled storage): each emoji cluster is
 //     drawn by the platform's own emoji renderer into an RGBA bitmap and cached
-//     as a GPU texture. Used on Android (Paint/Canvas via JNI) and macOS
-//     (CoreText). This uses the device's real emoji set, including newer glyphs
-//     and whatever color format the OS ships (e.g. COLRv1).
+//     as a GPU texture. Used on Android (Paint/Canvas via JNI), Apple
+//     (CoreText), and Windows (DirectWrite/D2D Segoe UI Emoji). This uses the
+//     device's real emoji set, including newer glyphs and whatever color format
+//     the OS ships (e.g. COLRv1). When a rasterizer is installed it is the only
+//     automatic backend — there is no silent fall-through to a full bundled TTF.
 //
-//   • Bundled CBDT fallback: parses resources/fonts/NotoColorEmoji.ttf
-//     (CBDT/CBLC bitmaps + GSUB ligatures) when no OS rasterizer is available
-//     (Linux / Windows / web). ~10MB, ships only where needed.
+//   • Windows country-flag exception: Segoe UI Emoji ships no ISO flag glyphs
+//     (regional indicators render as letter pairs like "US"). Flag clusters fall
+//     through to a small bundled `NotoColorEmoji-Flags.ttf` CBDT subset (~0.85 MB).
+//
+//   • Bundled/system CBDT: parses NotoColorEmoji.ttf (CBDT/CBLC + GSUB) when no
+//     OS rasterizer is available (Linux / web), or when an app explicitly calls
+//     loadEmoji()/RegisterCustomEmojiFont. ~10MB; ships only on Linux desktop
+//     and in the web embed.
 //
 // Cluster *segmentation* (which spans are emoji, incl. ZWJ sequences, flags,
 // keycaps and skin-tone modifiers) is Unicode-based and font-independent, so it
@@ -68,13 +75,11 @@ public:
 
   void ResetTextureCache();
 
-  // Register (or replace) the bundled CBDT/CBLC fallback emoji font from
-  // bytes instead of scanning for resources/fonts/NotoColorEmoji.ttf on disk
-  // — lets JS ship a smaller/newer/custom emoji font. Additive to the
-  // existing backend priority: still only used as the fallback when no OS
-  // rasterizer is available (never overrides SetRasterizer). Resets the
-  // resolved backend so the next Available()/GetCluster() call re-picks with
-  // the new bytes.
+  // Register (or replace) a CBDT/CBLC emoji font from bytes instead of scanning
+  // for resources/fonts/NotoColorEmoji.ttf on disk — lets JS ship a
+  // smaller/newer/custom emoji font. Clears any OS rasterizer so the custom
+  // font wins on every platform. Resets the resolved backend so the next
+  // Available()/GetCluster() call re-picks with the new bytes.
   void RegisterCustomEmojiFont(std::vector<std::uint8_t> bytes);
 
   enum class BackendKind { None, OsRasterizer, Bundled, Unresolved };
@@ -85,9 +90,7 @@ public:
 private:
   EmojiFont() = default;
   void EnsureBackend();
-  // One-shot check that the injected rasterizer actually produces ink, so a
-  // platform whose fallback chain lacks emoji coverage degrades to the bundled
-  // font instead of rendering blanks forever.
+  // One-shot check that the injected rasterizer actually produces ink.
   bool ProbeRasterizer();
 
   enum class Backend { Unresolved, None, Raster, Cbdt };
@@ -98,7 +101,12 @@ private:
 
   // ── bundled CBDT backend (parsed only when selected) ──────────────────
   bool LoadCbdtFont();
+  // Windows OS-rasterizer path: load the flags-only CBDT subset for RI pairs.
+  bool LoadFlagsCbdtFont();
+  bool ParseLoadedCbdtFont(const std::string &pathForLog);
   bool fontParsed_ = false;
+  bool flagsFontResolved_ = false;
+  bool flagsFontOk_ = false;
   std::vector<std::uint8_t> data_;
   std::vector<std::uint8_t> customFontBytes_; // pre-seeded via RegisterCustomEmojiFont
 
@@ -132,8 +140,8 @@ private:
   bool DecodeGlyphBitmap(std::uint16_t glyphId, Glyph &out) const;
 };
 
-// Platform emoji rasterizer (defined per-OS, e.g. EmojiRasterizerApple.mm on
-// macOS). Declared here so EmojiFont can auto-wire it where it exists.
+// Platform emoji rasterizer (defined per-OS: EmojiRasterizerApple.mm,
+// EmojiRasterizerWindows.cpp). Declared here so EmojiFont can auto-wire it.
 unsigned char *PlatformRasterizeEmoji(const char *utf8, int px, int *outW,
                                       int *outH);
 
