@@ -1787,12 +1787,19 @@ static void RenderTextNode(const Node &node, const Style &style) {
   // So we render OUTSIDE the host's dp-scaling matrix, at the pixel
   // position. node.layout.x/y is in dp — multiply by dp to get pixels.
   const float dp = Density::GetLayoutDensity();
-  // Split the leading (line-height minus the em box) equally above and below the
-  // text, so a line's glyphs sit centred in their line box — matching CSS/RN. We
-  // previously top-anchored each line (all leading below), which made text sit
+  // Split the leading (line-height minus the glyph box) equally above and below
+  // the text, so a line's glyphs sit centred in their line box — matching CSS/RN.
+  // We previously top-anchored each line (all leading below), which made text sit
   // high in its box and look off-centre inside Yoga-centred containers.
+  // The glyph box is ascent+descent, ~1.17 em on our UI faces — not one em — so
+  // subtracting fontSize here (as this did while font-size still meant the
+  // ascent−descent band) now pushes every line too low.
+  const FontVMetrics faceMetrics =
+      fontFamily.empty() ? FontManager::MetricsFor(weight, fontStyle)
+                         : FontManager::MetricsForFamily(fontFamily);
+  const float glyphBoxDp = fontSize * (faceMetrics.ascent + faceMetrics.descent);
   const float lineHeightDp = prepared.options.lineHeight;
-  const float halfLeadingDp = std::max(0.0f, (lineHeightDp - fontSize) * 0.5f);
+  const float halfLeadingDp = std::max(0.0f, (lineHeightDp - glyphBoxDp) * 0.5f);
   float y = Density::DpToPx(node.layout.y + halfLeadingDp);
 
   if (fontFamily.empty()) {
@@ -1818,8 +1825,12 @@ static void RenderTextNode(const Node &node, const Style &style) {
 
   const float thicknessPx =
       std::max(1.0f, Density::DpToPx(std::max(1.0f, fontSize * 0.06f)));
-  const float underlineOffsetPx = Density::DpToPx(fontSize * 0.12f);
-  const float strikeOffsetPx = Density::DpToPx(fontSize * 0.35f);
+  // Both decorations hang off the baseline (ascent below the draw origin), not
+  // off the top of the line: the underline just under it, the strike through the
+  // middle of the x-height band.
+  const float baselineDp = fontSize * faceMetrics.ascent;
+  const float underlineOffsetPx = Density::DpToPx(baselineDp + fontSize * 0.12f);
+  const float strikeOffsetPx = Density::DpToPx(baselineDp - fontSize * 0.25f);
 
   for (const TextLine &line : layout.lines) {
     float x = Density::DpToPx(node.layout.x);
@@ -1834,7 +1845,7 @@ static void RenderTextNode(const Node &node, const Style &style) {
                       Density::DpToPx(letterSpacing), color);
     const float lineWidthPx = Density::DpToPx(line.width);
     if (underline && lineWidthPx > 0.0f) {
-      const float uy = y + Density::DpToPx(fontSize) + underlineOffsetPx;
+      const float uy = y + underlineOffsetPx;
       DrawLineEx({x, uy}, {x + lineWidthPx, uy}, thicknessPx, color);
     }
     if (lineThrough && lineWidthPx > 0.0f) {

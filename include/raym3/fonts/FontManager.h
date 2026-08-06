@@ -1,5 +1,6 @@
 #pragma once
 
+#include "raym3/fonts/FontMetrics.h"
 #include "raym3/types.h"
 #include <cstdint>
 #include <raylib.h>
@@ -91,6 +92,15 @@ public:
   // coarse bucket snapping is no longer needed.
   static int SnapSize(int size);
 
+  // Em-normalized vertical metrics of the face a text run will actually be
+  // drawn with. Text layout needs these to place a line the way CSS does: the
+  // glyph box is `ascent + descent` em tall, which is ~1.17 em on our UI faces
+  // — NOT one em — so leading and optical centring cannot assume a font-size
+  // tall box. Size-independent, so no size argument.
+  static FontVMetrics MetricsFor(FontWeight weight = FontWeight::Regular,
+                                 FontStyle style = FontStyle::Normal);
+  static FontVMetrics MetricsForFamily(const std::string &name);
+
 private:
   struct CachedFont {
     Font font = {0};
@@ -111,6 +121,9 @@ private:
   static Font LoadCustomFontFromMemory(const std::vector<unsigned char> &bytes,
                                        int size,
                                        const std::vector<int> &codepoints);
+  // Registered families may be given as bare filenames; resolve against the
+  // same search paths the loader uses so metrics and glyphs read one file.
+  static std::string ResolveCustomFontPath(const std::string &path);
   static void InvalidateCustomFontCache(const std::string &name);
   static std::vector<int> AsciiSeed();
   static bool UnionCodepointsFromUtf8(std::unordered_set<int> &set,

@@ -133,10 +133,39 @@ void FontManager::InvalidateLiveDeviceCache() {
   ++fontGeneration_;
 }
 
+namespace {
+
+// raylib bakes with stbtt_ScaleForPixelHeight(), i.e. it fits the font's
+// ascent−descent band into the pixel size it is given. CSS, React Native and
+// Lynx all define font-size as the **em size**, and that band is ~1.17–1.20 em
+// on the faces we ship — so asking raylib for 14 produced an em of ~11.9 and
+// every default label rendered ~15% smaller than the same number does on the
+// web or in React Native.
+//
+// Fix at the only choke point that covers every caller: bake the atlas at
+// `size * emRatio` so the em lands exactly on `size`, then report a baseSize of
+// `size` px. Draw and measure calls keep passing CSS sizes and raylib's
+// `fontSize / baseSize` scale factor resolves to 1:1 texels, so nothing
+// downstream (components, TextEngine, the pixel-space text path in Renderer)
+// has to know. Icon faces are loaded by IconRenderer, not here, and keep their
+// own dp sizing.
+int EmBakePixels(int cssSize, const FontVMetrics &metrics) {
+  const float ratio = metrics.emRatio > 0.0f ? metrics.emRatio : 1.0f;
+  return v2::Density::RasterPixels(static_cast<float>(cssSize) * ratio);
+}
+
+void RebaseToEm(Font &font, int cssSize) {
+  if (font.texture.id == 0) return;
+  font.baseSize = std::max(1, v2::Density::RasterPixels(static_cast<float>(cssSize)));
+}
+
+} // namespace
+
 Font FontManager::LoadDefaultUiFont(FontWeight weight, FontStyle style,
                                     int size,
                                     const std::vector<int> &codepoints) {
-  const int pxSize = v2::Density::RasterPixels(static_cast<float>(size));
+  const FontVMetrics metrics = MetricsFor(weight, style);
+  const int pxSize = EmBakePixels(size, metrics);
 
 #if defined(__EMSCRIPTEN__)
   // Web has no system UI font file API — ship embedded Roboto only here.
@@ -150,9 +179,12 @@ Font FontManager::LoadDefaultUiFont(FontWeight weight, FontStyle style,
     fontData = Roboto_v3_012_hinted_static_Roboto_Regular_ttf;
     fontDataLen = Roboto_v3_012_hinted_static_Roboto_Regular_ttf_len;
   }
-  return LoadFontFromMemory(".ttf", fontData, static_cast<int>(fontDataLen),
-                            pxSize, const_cast<int *>(codepoints.data()),
-                            static_cast<int>(codepoints.size()));
+  Font font =
+      LoadFontFromMemory(".ttf", fontData, static_cast<int>(fontDataLen),
+                         pxSize, const_cast<int *>(codepoints.data()),
+                         static_cast<int>(codepoints.size()));
+  RebaseToEm(font, size);
+  return font;
 #else
   // Native hosts use the platform UI face only — no embedded Roboto fallback.
   std::string path;
@@ -169,8 +201,35 @@ Font FontManager::LoadDefaultUiFont(FontWeight weight, FontStyle style,
     TraceLog(LOG_WARNING, "FontManager: failed to load system UI font '%s'",
              path.c_str());
   }
+  RebaseToEm(font, size);
   return font;
 #endif
+}
+
+FontVMetrics FontManager::MetricsFor(FontWeight weight, FontStyle style) {
+#if defined(__EMSCRIPTEN__)
+  (void)style;
+  const bool bold = weight == FontWeight::Bold || weight == FontWeight::Black;
+  const unsigned char *data =
+      bold ? Roboto_v3_012_hinted_static_Roboto_Bold_ttf
+           : Roboto_v3_012_hinted_static_Roboto_Regular_ttf;
+  const unsigned int len = bold ? Roboto_v3_012_hinted_static_Roboto_Bold_ttf_len
+                                : Roboto_v3_012_hinted_static_Roboto_Regular_ttf_len;
+  return ReadFontVMetrics(data, len);
+#else
+  std::string path;
+  if (!ResolveSystemUiFontPath(weight, style, path)) return {};
+  return ReadFontVMetricsFromFile(path);
+#endif
+}
+
+FontVMetrics FontManager::MetricsForFamily(const std::string &name) {
+  auto reg = fontRegistry_.find(name);
+  if (reg == fontRegistry_.end())
+    return MetricsFor(FontWeight::Regular, FontStyle::Normal);
+  if (reg->second.isMemory)
+    return ReadFontVMetrics(reg->second.bytes.data(), reg->second.bytes.size());
+  return ReadFontVMetricsFromFile(ResolveCustomFontPath(reg->second.path));
 }
 
 Font FontManager::BakeFont(FontWeight weight, FontStyle style, int size,
@@ -218,32 +277,32 @@ void FontManager::EnsureGlyphsForText(FontWeight weight, FontStyle style,
     defaultFont_ = rebuilt;
 }
 
+std::string FontManager::ResolveCustomFontPath(const std::string &path) {
+  if (path.empty() || std::filesystem::path(path).is_absolute()) return path;
+  const std::vector<std::string> searchPaths = {
+      std::string(RAYM3_RESOURCE_DIR) + "/fonts/" + path,
+      std::string(RAYM3_RESOURCE_DIR) + "/" + path,
+      "./resources/fonts/" + path,
+      "./raym3/resources/fonts/" + path,
+      path};
+  for (const auto &testPath : searchPaths)
+    if (std::filesystem::exists(testPath)) return testPath;
+  return path;
+}
+
 Font FontManager::LoadCustomFont(const std::string &path, int size,
                                  const std::vector<int> &codepoints) {
-  std::string resolvedPath = path;
-
-  if (!std::filesystem::path(path).is_absolute()) {
-    std::vector<std::string> searchPaths = {
-        std::string(RAYM3_RESOURCE_DIR) + "/fonts/" + path,
-        std::string(RAYM3_RESOURCE_DIR) + "/" + path,
-        "./resources/fonts/" + path,
-        "./raym3/resources/fonts/" + path,
-        path};
-    for (const auto &testPath : searchPaths) {
-      if (std::filesystem::exists(testPath)) {
-        resolvedPath = testPath;
-        break;
-      }
-    }
-  }
+  const std::string resolvedPath = ResolveCustomFontPath(path);
 
   if (!std::filesystem::exists(resolvedPath)) return {0};
-  const int pxSize = v2::Density::RasterPixels(static_cast<float>(size));
+  const int pxSize = EmBakePixels(size, ReadFontVMetricsFromFile(resolvedPath));
   const std::vector<int> &cps =
       codepoints.empty() ? AsciiSeed() : codepoints;
-  return LoadFontEx(resolvedPath.c_str(), pxSize,
-                    const_cast<int *>(cps.data()),
-                    static_cast<int>(cps.size()));
+  Font font = LoadFontEx(resolvedPath.c_str(), pxSize,
+                         const_cast<int *>(cps.data()),
+                         static_cast<int>(cps.size()));
+  RebaseToEm(font, size);
+  return font;
 }
 
 void FontManager::InvalidateCustomFontCache(const std::string &name) {
@@ -294,12 +353,16 @@ Font FontManager::LoadCustomFontFromMemory(
     const std::vector<unsigned char> &bytes, int size,
     const std::vector<int> &codepoints) {
   if (bytes.empty()) return {0};
-  const int pxSize = v2::Density::RasterPixels(static_cast<float>(size));
+  const int pxSize =
+      EmBakePixels(size, ReadFontVMetrics(bytes.data(), bytes.size()));
   const std::vector<int> &cps =
       codepoints.empty() ? AsciiSeed() : codepoints;
-  return LoadFontFromMemory(".ttf", bytes.data(), static_cast<int>(bytes.size()),
-                            pxSize, const_cast<int *>(cps.data()),
-                            static_cast<int>(cps.size()));
+  Font font =
+      LoadFontFromMemory(".ttf", bytes.data(), static_cast<int>(bytes.size()),
+                         pxSize, const_cast<int *>(cps.data()),
+                         static_cast<int>(cps.size()));
+  RebaseToEm(font, size);
+  return font;
 }
 
 Font FontManager::LoadFontByFamily(const std::string &name, int size) {
