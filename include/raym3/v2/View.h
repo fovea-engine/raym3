@@ -302,7 +302,11 @@ public:
   // Pretext-style two-phase text cache: prepare once (segment + measure),
   // layout many times (pure arithmetic). Invalidated when text or font changes.
   mutable std::optional<PreparedText> preparedTextCache;
-  mutable std::string preparedTextKey; // text + fontSize + weight fingerprint
+  // Font-atlas generation the cached layout was prepared against. Everything
+  // else the cache identity depends on already lives in preparedTextCache
+  // (its `source` and `options`), so it is compared there directly rather than
+  // being re-encoded into a key.
+  mutable std::uint64_t preparedTextGeneration = 0;
 
   bool inNavigationRail = false;
   bool inNavigationBar = false;

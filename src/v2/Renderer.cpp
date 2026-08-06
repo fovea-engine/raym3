@@ -236,6 +236,18 @@ static inline const Style &EffectiveStyleRef(const Node &node, Style &scratch) {
   return scratch;
 }
 
+// Fixed-position-and-painted test without materializing a Style at all. This is
+// the per-child question the paint walk asks, and answering it with a full
+// EffectiveStyle copy was one allocation per child per frame.
+static inline bool EffectiveIsFixedAndVisible(const Node &node) {
+  if (EffectiveStyleIsBase(node))
+    return node.style.position == PositionType::Fixed &&
+           node.style.display != Display::None;
+  Style scratch;
+  const Style &s = EffectiveStyleRef(node, scratch);
+  return s.position == PositionType::Fixed && s.display != Display::None;
+}
+
 // Fixed-position test without materializing a Style at all.
 static inline bool EffectiveIsFixed(const Node &node) {
   if (EffectiveStyleIsBase(node)) return node.style.position == PositionType::Fixed;
@@ -359,13 +371,16 @@ static float FlutterEaseInOutCubicEmphasized(float t) {
 
 // Walks the parent map from `node` up to the root, returning true if
 // `ancestor` is `node` itself or any of its ancestors.
+// Reads the committed map, not the working one: every caller is an input
+// handler running after Render committed the frame, and the working map is
+// swapped out at that point (see the end of Render).
 static bool NodeWithinSubtree(const Node *node, const Node *ancestor) {
   const Node *curr = node;
   while (curr) {
     if (curr == ancestor)
       return true;
-    auto it = Ctx().parentMap.find(const_cast<Node *>(curr));
-    curr = (it != Ctx().parentMap.end()) ? it->second.get() : nullptr;
+    auto it = Ctx().committedParentMap.find(const_cast<Node *>(curr));
+    curr = (it != Ctx().committedParentMap.end()) ? it->second.get() : nullptr;
   }
   return false;
 }
@@ -483,16 +498,34 @@ static const PreparedText& GetOrPrepare(const Node* node) {
   const TextOverflow overflow =
       node->style.text.overflow.value_or(TextOverflow::Clip);
   const float lineHeight = ResolveLineHeight(node->style.text, fontSize);
-  std::string key = TextCacheKey(node->text, fontSize, weight, family, whiteSpace,
-                                 wordBreak, letterSpacing, fontStyle,
-                                 FontManager::FontGeneration());
-  // The prepared layout bakes lineHeight, the clamp and the ellipsis mode, so
-  // they have to take part in the cache identity — otherwise a node that gains
-  // `numberOfLines` keeps serving its unclamped layout forever.
-  key += ':' + std::to_string(static_cast<int>(lineHeight * 100.0f)) + ':' +
-         std::to_string(maxLines) + ':' + std::to_string(static_cast<int>(overflow));
+  // Validate the cache against what it was actually built from. This used to
+  // format a key string per call — snprintf with float conversion, three
+  // to_string calls and a copy of the whole text — and Yoga calls the measure
+  // function that lands here several times per text node per layout pass, so
+  // profiling put ~11% of the frame inside __dtoa. PreparedText already records
+  // its source and options, so nothing has to be encoded at all.
+  //
+  // The comparison reads the cached options in place rather than building a
+  // TextLayoutOptions to compare against: that struct owns a fontFamily string,
+  // so materializing one per call would just trade the old allocation for a
+  // new one on the hit path, which is the path that matters.
+  const std::uint64_t generation = FontManager::FontGeneration();
+  const PreparedText *cached =
+      node->preparedTextCache ? &*node->preparedTextCache : nullptr;
+  const bool valid =
+      cached && node->preparedTextGeneration == generation &&
+      cached->options.fontSize == fontSize &&
+      cached->options.lineHeight == lineHeight &&
+      cached->options.letterSpacing == letterSpacing &&
+      cached->options.weight == weight &&
+      cached->options.fontStyle == fontStyle &&
+      cached->options.whiteSpace == whiteSpace &&
+      cached->options.wordBreak == wordBreak &&
+      cached->options.maxLines == maxLines &&
+      cached->options.overflow == overflow &&
+      cached->options.fontFamily == family && cached->source == node->text;
 
-  if (!node->preparedTextCache || node->preparedTextKey != key) {
+  if (!valid) {
     TextLayoutOptions opts;
     opts.fontSize   = fontSize;
     opts.lineHeight = lineHeight;
@@ -505,7 +538,7 @@ static const PreparedText& GetOrPrepare(const Node* node) {
     opts.maxLines   = maxLines;
     opts.overflow   = overflow;
     node->preparedTextCache = PrepareText(node->text, opts);
-    node->preparedTextKey   = std::move(key);
+    node->preparedTextGeneration = generation;
   }
   return *node->preparedTextCache;
 }
@@ -2106,28 +2139,48 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     break;
   }
 
-  std::vector<NodePtr> children = node->children;
-  std::stable_sort(children.begin(), children.end(),
-                   [](const NodePtr &a, const NodePtr &b) {
-                     return a->zIndex < b->zIndex;
-                   });
-
-  // Collect fixed-position children into the global overlay queue rather than
-  // rendering them in-place — they are painted after all normal content.
+  // Paint order for this node's children.
+  //
+  // This runs for every node, every frame, so it is the hot spot of the paint
+  // pass. It used to copy the child vector (a heap allocation plus a refcount
+  // bump per child), stable_sort it unconditionally, then build a *second*
+  // vector while calling EffectiveStyle by value per child — and Style is a
+  // ~60-optional struct holding vectors and a string, so that is another
+  // allocation each. Almost every node has all-zero zIndex, no fixed children
+  // and no null slots, and in that case the node's own child vector is already
+  // the answer.
+  //
+  // Scan once to find out; only materialize a new vector when the order or the
+  // membership actually has to change.
+  std::vector<NodePtr> reorderedChildren;
+  const std::vector<NodePtr> *paintList = &node->children;
   {
-    std::vector<NodePtr> flowChildren;
-    flowChildren.reserve(children.size());
-    for (const NodePtr &child : children) {
-      if (!child) continue;
-      Style cs = EffectiveStyle(*child);
-      if (cs.position == PositionType::Fixed && cs.display != Display::None) {
-        // Skip rendering in-place; collected recursively in the pre-pass of Render().
-      } else {
-        flowChildren.push_back(child);
-      }
+    bool needsSort = false;
+    bool needsFilter = false;
+    const NodePtr *prev = nullptr;
+    for (const NodePtr &child : node->children) {
+      if (!child) { needsFilter = true; continue; }
+      if (prev && child->zIndex < (*prev)->zIndex) needsSort = true;
+      if (!needsFilter && EffectiveIsFixedAndVisible(*child)) needsFilter = true;
+      prev = &child;
     }
-    children = std::move(flowChildren);
+    if (needsSort || needsFilter) {
+      reorderedChildren.reserve(node->children.size());
+      for (const NodePtr &child : node->children) {
+        // Fixed children are not painted in place — the pre-pass in Render()
+        // collects them into the overlay queue and paints them above everything.
+        if (!child || EffectiveIsFixedAndVisible(*child)) continue;
+        reorderedChildren.push_back(child);
+      }
+      if (needsSort)
+        std::stable_sort(reorderedChildren.begin(), reorderedChildren.end(),
+                         [](const NodePtr &a, const NodePtr &b) {
+                           return a->zIndex < b->zIndex;
+                         });
+      paintList = &reorderedChildren;
+    }
   }
+  const std::vector<NodePtr> &children = *paintList;
 
   // Nav item active-indicator pill. Flutter's NavigationBar does not slide one
   // shared indicator between destinations; each destination owns a pill that
@@ -2650,10 +2703,10 @@ static void CollectFixedNodes(const NodePtr &node, std::vector<FixedNode> &fixed
 
   for (const NodePtr &child : node->children) {
     if (!child) continue;
-    Style cs = EffectiveStyle(*child);
-    if (cs.position == PositionType::Fixed && cs.display != Display::None) {
+    // Whole-tree walk once per frame; the by-value Style it used to build here
+    // was an allocation per node just to read two enums.
+    if (EffectiveIsFixedAndVisible(*child))
       fixedNodes.push_back({child, child->zIndex});
-    }
     CollectFixedNodes(child, fixedNodes);
   }
 }
@@ -2710,7 +2763,8 @@ static void CollectExternalViewOcclusions(
   }
 
   if (!seenViews.empty() && NodePaintsContent(node)) {
-    const Style occlusionStyle = EffectiveStyle(*node);
+    Style occlusionScratch;
+    const Style &occlusionStyle = EffectiveStyleRef(*node, occlusionScratch);
     const float radius = std::max(
         0.0f, occlusionStyle.borderRadius.value_or(0.0f));
     for (const auto &[viewId, viewRect] : seenViews) {
@@ -2845,8 +2899,13 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   // Commit the fully-built stack for input queries. Inline OwnsInput calls made
   // during the next frame's tree walk read this complete snapshot; HitTest runs
   // after Render() so it reads the snapshot just committed for the current frame.
-  Ctx().committedStackOrder = Ctx().stackOrder;
-  Ctx().committedParentMap = Ctx().parentMap;
+  // Swap, do not copy. These are a vector of StackEntry and a map of NodePtr,
+  // both holding shared_ptrs, so copying them cost two large allocations and
+  // 2N atomic refcount operations every frame. The working buffers are cleared
+  // at the top of the next Render, so handing them the old committed storage
+  // also recycles the capacity instead of reallocating it.
+  Ctx().committedStackOrder.swap(Ctx().stackOrder);
+  Ctx().committedParentMap.swap(Ctx().parentMap);
   PublishRenderStats(Ctx().lastStats);
 }
 
@@ -2985,8 +3044,12 @@ const std::vector<Rectangle> &GetDirtyRects() { return Ctx().dirtyRects; }
 
 static bool IsClippedByAncestors(const NodePtr &node, Vector2 point, const std::unordered_map<Node *, NodePtr> &parentMap) {
   Node *curr = node.get();
+  Style scratch;
   while (curr) {
-    Style style = EffectiveStyle(*curr);
+    // By reference: this walks to the root for every hit-test candidate, and
+    // every pointer move runs a hit test. Returning Style by value put a heap
+    // allocation on each step of that walk.
+    const Style &style = EffectiveStyleRef(*curr, scratch);
     if (style.overflow == Overflow::Hidden || style.overflow == Overflow::Scroll) {
       if (!CheckCollisionPointRec(point, curr->layout)) {
         return true; // Clipped!
@@ -3010,7 +3073,8 @@ static const StackEntry *HitEntry(Vector2 point) {
   for (const StackEntry &e : Ctx().committedStackOrder) {
     if (!e.node || e.node->style.display == Display::None || !e.occludes)
       continue;
-    if (!NodeReceivesInput(*e.node, EffectiveStyle(*e.node)))
+    Style hitScratch;
+    if (!NodeReceivesInput(*e.node, EffectiveStyleRef(*e.node, hitScratch)))
       continue;
     if (!CheckCollisionPointRec(point, e.bounds))
       continue;

@@ -39,6 +39,15 @@ struct TextLayoutOptions {
   TextOverflow overflow = TextOverflow::Clip;
   // empty = platform UI font (or embedded Roboto on web); else registered family
   std::string fontFamily;
+
+  bool operator==(const TextLayoutOptions &o) const {
+    return fontSize == o.fontSize && lineHeight == o.lineHeight &&
+           letterSpacing == o.letterSpacing && weight == o.weight &&
+           fontStyle == o.fontStyle && whiteSpace == o.whiteSpace &&
+           wordBreak == o.wordBreak && maxLines == o.maxLines &&
+           overflow == o.overflow && fontFamily == o.fontFamily;
+  }
+  bool operator!=(const TextLayoutOptions &o) const { return !(*this == o); }
 };
 
 struct PreparedSegment {
