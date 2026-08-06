@@ -78,6 +78,22 @@ double FrameTimeMs();
 void MarkTextSelectionOverlayPointerConsumed();
 bool WasTextSelectionOverlayPointerConsumed();
 
+// Whether the pointer is a hover-capable mouse (desktop/web) rather than a
+// touch screen. Gates click-drag text selection: with a mouse, pressing on
+// selectable text starts a selection; on touch the same drag must scroll, so
+// selection waits for a long-press. Default true (standalone desktop apps);
+// touch-first hosts set false once at startup.
+void SetPointerIsMouse(bool isMouse);
+bool PointerIsMouse();
+
+// Hosts whose input arrives as discrete events (web pointerdown, native
+// mouse-down) can report the platform's own click count for the press about to
+// be delivered. Multi-click detection then does not depend on the engine
+// observing every press edge — a rapid double-click can coalesce into one
+// queued touch and still select a word. 0 = no host value; fall back to timing.
+void SetHostClickCount(int count);
+int TakeHostClickCount();
+
 // Programmatic focus control.
 void SetFocusedNode(const NodePtr &node);
 void RequestFocus(const NodePtr &node);

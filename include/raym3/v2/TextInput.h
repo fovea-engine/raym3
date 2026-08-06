@@ -32,6 +32,30 @@ struct TextInputDragSelectionUpdate {
   bool applied = false;
 };
 
+
+// ─── Native selection UI host ───────────────────────────────────────────────
+// When a host registers these, the engine stops drawing its own selection
+// toolbar and instead asks the platform to present its native edit menu
+// (Android floating ActionMode, iOS UIEditMenuInteraction) anchored at the
+// selection. Handles stay engine-drawn (per-platform styled, like Flutter).
+struct SelectionMenuRequest {
+  Rectangle anchor{};   // selection bounds, dp, window space
+  bool canCut = false;  // editable target with a selection
+  bool canPaste = false;
+  bool canSelectAll = true;
+};
+void SetSelectionMenuHost(std::function<void(const SelectionMenuRequest &)> show,
+                          std::function<void()> hide);
+bool SelectionMenuHostActive();
+// Host menu action: "cut" | "copy" | "paste" | "selectAll". Call on the
+// engine/render thread.
+void PerformSelectionMenuAction(const std::string &action);
+
+// Selection handle look. Material (default) is the Android teardrop; Cupertino
+// is the iOS lollipop. Hosts set once at startup.
+enum class SelectionHandleStyle { Material, Cupertino };
+void SetSelectionHandleStyle(SelectionHandleStyle style);
+
 void PaintTextInput(Node &node);
 void ResyncTextInputBuffer(NodeId nodeId, int cursorPos);
 void SetTextInputHostHooks(TextInputHostHooks hooks);

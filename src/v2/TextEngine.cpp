@@ -172,26 +172,6 @@ MergeKeepAllUnits(std::string_view segText, const std::vector<CjkUnit> &units,
   return merged;
 }
 
-float DefaultMeasure(std::string_view text, const TextLayoutOptions &options) {
-  std::string materialized(text);
-  Vector2 size;
-  if (!options.fontFamily.empty()) {
-    FontManager::EnsureGlyphsForFamily(options.fontFamily,
-                                       (int)options.fontSize, materialized);
-    Font font =
-        FontManager::LoadFontByFamily(options.fontFamily, (int)options.fontSize);
-    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
-                                options.letterSpacing);
-  } else {
-    FontManager::EnsureGlyphsForText(options.weight, options.fontStyle,
-                                     (int)options.fontSize, materialized);
-    Font font =
-        Theme::GetFont(options.fontSize, options.weight, options.fontStyle);
-    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
-                                options.letterSpacing);
-  }
-  return size.x;
-}
 
 float AddLetterSpacing(float width, std::string_view text, float letterSpacing,
                        SegmentBreakKind kind) {
@@ -272,6 +252,29 @@ void PushMeasuredTextSegment(PreparedText &prepared, std::string text,
 }
 
 } // namespace
+
+// Public (declared in TextEngine.h): selection hit-testing must measure with
+// exactly the same widths layout used.
+float DefaultMeasure(std::string_view text, const TextLayoutOptions &options) {
+  std::string materialized(text);
+  Vector2 size;
+  if (!options.fontFamily.empty()) {
+    FontManager::EnsureGlyphsForFamily(options.fontFamily,
+                                       (int)options.fontSize, materialized);
+    Font font =
+        FontManager::LoadFontByFamily(options.fontFamily, (int)options.fontSize);
+    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
+                                options.letterSpacing);
+  } else {
+    FontManager::EnsureGlyphsForText(options.weight, options.fontStyle,
+                                     (int)options.fontSize, materialized);
+    Font font =
+        Theme::GetFont(options.fontSize, options.weight, options.fontStyle);
+    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
+                                options.letterSpacing);
+  }
+  return size.x;
+}
 
 std::vector<std::size_t> GraphemeBoundaries(std::string_view text) {
   return EmojiAwareGraphemeBoundaries(text);

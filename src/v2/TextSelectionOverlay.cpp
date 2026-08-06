@@ -4,6 +4,7 @@
 #include "raym3/styles/Theme.h"
 #include "raym3/v2/Input.h"
 #include "raym3/v2/TextInput.h"
+#include "raym3/v2/TextSelection.h"
 
 #include <algorithm>
 #include <cmath>
@@ -24,20 +25,92 @@ constexpr float kToolbarYGap = 8.0f;
 
 enum class TextHandleType { Left, Right, Collapsed };
 
-Node *FocusedTextInput() {
+// The overlay serves two selection sources: editable TextInput nodes and
+// read-only `selectable` Text nodes. Sel* wrappers dispatch on the kind.
+bool IsSelectableTextTarget(const Node &node) {
+  return node.kind == NodeKind::Text;
+}
+
+Node *FocusedSelectionTarget() {
   NodeId id = GetFocusedId();
   if (!id)
     return nullptr;
   auto *node = reinterpret_cast<Node *>(id);
-  if (!node || node->kind != NodeKind::TextInput)
+  if (!node)
     return nullptr;
-  // A field backed by a real platform editor owns its own selection UI: the
-  // UITextField/EditText draws the caret, the drag handles, and the
-  // cut/copy/paste menu. Painting raym3's overlay on top would double every
-  // one of them, so the renderer stays out of the way entirely.
-  if (node->textInput.nativeEditor)
-    return nullptr;
-  return node;
+  if (node->kind == NodeKind::TextInput) {
+    // A field backed by a real platform editor owns its own selection UI: the
+    // UITextField/EditText draws the caret, the drag handles, and the
+    // cut/copy/paste menu. Painting raym3's overlay on top would double every
+    // one of them, so the renderer stays out of the way entirely.
+    if (node->textInput.nativeEditor)
+      return nullptr;
+    return node;
+  }
+  if (NodeIsSelectableText(*node))
+    return node;
+  return nullptr;
+}
+
+Rectangle SelBounds(Node &node) {
+  return IsSelectableTextTarget(node) ? TextNodeBounds(node)
+                                      : TextInputInputBounds(node);
+}
+
+float SelByteOffsetX(Node &node, int off) {
+  return IsSelectableTextTarget(node) ? TextNodeByteOffsetX(node, off)
+                                      : TextInputByteOffsetX(node, off);
+}
+
+float SelByteOffsetY(Node &node, int off) {
+  return IsSelectableTextTarget(node) ? TextNodeByteOffsetY(node, off)
+                                      : TextInputByteOffsetY(node, off);
+}
+
+float SelLineCenterY(Node &node, int off) {
+  return IsSelectableTextTarget(node) ? TextNodeLineCenterY(node, off)
+                                      : TextInputLineCenterY(node, off);
+}
+
+float SelPreferredLineHeight(Node &node) {
+  return IsSelectableTextTarget(node) ? TextNodePreferredLineHeight(node)
+                                      : TextInputPreferredLineHeight(node);
+}
+
+int SelHitTestCaret(Node &node, Vector2 pos) {
+  return IsSelectableTextTarget(node) ? TextNodeHitTestCaret(node, pos)
+                                      : TextInputHitTestCaret(node, pos);
+}
+
+int SelTextLength(Node &node) {
+  return IsSelectableTextTarget(node) ? TextNodeTextLength(node)
+                                      : TextInputTextLength(node);
+}
+
+void SelSetSelection(Node &node, int start, int end, int cursor) {
+  if (IsSelectableTextTarget(node))
+    TextNodeSetSelection(node, start, end);
+  else
+    TextInputSetSelection(node, start, end, cursor);
+}
+
+// Toolbar layout differs per target: editable fields offer Cut/Copy/Paste/All,
+// read-only text only Copy/All.
+struct ToolbarButton {
+  const char *label;
+  float width;
+};
+
+int SelToolbarButtons(Node &node, const ToolbarButton *&buttons) {
+  static const ToolbarButton kInputButtons[] = {
+      {"Cut", 42}, {"Copy", 50}, {"Paste", 54}, {"All", 74}};
+  static const ToolbarButton kTextButtons[] = {{"Copy", 50}, {"All", 74}};
+  if (IsSelectableTextTarget(node)) {
+    buttons = kTextButtons;
+    return 2;
+  }
+  buttons = kInputButtons;
+  return 4;
 }
 
 bool HasSelection(Node &node, int &start, int &end) {
@@ -48,6 +121,21 @@ bool HasSelection(Node &node, int &start, int &end) {
   if (start > end)
     std::swap(start, end);
   return true;
+}
+
+// Native selection-menu host state (see SetSelectionMenuHost below). Defined
+// early: PaintToolbar and DrawHandle consult them.
+std::function<void(const SelectionMenuRequest &)> &MenuShowFn() {
+  static std::function<void(const SelectionMenuRequest &)> fn;
+  return fn;
+}
+std::function<void()> &MenuHideFn() {
+  static std::function<void()> fn;
+  return fn;
+}
+SelectionHandleStyle &HandleStyle() {
+  static SelectionHandleStyle style = SelectionHandleStyle::Material;
+  return style;
 }
 
 Vector2 HandleAnchor(TextHandleType type) {
@@ -90,16 +178,17 @@ Rectangle ToolbarRect(Node &node) {
   int start = 0;
   int end = 0;
   bool hasSelection = HasSelection(node, start, end);
-  Rectangle input = TextInputInputBounds(node);
+  Rectangle input = SelBounds(node);
   float startX = hasSelection
-                     ? TextInputByteOffsetX(node, start)
-                     : TextInputByteOffsetX(node, node.textEdit.cursor);
-  float endX = hasSelection ? TextInputByteOffsetX(node, end) : startX;
+                     ? SelByteOffsetX(node, start)
+                     : SelByteOffsetX(node, node.textEdit.cursor);
+  float endX = hasSelection ? SelByteOffsetX(node, end) : startX;
   float centerX = (startX + endX) * 0.5f;
-  const float widths[] = {42, 50, 54, 74};
-  float totalW = kToolbarPad * 2.0f + kToolbarGap * 3.0f;
-  for (float w : widths)
-    totalW += w;
+  const ToolbarButton *buttons = nullptr;
+  const int count = SelToolbarButtons(node, buttons);
+  float totalW = kToolbarPad * 2.0f + kToolbarGap * (float)(count - 1);
+  for (int i = 0; i < count; ++i)
+    totalW += buttons[i].width;
   float x = std::clamp(centerX - totalW * 0.5f, input.x,
                        std::max(input.x, input.x + input.width - totalW));
   float y = input.y - kToolbarH - kToolbarYGap;
@@ -112,15 +201,16 @@ bool PointInToolbarButton(Node &node, Vector2 p, int &buttonIndex) {
   Rectangle r = ToolbarRect(node);
   if (!CheckCollisionPointRec(p, r))
     return false;
-  const float widths[] = {42, 50, 54, 74};
+  const ToolbarButton *buttons = nullptr;
+  const int count = SelToolbarButtons(node, buttons);
   float x = r.x + kToolbarPad;
-  for (int i = 0; i < 4; ++i) {
-    Rectangle b{x, r.y + 4.0f, widths[i], r.height - 8.0f};
+  for (int i = 0; i < count; ++i) {
+    Rectangle b{x, r.y + 4.0f, buttons[i].width, r.height - 8.0f};
     if (CheckCollisionPointRec(p, b)) {
       buttonIndex = i;
       return true;
     }
-    x += widths[i] + kToolbarGap;
+    x += buttons[i].width + kToolbarGap;
   }
   return true;
 }
@@ -141,12 +231,12 @@ void BeginHandleDrag(Node &node, bool startHandle, int start, int end,
   edit.activeHandleOffset = startHandle ? start : end;
   edit.activeHandleDragY = pointer.y;
   edit.activeHandleDragTargetY =
-      TextInputLineCenterY(node, edit.activeHandleOffset) - pointer.y;
+      SelLineCenterY(node, edit.activeHandleOffset) - pointer.y;
   edit.toolbarVisible = false;
 }
 
 float SnappedHandleDragY(Node &node, float dragY, float handleY) {
-  const float lineHeight = std::max(1.0f, TextInputPreferredLineHeight(node));
+  const float lineHeight = std::max(1.0f, SelPreferredLineHeight(node));
   const float distanceDragged = dragY - handleY;
   const float dragDirection = distanceDragged < 0.0f ? -1.0f : 1.0f;
   const float linesDragged =
@@ -160,7 +250,7 @@ int HitTestHandleDragTarget(Node &node, Vector2 pointer) {
       SnappedHandleDragY(node, pointer.y, edit.activeHandleDragY);
   edit.activeHandleDragY = snappedY;
   Vector2 target = {pointer.x, snappedY + edit.activeHandleDragTargetY};
-  return TextInputHitTestCaret(node, target);
+  return SelHitTestCaret(node, target);
 }
 
 void UpdateDraggedSelection(Node &node, int currentOffset) {
@@ -171,16 +261,16 @@ void UpdateDraggedSelection(Node &node, int currentOffset) {
   TextInputDragSelectionUpdate update = TextInputResolveDraggedSelection(
       draggedHandle == 0 ? TextInputDraggedEdge::Start
                          : TextInputDraggedEdge::End,
-      anchor, currentOffset, TextInputTextLength(node));
+      anchor, currentOffset, SelTextLength(node));
   if (!update.applied)
     return;
 
-  TextInputSetSelection(node, update.selectionStart, update.selectionEnd,
-                        update.cursor);
+  SelSetSelection(node, update.selectionStart, update.selectionEnd,
+                  update.cursor);
   edit.activeHandle = draggedHandle;
   edit.activeHandleAnchor = anchor;
   edit.activeHandleOffset = update.cursor;
-  edit.activeHandleDragY = TextInputLineCenterY(node, update.cursor) -
+  edit.activeHandleDragY = SelLineCenterY(node, update.cursor) -
                            edit.activeHandleDragTargetY;
 }
 
@@ -192,7 +282,30 @@ TextHandleType VisualHandleType(int offset, int anchor) {
   return TextHandleType::Collapsed;
 }
 
+void DrawCupertinoHandle(float x, float y, TextHandleType type) {
+  // iOS lollipop: 2dp bar the height of a line with a 5dp ball — ball on top
+  // for the start handle, on the bottom for the end handle.
+  Color color = Theme::GetColorScheme().primary;
+  const float barW = 2.0f;
+  const float barH = 18.0f;
+  const float ballR = 5.0f;
+  if (type == TextHandleType::Collapsed) {
+    DrawCircleV({x, y + ballR}, ballR, color);
+    return;
+  }
+  const float top = y - barH;
+  DrawRectangleRec({x - barW * 0.5f, top, barW, barH}, color);
+  if (type == TextHandleType::Left)
+    DrawCircleV({x, top - ballR + 1.0f}, ballR, color);
+  else
+    DrawCircleV({x, y + ballR - 1.0f}, ballR, color);
+}
+
 void DrawHandle(float x, float y, TextHandleType type) {
+  if (HandleStyle() == SelectionHandleStyle::Cupertino) {
+    DrawCupertinoHandle(x, y, type);
+    return;
+  }
   Color color = Theme::GetColorScheme().primary;
   Vector2 topLeft = HandleTopLeft(x, y, type);
   Vector2 center = {topLeft.x + kHandleRadius, topLeft.y + kHandleRadius};
@@ -228,26 +341,135 @@ void DrawHandle(float x, float y, TextHandleType type) {
 void PaintToolbar(Node &node) {
   if (!node.textEdit.toolbarVisible)
     return;
+  if (MenuShowFn()) // native menu host owns the toolbar UI
+    return;
   Rectangle r = ToolbarRect(node);
   ColorScheme &scheme = Theme::GetColorScheme();
   DrawRectangleRounded(r, 0.22f, 8, scheme.inverseSurface);
-  const char *labels[] = {"Cut", "Copy", "Paste", "All"};
-  const float widths[] = {42, 50, 54, 74};
+  const ToolbarButton *buttons = nullptr;
+  const int count = SelToolbarButtons(node, buttons);
   float x = r.x + kToolbarPad;
-  for (int i = 0; i < 4; ++i) {
-    Rectangle b{x, r.y + 4.0f, widths[i], r.height - 8.0f};
+  for (int i = 0; i < count; ++i) {
+    Rectangle b{x, r.y + 4.0f, buttons[i].width, r.height - 8.0f};
     DrawRectangleRounded(b, 0.2f, 6, ColorAlpha(scheme.inverseSurface, 0.0f));
-    raym3::Renderer::DrawText(labels[i], {b.x + 8.0f, b.y + 7.0f}, 13.0f,
+    raym3::Renderer::DrawText(buttons[i].label, {b.x + 8.0f, b.y + 7.0f}, 13.0f,
                               scheme.inverseOnSurface, FontWeight::Medium);
-    x += widths[i] + kToolbarGap;
+    x += buttons[i].width + kToolbarGap;
   }
 }
 
 } // namespace
 
+// ─── Native selection UI host ───────────────────────────────────────────────
+
+namespace {
+bool g_menuShown = false;
+Rectangle g_menuAnchor{};
+
+// Frame-synced: called from PaintTextSelectionOverlay with the current target
+// (or null). Shows/moves/hides the platform menu to match toolbarVisible.
+void SyncSelectionMenuHost(Node *node) {
+  if (!MenuShowFn())
+    return;
+  int start = 0, end = 0;
+  const bool wants = node && node->textEdit.toolbarVisible &&
+                     HasSelection(*node, start, end);
+  if (!wants) {
+    if (g_menuShown) {
+      g_menuShown = false;
+      if (MenuHideFn())
+        MenuHideFn()();
+    }
+    return;
+  }
+  const float lineH = std::max(1.0f, SelPreferredLineHeight(*node));
+  const float sx = SelByteOffsetX(*node, start);
+  const float ex = SelByteOffsetX(*node, end);
+  const float sy = SelByteOffsetY(*node, start);
+  const float ey = SelByteOffsetY(*node, end);
+  Rectangle anchor;
+  anchor.x = std::min(sx, ex);
+  anchor.width = std::max(1.0f, std::fabs(ex - sx));
+  anchor.y = std::min(sy, ey) - lineH;
+  anchor.height = std::max(lineH, std::fabs(ey - sy) + lineH);
+  // Pad by exactly how far the handles hang past the selection so the platform
+  // positions its menu clear of them — no more. The OS adds its own gap on top
+  // of this rect, so any extra here reads as a floating, disconnected menu.
+  if (HandleStyle() == SelectionHandleStyle::Cupertino) {
+    // Lollipop: ball above the start handle, ball below the end handle.
+    anchor.y -= 6.0f;
+    anchor.height += 6.0f + 10.0f;
+  } else {
+    // Material teardrop hangs below the line; nothing above.
+    anchor.height += kHandleSize;
+  }
+  const bool moved = std::fabs(anchor.x - g_menuAnchor.x) > 2.0f ||
+                     std::fabs(anchor.y - g_menuAnchor.y) > 2.0f ||
+                     std::fabs(anchor.width - g_menuAnchor.width) > 2.0f ||
+                     std::fabs(anchor.height - g_menuAnchor.height) > 2.0f;
+  if (g_menuShown && !moved)
+    return;
+  g_menuShown = true;
+  g_menuAnchor = anchor;
+  SelectionMenuRequest request;
+  request.anchor = anchor;
+  const bool editable = !IsSelectableTextTarget(*node);
+  request.canCut = editable;
+  request.canPaste = editable;
+  request.canSelectAll = true;
+  MenuShowFn()(request);
+}
+} // namespace
+
+void SetSelectionMenuHost(std::function<void(const SelectionMenuRequest &)> show,
+                          std::function<void()> hide) {
+  MenuShowFn() = std::move(show);
+  MenuHideFn() = std::move(hide);
+}
+
+bool SelectionMenuHostActive() { return static_cast<bool>(MenuShowFn()); }
+
+void SetSelectionHandleStyle(SelectionHandleStyle style) {
+  HandleStyle() = style;
+}
+
+void PerformSelectionMenuAction(const std::string &action) {
+  Node *node = FocusedSelectionTarget();
+  if (!node)
+    return;
+  TextEditState &edit = node->textEdit;
+  if (IsSelectableTextTarget(*node)) {
+    if (action == "copy") { // dismisses the selection, like RN/Android
+      TextNodeCopy(*node);
+      TextNodeClearSelection(*node);
+    } else if (action == "selectAll") {
+      TextNodeSelectAll(*node);
+      // Handles + toolbar are a touch affordance. On a mouse host (desktop,
+      // web) a Cmd+A that popped a floating Copy bar would be off-convention.
+      edit.handlesVisible = !PointerIsMouse();
+      edit.toolbarVisible = !PointerIsMouse();
+      return;
+    }
+  } else {
+    if (action == "cut")
+      TextInputCut(*node);
+    else if (action == "copy")
+      TextInputCopy(*node);
+    else if (action == "paste")
+      TextInputPaste(*node);
+    else if (action == "selectAll") {
+      TextInputSelectAll(*node);
+      edit.handlesVisible = !PointerIsMouse();
+      edit.toolbarVisible = !PointerIsMouse();
+      return;
+    }
+  }
+  edit.toolbarVisible = false;
+}
+
 bool HandleTextSelectionOverlayInput(const NodePtr &root) {
   (void)root;
-  Node *node = FocusedTextInput();
+  Node *node = FocusedSelectionTarget();
   if (!node)
     return false;
   TextEditState &edit = node->textEdit;
@@ -260,24 +482,35 @@ bool HandleTextSelectionOverlayInput(const NodePtr &root) {
   if (!visible)
     return false;
 
-  float startY = hasSelection ? TextInputByteOffsetY(*node, start)
-                              : TextInputByteOffsetY(*node, edit.cursor);
-  float endY = hasSelection ? TextInputByteOffsetY(*node, end) : startY;
-  float startX = hasSelection ? TextInputByteOffsetX(*node, start)
-                              : TextInputByteOffsetX(*node, edit.cursor);
-  float endX = hasSelection ? TextInputByteOffsetX(*node, end) : startX;
+  float startY = hasSelection ? SelByteOffsetY(*node, start)
+                              : SelByteOffsetY(*node, edit.cursor);
+  float endY = hasSelection ? SelByteOffsetY(*node, end) : startY;
+  float startX = hasSelection ? SelByteOffsetX(*node, start)
+                              : SelByteOffsetX(*node, edit.cursor);
+  float endX = hasSelection ? SelByteOffsetX(*node, end) : startX;
 
   if (p.pressed) {
     int button = -1;
-    if (edit.toolbarVisible && PointInToolbarButton(*node, p.pos, button)) {
-      if (button == 0)
-        TextInputCut(*node);
-      else if (button == 1)
-        TextInputCopy(*node);
-      else if (button == 2)
-        TextInputPaste(*node);
-      else if (button == 3)
-        TextInputSelectAll(*node);
+    if (edit.toolbarVisible && !SelectionMenuHostActive() &&
+        PointInToolbarButton(*node, p.pos, button)) {
+      if (IsSelectableTextTarget(*node)) {
+        if (button == 0) { // Copy dismisses the selection, like RN/Android.
+          TextNodeCopy(*node);
+          TextNodeClearSelection(*node);
+        } else if (button == 1) {
+          TextNodeSelectAll(*node);
+          edit.handlesVisible = true;
+        }
+      } else {
+        if (button == 0)
+          TextInputCut(*node);
+        else if (button == 1)
+          TextInputCopy(*node);
+        else if (button == 2)
+          TextInputPaste(*node);
+        else if (button == 3)
+          TextInputSelectAll(*node);
+      }
       edit.toolbarVisible = false;
       MarkTextSelectionOverlayPointerConsumed();
       return true;
@@ -298,7 +531,7 @@ bool HandleTextSelectionOverlayInput(const NodePtr &root) {
       MarkTextSelectionOverlayPointerConsumed();
       return true;
     }
-    if (!CheckCollisionPointRec(p.pos, TextInputInputBounds(*node))) {
+    if (!CheckCollisionPointRec(p.pos, SelBounds(*node))) {
       edit.handlesVisible = false;
       edit.toolbarVisible = false;
       ClearActiveHandle(edit);
@@ -332,7 +565,8 @@ bool HandleTextSelectionOverlayInput(const NodePtr &root) {
 
 void PaintTextSelectionOverlay(const NodePtr &root) {
   (void)root;
-  Node *node = FocusedTextInput();
+  Node *node = FocusedSelectionTarget();
+  SyncSelectionMenuHost(node);
   if (!node)
     return;
   int start = 0;
@@ -347,19 +581,19 @@ void PaintTextSelectionOverlay(const NodePtr &root) {
         edit.activeHandleOffset >= 0) {
       const int active = edit.activeHandleOffset;
       const int anchor = edit.activeHandleAnchor;
-      DrawHandle(TextInputByteOffsetX(*node, active),
-                 TextInputByteOffsetY(*node, active),
+      DrawHandle(SelByteOffsetX(*node, active),
+                 SelByteOffsetY(*node, active),
                  VisualHandleType(active, anchor));
       if (active != anchor) {
-        DrawHandle(TextInputByteOffsetX(*node, anchor),
-                   TextInputByteOffsetY(*node, anchor),
+        DrawHandle(SelByteOffsetX(*node, anchor),
+                   SelByteOffsetY(*node, anchor),
                    VisualHandleType(anchor, active));
       }
     } else {
-      DrawHandle(TextInputByteOffsetX(*node, start),
-                 TextInputByteOffsetY(*node, start), TextHandleType::Left);
-      DrawHandle(TextInputByteOffsetX(*node, end),
-                 TextInputByteOffsetY(*node, end), TextHandleType::Right);
+      DrawHandle(SelByteOffsetX(*node, start),
+                 SelByteOffsetY(*node, start), TextHandleType::Left);
+      DrawHandle(SelByteOffsetX(*node, end),
+                 SelByteOffsetY(*node, end), TextHandleType::Right);
     }
   }
   PaintToolbar(*node);

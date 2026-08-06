@@ -80,6 +80,10 @@ using MeasureTextCallback =
     std::function<float(std::string_view, const TextLayoutOptions &)>;
 
 std::vector<std::size_t> GraphemeBoundaries(std::string_view text);
+// The measure used when PrepareText/LayoutText get no callback (raylib font
+// metrics + letter spacing). Public so selection hit-testing measures with
+// exactly the same widths the layout was built from.
+float DefaultMeasure(std::string_view text, const TextLayoutOptions &options);
 PreparedText PrepareText(std::string text, const TextLayoutOptions &options,
                          MeasureTextCallback measure = {});
 TextLayoutResult LayoutText(const PreparedText &prepared, float maxWidth,

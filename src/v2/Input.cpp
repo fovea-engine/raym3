@@ -6,6 +6,19 @@ namespace raym3::v2 {
 void SetPendingPressId(NodeId id) { Ctx().input.pendingPress = id; }
 NodeId GetPendingPressId() { return Ctx().input.pendingPress; }
 
+// Process-wide, not per-context: the input device doesn't change per screen.
+static int g_hostClickCount = 0;
+void SetHostClickCount(int count) { g_hostClickCount = count; }
+int TakeHostClickCount() {
+  const int count = g_hostClickCount;
+  g_hostClickCount = 0;
+  return count;
+}
+
+static bool g_pointerIsMouse = true;
+void SetPointerIsMouse(bool isMouse) { g_pointerIsMouse = isMouse; }
+bool PointerIsMouse() { return g_pointerIsMouse; }
+
 void ForgetInputNode(Node *n) {
   if (!n)
     return;

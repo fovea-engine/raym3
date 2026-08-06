@@ -79,6 +79,9 @@ struct TextStyle {
   std::optional<std::string> fontFamily; // named font registered via registerFont()
   std::optional<WhiteSpace> whiteSpace;
   std::optional<WordBreak> wordBreak;
+  // react-native Text `selectable`: read-only selection (long-press / mouse
+  // drag / copy). Only meaningful on NodeKind::Text.
+  std::optional<bool> selectable;
 };
 
 struct LinearGradientStop {

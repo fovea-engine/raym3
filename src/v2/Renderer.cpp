@@ -2,6 +2,7 @@
 #include "raym3/v2/TextSelectionOverlay.h"
 #include "raym3/v2/RenderContext.h"
 #include "raym3/v2/TextInput.h"
+#include "raym3/v2/TextSelection.h"
 
 #include "raym3/components/Button.h"
 #include "raym3/fonts/FontManager.h"
@@ -396,7 +397,9 @@ static bool NodeIsInteractive(const Node &node) {
          node.onRequestClose || node.onLongPress || node.onPressIn ||
          node.onPressOut || node.onDragStart || node.onDragMove ||
          node.onDragEnd || node.focusable || IsControlKind(node.kind) ||
-         node.kind == NodeKind::Button || node.kind == NodeKind::TextInput;
+         node.kind == NodeKind::Button || node.kind == NodeKind::TextInput ||
+         (node.kind == NodeKind::Text &&
+          node.style.text.selectable.value_or(false));
 }
 
 // True if the committed hovered/active node is `node` itself or a descendant
@@ -493,6 +496,12 @@ static const PreparedText& GetOrPrepare(const Node* node) {
     node->preparedTextKey   = std::move(key);
   }
   return *node->preparedTextCache;
+}
+
+// Public accessor for TextSelection.cpp: selection geometry must be derived
+// from exactly the prepare/layout the renderer draws with.
+const PreparedText &GetPreparedTextForNode(const Node &node) {
+  return GetOrPrepare(&node);
 }
 
 static float ClampScrollOffset(float offset, float contentSize, float viewportSize) {
@@ -1686,6 +1695,21 @@ static void RenderTextNode(const Node &node, const Style &style) {
   const PreparedText& prepared = GetOrPrepare(&node);
   TextLayoutResult layout = LayoutText(prepared, node.layout.width);
   Color color = ApplyRenderOpacity(ResolveTextColor(style.text.color));
+
+  // Selection highlight for `selectable` Text — drawn in dp space (ambient
+  // matrix) before the glyphs. Zero cost when the flag is off.
+  if (style.text.selectable.value_or(false)) {
+    const int selStart = node.textEdit.selectionStart;
+    const int selEnd = node.textEdit.selectionEnd;
+    if (selStart >= 0 && selEnd >= 0 && selStart != selEnd) {
+      Color selColor = Theme::GetColorScheme().primary;
+      selColor.a = 76;
+      if (node.textInput.hasSelectionColor)
+        selColor = node.textInput.selectionColor;
+      for (const Rectangle &r : TextNodeSelectionRects(node, selStart, selEnd))
+        DrawRectangleRec(r, ApplyRenderOpacity(selColor));
+    }
+  }
   // Layout coords are in dp; the font texture was generated at pixel size
   // (size * GetDpiScale()) and we want to sample it 1:1, not 1:(1/dp).
   // So we render OUTSIDE the host's dp-scaling matrix, at the pixel
@@ -3813,6 +3837,199 @@ static void ReleaseActive(Node *an, Vector2 pt, const Node *releaseTarget) {
   }
 }
 
+// Read-only selection on `selectable` Text nodes. Runs after the handle/
+// toolbar overlay but before generic press resolution.
+//
+// Mouse (PointerIsMouse): press on selectable text starts a character drag
+// selection immediately (browser-like); double-click selects the word,
+// triple-click everything. The press is consumed, so it can't also start a
+// drag-scroll — same trade-off browsers make.
+//
+// Touch: the press is NOT consumed — a drag must still scroll. A long-press
+// held within the touch slop (and with no scroll gesture engaged) starts a
+// word-granularity selection with handles + toolbar, matching react-native.
+static NodePtr g_selTextLongPressCandidate;
+
+static bool ResolveTextSelectionInput(const NodePtr &root) {
+  const PointerInput &p = GetPointer();
+  const Node *rootNode = root.get();
+
+  Node *focusedSel = nullptr;
+  if (NodeId fid = GetFocusedId()) {
+    auto *fn = reinterpret_cast<Node *>(fid);
+    if (fn && NodeIsSelectableText(*fn) && NodeWithinSubtree(fn, rootNode))
+      focusedSel = fn;
+  }
+
+  // --- Continue an in-progress selection session -------------------------
+  if (focusedSel) {
+    TextEditState &edit = focusedSel->textEdit;
+
+    // A fresh press edge always starts a new interaction. Hosts that queue
+    // input (web, mobile) can deliver the release of one click and the press
+    // of the next in the same frame; without this the continue-branches below
+    // swallow that press and a double-click never reaches the click-count
+    // logic — it read as a plain click and cleared the selection instead.
+    if (edit.isSelecting && !p.pressed) { // mouse character drag
+      if (p.down) {
+        const int off = TextNodeHitTestCaret(*focusedSel, p.pos);
+        const int anchor = edit.selectionAnchor >= 0 ? edit.selectionAnchor : off;
+        if (edit.clickCount >= 2) {
+          // A double-click selects a word and leaves the button held, so the
+          // drag that follows must extend by WHOLE WORDS — at character
+          // granularity the very next frame shrank the selection back to the
+          // one letter under the cursor.
+          int anchorStart = 0, anchorEnd = 0, wordStart = 0, wordEnd = 0;
+          TextNodeWordBoundaries(*focusedSel, anchor, anchorStart, anchorEnd);
+          TextNodeWordBoundaries(*focusedSel, off, wordStart, wordEnd);
+          TextNodeSetSelection(*focusedSel, std::min(anchorStart, wordStart),
+                               std::max(anchorEnd, wordEnd));
+        } else if (off != anchor) {
+          TextNodeSetSelection(*focusedSel, std::min(anchor, off),
+                               std::max(anchor, off));
+        }
+        return true;
+      }
+      edit.isSelecting = false;
+      return true; // consume the release edge
+    }
+
+    if (edit.longPressSelectionActive && !p.pressed) { // touch word drag
+      if (p.down) {
+        ClearScrollGesture();
+        const int off = TextNodeHitTestCaret(*focusedSel, p.pos);
+        int ws = 0, we = 0, as = 0, ae = 0;
+        TextNodeWordBoundaries(*focusedSel, off, ws, we);
+        TextNodeWordBoundaries(*focusedSel, edit.longPressAnchor, as, ae);
+        TextNodeSetSelection(*focusedSel, std::min(as, ws), std::max(ae, we));
+        edit.handlesVisible = true;
+        return true;
+      }
+      edit.longPressSelectionActive = false;
+      edit.toolbarVisible =
+          edit.selectionStart >= 0 && edit.selectionEnd >= 0 &&
+          edit.selectionStart != edit.selectionEnd;
+      edit.handlesVisible = edit.toolbarVisible;
+      return true; // consume the release edge
+    }
+  }
+
+  // --- Touch long-press arming ------------------------------------------
+  if (g_selTextLongPressCandidate) {
+    Node *cand = g_selTextLongPressCandidate.get();
+    if (!p.down || !NodeWithinSubtree(cand, rootNode)) {
+      g_selTextLongPressCandidate = nullptr;
+    } else {
+      TextEditState &edit = cand->textEdit;
+      if (PointerTravel(edit.longPressOrigin, p.pos) > kTouchSlop ||
+          Ctx().scroll.engaged) {
+        g_selTextLongPressCandidate = nullptr; // it's a scroll/drag
+      } else if (GetTime() - edit.longPressStartTime >= kLongPressDelay) {
+        NodePtr candidate = g_selTextLongPressCandidate;
+        g_selTextLongPressCandidate = nullptr;
+        RequestFocus(candidate);
+        int ws = 0, we = 0;
+        TextNodeWordBoundaries(*cand, edit.longPressAnchor, ws, we);
+        TextNodeSetSelection(*cand, ws, we);
+        edit.longPressSelectionActive = true;
+        edit.handlesVisible = true;
+        edit.toolbarVisible = false;
+        ClearScrollGesture();
+        SetActiveId(0);
+        if (GetTextInputHostHooks().hapticFeedback)
+          GetTextInputHostHooks().hapticFeedback();
+        return true;
+      }
+      // Still waiting — do not consume; a scroll may yet claim the gesture.
+    }
+  }
+
+  // --- New press ---------------------------------------------------------
+  if (p.pressed) {
+    const StackEntry *hitE = HitEntry(p.pos);
+    NodePtr hitPtr =
+        hitE && hitE->node && NodeIsSelectableText(*hitE->node) ? hitE->node
+                                                                : nullptr;
+    Node *hitText = hitPtr.get();
+
+    // Press away from the focused selectable text clears its selection.
+    if (focusedSel && focusedSel != hitText) {
+      TextNodeClearSelection(*focusedSel);
+      if (!hitText && GetFocusedId() == IdOf(focusedSel))
+        Blur();
+      // Fall through: the press still resolves normally elsewhere.
+    }
+
+    if (hitText) {
+      TextEditState &edit = hitText->textEdit;
+      const double now = GetTime();
+      const int off = TextNodeHitTestCaret(*hitText, p.pos);
+
+      if (PointerIsMouse()) {
+        // Prefer the host's click count when it reports one: queued-input hosts
+        // (web) can merge a real double-click into a single press edge, and
+        // timing alone would then read it as two unrelated single clicks.
+        const int hostClicks = TakeHostClickCount();
+        if (hostClicks > 0)
+          edit.clickCount = hostClicks;
+        else if (now - edit.lastClickTime < 0.4 && edit.lastClickPos >= 0 &&
+                 std::abs(off - edit.lastClickPos) <= 2)
+          edit.clickCount++;
+        else
+          edit.clickCount = 1;
+        edit.lastClickTime = now;
+        edit.lastClickPos = off;
+        RequestFocus(hitPtr);
+        edit.handlesVisible = false;
+        edit.toolbarVisible = false;
+        if (edit.clickCount >= 3) {
+          TextNodeSelectAll(*hitText);
+          edit.isSelecting = false;
+        } else if (edit.clickCount == 2) {
+          int ws = 0, we = 0;
+          TextNodeWordBoundaries(*hitText, off, ws, we);
+          TextNodeSetSelection(*hitText, ws, we);
+          edit.selectionAnchor = ws;
+          edit.isSelecting = true;
+        } else {
+          TextNodeSetSelection(*hitText, -1, -1);
+          edit.selectionAnchor = off;
+          edit.isSelecting = true;
+        }
+        return true;
+      }
+
+      // Touch: a tap on already-selected text clears the selection (RN
+      // behavior); the press still arms a long-press for a new selection.
+      if (focusedSel == hitText)
+        TextNodeClearSelection(*hitText);
+      // Arm a long-press candidate; the press itself passes through so
+      // scrolling and taps behave exactly as before.
+      edit.longPressStartTime = now;
+      edit.longPressOrigin = p.pos;
+      edit.longPressAnchor = off;
+      g_selTextLongPressCandidate = hitPtr;
+      return false;
+    }
+  }
+
+  // --- Keyboard: Cmd/Ctrl+A / Cmd/Ctrl+C on the focused selectable text ---
+  if (focusedSel) {
+    const bool cmd = IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER) ||
+                     IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (cmd && IsKeyPressed(KEY_A)) {
+      TextNodeSelectAll(*focusedSel);
+      return true;
+    }
+    if (cmd && IsKeyPressed(KEY_C)) {
+      TextNodeCopy(*focusedSel);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void ResolveInput(const NodePtr &root) {
   const PointerInput &p = GetPointer();
   Vector2 pt = p.pos;
@@ -3843,6 +4060,9 @@ void ResolveInput(const NodePtr &root) {
   }
 
   if (HandleTextSelectionOverlayInput(root))
+    return;
+
+  if (ResolveTextSelectionInput(root))
     return;
 
   const StackEntry *hitE = HitEntry(pt);
