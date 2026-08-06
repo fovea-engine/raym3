@@ -40,6 +40,18 @@ namespace raym3::v2 {
 static constexpr float kDefaultScrimOpacity = 0.32f;
 static thread_local float g_renderOpacity = 1.0f;
 
+// Counters for the frame that most recently finished painting, published out of
+// the RenderContext that rendered it.
+//
+// Callers ask for these *after* the frame — a host's diagnostics hook runs from
+// JS, long after the render loop set its per-screen context back to null. Read
+// straight off Ctx() that lands on the default context, which never renders
+// anything, so every counter comes back zero.
+static RenderStats s_publishedStats;
+static void PublishRenderStats(const RenderStats &stats) {
+  s_publishedStats = stats;
+}
+
 // Inherited text color (CSS `color` cascade). A node whose style sets a text
 // color establishes it for its subtree; a Text with no color of its own uses
 // this, falling back to the theme's onSurface. Lets an app set one global
@@ -2811,6 +2823,7 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   // after Render() so it reads the snapshot just committed for the current frame.
   Ctx().committedStackOrder = Ctx().stackOrder;
   Ctx().committedParentMap = Ctx().parentMap;
+  PublishRenderStats(Ctx().lastStats);
 }
 
 NodePtr CommittedParentOf(const Node *node) {
@@ -2838,6 +2851,9 @@ void RenderOverlayRepaint(const NodePtr &root, Rectangle bounds) {
   Ctx().committedStackOrder = std::move(savedCommittedStack);
   Ctx().committedParentMap = std::move(savedCommittedParent);
   Ctx().lastStats = savedStats;
+  // The repaint's inner Render published its own (subtree-sized) counters;
+  // put the whole frame's numbers back so diagnostics keep describing the frame.
+  PublishRenderStats(savedStats);
 }
 
 namespace {
@@ -4243,7 +4259,7 @@ void ResolveInput(const NodePtr &root) {
   }
 }
 
-RenderStats GetLastRenderStats() { return Ctx().lastStats; }
+RenderStats GetLastRenderStats() { return s_publishedStats; }
 
 bool HasModalOverlay() {
   for (const FixedNode &fn : Ctx().fixedNodes) {
