@@ -1167,8 +1167,21 @@ struct RetainedYG {
   YGNodeRef yg = nullptr;
   uint64_t gen = 0;          // mark-and-sweep visit stamp
   bool textHadPrepared = false;
+  // Kind the yoga node was configured for. Measure functions are attached per
+  // kind, so a node whose kind changes has to be reconfigured.
+  NodeKind configuredKind = NodeKind::View;
 };
-std::unordered_map<const Node *, RetainedYG> g_retainedYoga;
+// Keyed by Node::stableId, not by address.
+//
+// Keying on the pointer meant a node freed in one frame and a different node
+// allocated at the same address in the next found the dead node's entry — and
+// since the entry already had a yoga node, the "first time we see this node"
+// setup was skipped. A Text landing on a recycled non-Text address never got
+// its measure function and collapsed to 0x0 ("the text disappeared after the
+// list re-rendered"); a View landing on a recycled Text address kept a measure
+// function it should not have. The sweep that would have removed the stale
+// entry runs *after* reconcile, so it could not prevent either.
+std::unordered_map<std::uint64_t, RetainedYG> g_retainedYoga;
 uint64_t g_retainedGen = 0;
 
 // Pristine style source: YGNodeCopyStyle from this blank node resets a reused
@@ -1183,13 +1196,22 @@ YGNodeRef retainedBlankNode() {
 void retainedReconcile(const NodePtr &node, bool isRoot,
                        bool parentStretchesWidth,
                        RetainedLayoutStats &stats) {
-  RetainedYG &r = g_retainedYoga[node.get()];
+  RetainedYG &r = g_retainedYoga[node->stableId];
   if (!r.yg) {
     r.yg = YGNodeNew();
-    YGNodeSetContext(r.yg, node.get());
-    if (node->kind == NodeKind::Text)
-      YGNodeSetMeasureFunc(r.yg, MeasureTextNode);
     stats.yogaNodesCreated++;
+    r.configuredKind = NodeKind::View;  // fresh yoga node has no measure func
+  }
+  // The context is a bare pointer, so refresh it every reconcile rather than
+  // only at creation: the same stableId always means the same node, but the
+  // NodePtr it lives behind can be re-seated.
+  YGNodeSetContext(r.yg, node.get());
+  if (r.configuredKind != node->kind) {
+    // Only Text measures itself; Yoga requires a measure function to sit on a
+    // childless node, which Text is.
+    YGNodeSetMeasureFunc(
+        r.yg, node->kind == NodeKind::Text ? MeasureTextNode : nullptr);
+    r.configuredKind = node->kind;
   }
   r.gen = g_retainedGen;
   stats.nodesReconciled++;
@@ -1214,7 +1236,7 @@ void retainedReconcile(const NodePtr &node, bool isRoot,
   bool same = ygCount == node->children.size();
   if (same) {
     for (uint32_t i = 0; i < ygCount; ++i) {
-      auto it = g_retainedYoga.find(node->children[i].get());
+      auto it = g_retainedYoga.find(node->children[i]->stableId);
       if (it == g_retainedYoga.end() || YGNodeGetChild(r.yg, i) != it->second.yg) {
         same = false;
         break;
@@ -1231,9 +1253,9 @@ void retainedReconcile(const NodePtr &node, bool isRoot,
   if (!same) {
     YGNodeRemoveAllChildren(r.yg);
     // re-read: recursion above may have rehashed the map
-    YGNodeRef selfYg = g_retainedYoga[node.get()].yg;
+    YGNodeRef selfYg = g_retainedYoga[node->stableId].yg;
     for (const NodePtr &child : node->children) {
-      YGNodeRef childYg = g_retainedYoga[child.get()].yg;
+      YGNodeRef childYg = g_retainedYoga[child->stableId].yg;
       if (YGNodeRef owner = YGNodeGetOwner(childYg))
         YGNodeRemoveChild(owner, childYg);
       YGNodeInsertChild(selfYg, childYg, YGNodeGetChildCount(selfYg));
@@ -1266,7 +1288,7 @@ void retainedCompare(const NodePtr &node, const Node *parent, Rectangle bounds,
   if (style.position == PositionType::Fixed) return;  // separate layout pass
   if (style.display == Display::None) return;
 
-  auto it = g_retainedYoga.find(node.get());
+  auto it = g_retainedYoga.find(node->stableId);
   if (it == g_retainedYoga.end() || !it->second.yg) return;
   YGNodeRef yg = it->second.yg;
 
@@ -1305,7 +1327,7 @@ static YGNodeRef retainedCalculate(const NodePtr &root, Rectangle bounds,
   g_retainedGen++;
   retainedReconcile(root, true, true, stats);
   retainedPrune(stats);
-  YGNodeRef ygRoot = g_retainedYoga[root.get()].yg;
+  YGNodeRef ygRoot = g_retainedYoga[root->stableId].yg;
   if (!ygRoot) return nullptr;
   YGNodeStyleSetWidth(ygRoot, bounds.width);
   YGNodeStyleSetHeight(ygRoot, bounds.height);

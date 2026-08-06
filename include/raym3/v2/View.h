@@ -4,6 +4,7 @@
 #include "raym3/v2/ExternalView.h"
 #include "raym3/v2/Style.h"
 #include "raym3/v2/TextEngine.h"
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -219,6 +220,14 @@ using NodePtr = std::shared_ptr<Node>;
 class Node {
 public:
   explicit Node(NodeKind kind);
+
+  // Identity that survives the allocator.
+  //
+  // Node addresses get reused: free a node and the next allocation can land on
+  // the same bytes. Anything that remembers a node across frames by pointer
+  // therefore risks attaching the old node's state to an unrelated new one, so
+  // per-node side tables key on this instead.
+  const std::uint64_t stableId;
 
   NodeKind kind;
   std::string id;

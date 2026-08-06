@@ -7,7 +7,13 @@
 
 namespace raym3::v2 {
 
-Node::Node(NodeKind nodeKind) : kind(nodeKind) {}
+namespace {
+// Monotonic and never reused for the lifetime of the process.
+std::uint64_t g_nextStableNodeId = 1;
+}  // namespace
+
+Node::Node(NodeKind nodeKind)
+    : stableId(g_nextStableNodeId++), kind(nodeKind) {}
 
 static void ApplyViewProps(Node &node, const ViewProps &props) {
   node.id = props.id;
