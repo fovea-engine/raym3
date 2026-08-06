@@ -174,7 +174,7 @@ static float DefaultNodeHeight(const Node &node) {
     // border-box, so padding is added here).
     if (node.textInput.variant != TextFieldVariant::Plain)
       return 56.0f;
-    const float fontSize = node.style.text.fontSize.value_or(16.0f);
+    const float fontSize = ResolveFontSize(node.style.text, 16.0f);
     float height = ResolveLineHeight(node.style.text, fontSize);
     if (node.textInput.multiline)
       height *= 2.0f;
@@ -182,7 +182,7 @@ static float DefaultNodeHeight(const Node &node) {
   }
   case NodeKind::Text: {
     const float fontSize =
-        node.style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium);
+        ResolveFontSize(node.style.text, Theme::GetTypographyScale().bodyMedium);
     return node.style.height.value_or(ResolveLineHeight(node.style.text, fontSize));
   }
   default:
@@ -198,7 +198,7 @@ static float DefaultNodeWidth(const Node &node) {
     return 240.0f;
   case NodeKind::Text: {
     float fontSize =
-        node.style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium);
+        ResolveFontSize(node.style.text, Theme::GetTypographyScale().bodyMedium);
     FontWeight weight = node.style.text.weight.value_or(FontWeight::Regular);
     return Renderer::MeasureText(node.text.c_str(), fontSize, weight).x;
   }
@@ -486,7 +486,7 @@ static ComponentState ComputeState(const Node &node) {
 // Returns (and caches) the PreparedText for a Text node.
 // Pretext pattern: prepare once per text+font change, layout many times.
 static const PreparedText& GetOrPrepare(const Node* node) {
-  float fontSize = node->style.text.fontSize.value_or(16.0f);
+  float fontSize = ResolveFontSize(node->style.text, 16.0f);
   FontWeight weight = node->style.text.weight.value_or(FontWeight::Regular);
   FontStyle fontStyle = node->style.text.fontStyle.value_or(FontStyle::Normal);
   const std::string& family = node->style.text.fontFamily.value_or(std::string{});
@@ -1756,7 +1756,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
 
 static void RenderTextNode(const Node &node, const Style &style) {
   float fontSize =
-      style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium);
+      ResolveFontSize(style.text, Theme::GetTypographyScale().bodyMedium);
   float letterSpacing = style.text.letterSpacing.value_or(0.25f);
   FontWeight weight = style.text.weight.value_or(FontWeight::Regular);
   FontStyle fontStyle = style.text.fontStyle.value_or(FontStyle::Normal);
@@ -2135,7 +2135,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     float radius = style.borderRadius.value_or(0.0f);
     Color textColor = ApplyRenderOpacity(ResolveTextColor(style.text.color));
     float fontSize =
-        style.text.fontSize.value_or(Theme::GetTypographyScale().labelLarge);
+        ResolveFontSize(style.text, Theme::GetTypographyScale().labelLarge);
 
     if (CheckCollisionPointRec(GetMousePosition(), node->layout))
       raym3::RequestCursor(MOUSE_CURSOR_POINTING_HAND);

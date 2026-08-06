@@ -22,9 +22,20 @@ namespace raym3::v2 {
 
 namespace {
 
-constexpr float kFieldFontSize = 16.0f;
-constexpr float kLabelRestSize = 16.0f;
-constexpr float kLabelFloatSize = 12.0f;
+// Type sizes are declared at their design value and read back through the
+// accessors below, which apply the OS text-size setting (Density::GetFontScale).
+// Reading the constants directly would leave a field's glyphs at 16dp while the
+// rest of the UI grew — the caret, selection rects and hit-testing in this file
+// all derive from the same accessors, so they stay in step.
+constexpr float kBaseFieldFontSize = 16.0f;
+constexpr float kBaseLabelRestSize = 16.0f;
+constexpr float kBaseLabelFloatSize = 12.0f;
+constexpr float kBaseLineHeight = 20.0f;
+
+inline float FieldFontSize() { return kBaseFieldFontSize * Density::GetFontScale(); }
+inline float LabelRestSize() { return kBaseLabelRestSize * Density::GetFontScale(); }
+inline float LabelFloatSize() { return kBaseLabelFloatSize * Density::GetFontScale(); }
+inline float FieldLineHeight() { return kBaseLineHeight * Density::GetFontScale(); }
 // M3 text field metrics. The floated label line box, the filled variant's
 // content offsets, and the outlined top strip must stay in lockstep with the
 // native editor insets sent from JS (packages/rayact-react/src/components.ts).
@@ -39,7 +50,6 @@ constexpr float kFilledInputBottom = 8.0f;
 // label never paints outside node bounds.
 constexpr float kOutlinedTopStrip = 8.0f;
 constexpr float kNotchPadding = 4.0f;
-constexpr float kLineHeight = 20.0f;
 constexpr int kMaxUndoHistory = 32;
 
 static TextInputHostHooks &HostHooks() {
@@ -197,7 +207,7 @@ static std::string DisplayPrefix(const char *buffer, int bytePos,
 
 static float MeasureDisplayText(std::string_view text) {
   std::string materialized(text);
-  return raym3::Renderer::MeasureText(materialized.c_str(), kFieldFontSize,
+  return raym3::Renderer::MeasureText(materialized.c_str(), FieldFontSize(),
                                       FontWeight::Regular)
       .x;
 }
@@ -262,7 +272,7 @@ static Vector2 TextOrigin(Rectangle inputBounds, bool multiline,
   if (multiline) {
     return {inputBounds.x + kBasePadding * 2.0f, inputBounds.y + kBasePadding};
   }
-  float contentHeight = std::max(kFieldFontSize, lineCount * kLineHeight);
+  float contentHeight = std::max(FieldFontSize(), lineCount * FieldLineHeight());
   return {inputBounds.x + kBasePadding * 2.0f,
           inputBounds.y + (inputBounds.height - contentHeight) * 0.5f};
 }
@@ -431,8 +441,8 @@ static void DrawSelection(Rectangle inputBounds, const char *text, int start,
     float endX = MeasureDisplayText(beforeEnd);
     float selectionX = inputBounds.x + textStartX - scrollOffset + startX;
     float selectionY =
-        inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f;
-    DrawRectangleRec({selectionX, selectionY, endX - startX, kFieldFontSize},
+        inputBounds.y + (inputBounds.height - FieldFontSize()) / 2.0f;
+    DrawRectangleRec({selectionX, selectionY, endX - startX, FieldFontSize()},
                      ApplyRenderOpacity(selectionColor));
     return;
   }
@@ -452,8 +462,8 @@ static void DrawSelection(Rectangle inputBounds, const char *text, int start,
             ? std::max(line.width + 4.0f, sx + 4.0f)
             : PrefixWidthOnLine(text, line.start, lineSelEnd, passwordMode);
     DrawRectangleRec({origin.x - scrollOffset + sx,
-                      origin.y - scrollOffsetY + i * kLineHeight,
-                      std::max(1.0f, ex - sx), kFieldFontSize},
+                      origin.y - scrollOffsetY + i * FieldLineHeight(),
+                      std::max(1.0f, ex - sx), FieldFontSize()},
                      ApplyRenderOpacity(selectionColor));
   }
 }
@@ -467,13 +477,13 @@ static void DrawComposingUnderline(Rectangle inputBounds, const char *text,
   std::string beforeStart = DisplayPrefix(text, start, passwordMode);
   std::string beforeEnd = DisplayPrefix(text, end, passwordMode);
   Vector2 startSize = raym3::Renderer::MeasureText(
-      beforeStart.c_str(), kFieldFontSize, FontWeight::Regular);
+      beforeStart.c_str(), FieldFontSize(), FontWeight::Regular);
   Vector2 endSize = raym3::Renderer::MeasureText(
-      beforeEnd.c_str(), kFieldFontSize, FontWeight::Regular);
+      beforeEnd.c_str(), FieldFontSize(), FontWeight::Regular);
   float x = inputBounds.x + textStartX - scrollOffset + startSize.x;
   float width = std::max(1.0f, endSize.x - startSize.x);
-  float y = inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f +
-            kFieldFontSize - 2.0f;
+  float y = inputBounds.y + (inputBounds.height - FieldFontSize()) / 2.0f +
+            FieldFontSize() - 2.0f;
   ColorScheme &scheme = Theme::GetColorScheme();
   Color underline = scheme.primary;
   underline.a = 255;
@@ -493,7 +503,7 @@ static void DrawCursor(Rectangle inputBounds, const char *text, int position,
     return;
 
   float cursorX = inputBounds.x + textStartX - scrollOffset;
-  float cursorY = inputBounds.y + (inputBounds.height - kFieldFontSize) / 2.0f;
+  float cursorY = inputBounds.y + (inputBounds.height - FieldFontSize()) / 2.0f;
   if (multiline && text) {
     std::vector<TextLineMetrics> lines = BuildLineMetrics(text, passwordMode);
     int lineIndex = LineIndexForOffset(lines, position);
@@ -502,7 +512,7 @@ static void DrawCursor(Rectangle inputBounds, const char *text, int position,
         TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
     cursorX = origin.x - scrollOffset +
               PrefixWidthOnLine(text, line.start, position, passwordMode);
-    cursorY = origin.y - scrollOffsetY + lineIndex * kLineHeight;
+    cursorY = origin.y - scrollOffsetY + lineIndex * FieldLineHeight();
   } else if (text && position > 0) {
     int textLen = static_cast<int>(std::strlen(text));
     int pos = std::min(position, textLen);
@@ -523,7 +533,7 @@ static void DrawCursor(Rectangle inputBounds, const char *text, int position,
     cursorColor = *caretColor;
   DrawLine(static_cast<int>(cursorX), static_cast<int>(cursorY),
            static_cast<int>(cursorX),
-           static_cast<int>(cursorY + kFieldFontSize),
+           static_cast<int>(cursorY + FieldFontSize()),
            ApplyRenderOpacity(cursorColor));
 }
 
@@ -533,7 +543,7 @@ static void SyncScrollForCaret(Node &node, char *buffer, float textStartX,
   float availableWidth = textEndX - textStartX;
   std::string before = DisplayPrefix(buffer, edit.cursor, passwordMode);
   Vector2 cursorSize = raym3::Renderer::MeasureText(
-      before.c_str(), kFieldFontSize, FontWeight::Regular);
+      before.c_str(), FieldFontSize(), FontWeight::Regular);
   float cursorX = cursorSize.x;
   if (cursorX - edit.scrollOffsetX > availableWidth)
     edit.scrollOffsetX = cursorX - availableWidth;
@@ -541,7 +551,7 @@ static void SyncScrollForCaret(Node &node, char *buffer, float textStartX,
     edit.scrollOffsetX = cursorX;
   std::string display = DisplayText(buffer, passwordMode);
   Vector2 totalSize = raym3::Renderer::MeasureText(
-      display.c_str(), kFieldFontSize, FontWeight::Regular);
+      display.c_str(), FieldFontSize(), FontWeight::Regular);
   float maxScroll = std::max(0.0f, totalSize.x - availableWidth);
   edit.scrollOffsetX = std::clamp(edit.scrollOffsetX, 0.0f, maxScroll);
 }
@@ -573,9 +583,9 @@ static void SyncScrollForCaret(Node &node, char *buffer, Rectangle inputBounds,
   edit.scrollOffsetX = std::clamp(
       edit.scrollOffsetX, 0.0f, std::max(0.0f, maxLineWidth - availableWidth));
 
-  float contentHeight = lines.size() * kLineHeight;
-  float caretTop = lineIndex * kLineHeight;
-  float caretBottom = caretTop + kLineHeight;
+  float contentHeight = lines.size() * FieldLineHeight();
+  float caretTop = lineIndex * FieldLineHeight();
+  float caretBottom = caretTop + FieldLineHeight();
   float visibleHeight =
       std::max(1.0f, inputBounds.height - kBasePadding * 2.0f);
   if (caretBottom - edit.scrollOffsetY > visibleHeight)
@@ -677,7 +687,7 @@ static void HandlePointer(Node &node, const PointerInput &p) {
     Vector2 origin =
         TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
     int lineIndex = static_cast<int>(
-        std::floor((screenY - origin.y + edit.scrollOffsetY) / kLineHeight));
+        std::floor((screenY - origin.y + edit.scrollOffsetY) / FieldLineHeight()));
     lineIndex = std::clamp(lineIndex, 0, static_cast<int>(lines.size()) - 1);
     const auto &line = lines[static_cast<size_t>(lineIndex)];
     return HitTestCaretOnLine(buffer, clickRelativeX, passwordMode, line.start,
@@ -760,7 +770,7 @@ static void HandlePointer(Node &node, const PointerInput &p) {
     } else if (p.pos.x > textEndX) {
       std::string display = DisplayText(buffer, passwordMode);
       Vector2 totalSize = raym3::Renderer::MeasureText(
-          display.c_str(), kFieldFontSize, FontWeight::Regular);
+          display.c_str(), FieldFontSize(), FontWeight::Regular);
       float maxScroll = std::max(0.0f, totalSize.x - (textEndX - textStartX));
       edit.scrollOffsetX = std::min(
           maxScroll, edit.scrollOffsetX + kSelectionAutoScrollSpeed * dt);
@@ -1341,7 +1351,7 @@ int TextInputHitTestCaret(Node &node, Vector2 screenPos) {
   Vector2 origin =
       TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
   int lineIndex = static_cast<int>(std::floor(
-      (screenPos.y - origin.y + node.textEdit.scrollOffsetY) / kLineHeight));
+      (screenPos.y - origin.y + node.textEdit.scrollOffsetY) / FieldLineHeight()));
   lineIndex = std::clamp(lineIndex, 0, static_cast<int>(lines.size()) - 1);
   const auto &line = lines[static_cast<size_t>(lineIndex)];
   return HitTestCaretOnLine(buffer, clickRelativeX, node.textInput.passwordMode,
@@ -1373,13 +1383,13 @@ float TextInputByteOffsetY(Node &node, int byteOffset) {
   Rectangle inputBounds = InputBoundsFor(node);
   char *buffer = TextBuffer(node);
   if (!buffer || !node.textInput.multiline)
-    return inputBounds.y + inputBounds.height * 0.5f + kLineHeight * 0.5f;
+    return inputBounds.y + inputBounds.height * 0.5f + FieldLineHeight() * 0.5f;
   auto lines = BuildLineMetrics(buffer, node.textInput.passwordMode);
   int lineIndex = LineIndexForOffset(lines, byteOffset);
   Vector2 origin =
       TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
   return origin.y - node.textEdit.scrollOffsetY +
-         (lineIndex + 1) * kLineHeight;
+         (lineIndex + 1) * FieldLineHeight();
 }
 
 float TextInputLineCenterY(Node &node, int byteOffset) {
@@ -1391,13 +1401,13 @@ float TextInputLineCenterY(Node &node, int byteOffset) {
   int lineIndex = LineIndexForOffset(lines, byteOffset);
   Vector2 origin =
       TextOrigin(inputBounds, true, static_cast<int>(lines.size()));
-  return origin.y - node.textEdit.scrollOffsetY + lineIndex * kLineHeight +
-         kLineHeight * 0.5f;
+  return origin.y - node.textEdit.scrollOffsetY + lineIndex * FieldLineHeight() +
+         FieldLineHeight() * 0.5f;
 }
 
 float TextInputPreferredLineHeight(Node &node) {
   (void)node;
-  return kLineHeight;
+  return FieldLineHeight();
 }
 
 TextInputDragSelectionUpdate
@@ -1663,13 +1673,13 @@ void PaintTextInput(Node &node) {
   // label floats to straddle the border top edge, filled/underline to the
   // reserved row at the container top.
   auto labelPlacement = [&](float a, Vector2 &pos, float &fontSize) {
-    float restY = container.y + (container.height - kLabelRestSize) / 2.0f;
+    float restY = container.y + (container.height - LabelRestSize()) / 2.0f;
     float floatY = ti.variant == TextFieldVariant::Outlined
-                       ? container.y - kLabelFloatSize * 0.5f
+                       ? container.y - LabelFloatSize() * 0.5f
                        : bounds.y + kFilledLabelTop +
-                             (kLabelFloatLineHeight - kLabelFloatSize) * 0.5f;
+                             (kLabelFloatLineHeight - LabelFloatSize()) * 0.5f;
     pos = {bounds.x + kContentHorizontal, restY + (floatY - restY) * a};
-    fontSize = kLabelRestSize + (kLabelFloatSize - kLabelRestSize) * a;
+    fontSize = LabelRestSize() + (LabelFloatSize() - LabelRestSize()) * a;
   };
   // Top-edge gap for the outlined border, opening in sync with the label
   // flight. Empty span (0,0) when there is nothing to notch.
@@ -1677,7 +1687,7 @@ void PaintTextInput(Node &node) {
     if (!label || ti.variant != TextFieldVariant::Outlined || a <= 0.01f)
       return {0.0f, 0.0f};
     float labelW =
-        raym3::Renderer::MeasureText(label, kLabelFloatSize, FontWeight::Regular)
+        raym3::Renderer::MeasureText(label, LabelFloatSize(), FontWeight::Regular)
             .x;
     float start = container.x + kContentHorizontal - kNotchPadding;
     return {start, start + a * (labelW + 2.0f * kNotchPadding)};
@@ -1729,19 +1739,19 @@ void PaintTextInput(Node &node) {
     if (!ti.nativeEditor && hasContent) {
       Vector2 textPos = {inputBounds.x + kContentHorizontal,
                          inputBounds.y +
-                             (inputBounds.height - kFieldFontSize) / 2.0f};
+                             (inputBounds.height - FieldFontSize()) / 2.0f};
       Color disabledText = style.text.color.value_or(scheme.onSurface);
       disabledText.a = 97; // 38%
-      raym3::Renderer::DrawText(buffer, textPos, kFieldFontSize,
+      raym3::Renderer::DrawText(buffer, textPos, FieldFontSize(),
                                 ApplyRenderOpacity(disabledText),
                                 FontWeight::Regular);
     } else if (!ti.nativeEditor && !ti.placeholder.empty() && !label) {
       Vector2 textPos = {inputBounds.x + kContentHorizontal,
                          inputBounds.y +
-                             (inputBounds.height - kFieldFontSize) / 2.0f};
+                             (inputBounds.height - FieldFontSize()) / 2.0f};
       Color ph = style.text.color.value_or(scheme.onSurfaceVariant);
       ph.a = 97; // 38%
-      raym3::Renderer::DrawText(ti.placeholder.c_str(), textPos, kFieldFontSize,
+      raym3::Renderer::DrawText(ti.placeholder.c_str(), textPos, FieldFontSize(),
                                 ApplyRenderOpacity(ph), FontWeight::Regular);
     }
     return;
@@ -1895,7 +1905,7 @@ void PaintTextInput(Node &node) {
       TextOrigin(inputBounds, ti.multiline, static_cast<int>(lines.size()));
   Vector2 textPos = {textStartX - currentScroll,
                      inputBounds.y +
-                         (inputBounds.height - kFieldFontSize) / 2.0f};
+                         (inputBounds.height - FieldFontSize()) / 2.0f};
   if (ti.multiline)
     textPos = {origin.x - currentScroll, origin.y - currentScrollY};
   Color textColor = ApplyRenderOpacity(style.text.color.value_or(scheme.onSurface));
@@ -1908,7 +1918,7 @@ void PaintTextInput(Node &node) {
     if (ti.hasPlaceholderColor)
       ph = ti.placeholderColor; // RN placeholderTextColor wins over CSS
     ph = ApplyRenderOpacity(ph);
-    raym3::Renderer::DrawText(hintText.c_str(), textPos, kFieldFontSize, ph,
+    raym3::Renderer::DrawText(hintText.c_str(), textPos, FieldFontSize(), ph,
                               FontWeight::Regular);
   } else if (!isEmpty) {
     if (ti.multiline) {
@@ -1924,12 +1934,12 @@ void PaintTextInput(Node &node) {
                               '*')
                 : slice;
         raym3::Renderer::DrawText(
-            display.c_str(), {textPos.x, textPos.y + i * kLineHeight},
-            kFieldFontSize, textColor, FontWeight::Regular);
+            display.c_str(), {textPos.x, textPos.y + i * FieldLineHeight()},
+            FieldFontSize(), textColor, FontWeight::Regular);
       }
     } else {
       std::string masked = DisplayText(buffer, ti.passwordMode);
-      raym3::Renderer::DrawText(masked.c_str(), textPos, kFieldFontSize,
+      raym3::Renderer::DrawText(masked.c_str(), textPos, FieldFontSize(),
                                 textColor, FontWeight::Regular);
     }
   }

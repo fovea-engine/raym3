@@ -1,6 +1,7 @@
 #pragma once
 
 #include "raym3/types.h"
+#include "raym3/v2/Density.h"
 #include "raym3/v2/TextEngine.h"
 #include <algorithm>
 #include <optional>
@@ -82,6 +83,13 @@ struct TextStyle {
   // react-native Text `selectable`: read-only selection (long-press / mouse
   // drag / copy). Only meaningful on NodeKind::Text.
   std::optional<bool> selectable;
+  // react-native `allowFontScaling` — whether the OS text-size setting applies
+  // to this run. Unset means yes, matching RN, where opting out is the explicit
+  // act. Fixed-size chrome that must not reflow sets it to false.
+  std::optional<bool> allowFontScaling;
+  // react-native `maxFontSizeMultiplier`: ceiling on the OS multiplier for this
+  // run. Unset means uncapped.
+  std::optional<float> maxFontSizeMultiplier;
 };
 
 struct LinearGradientStop {
@@ -308,10 +316,32 @@ struct Style {
   TextStyle text;
 };
 
+// The OS text-size multiplier that applies to this run: the global scale, unless
+// the run opted out or capped it (react-native's allowFontScaling /
+// maxFontSizeMultiplier).
+inline float ResolveFontScale(const TextStyle &text) {
+  if (text.allowFontScaling && !*text.allowFontScaling) return 1.0f;
+  float scale = Density::GetFontScale();
+  if (text.maxFontSizeMultiplier && *text.maxFontSizeMultiplier >= 1.0f)
+    scale = std::min(scale, *text.maxFontSizeMultiplier);
+  return scale;
+}
+
+// The font size a run is actually laid out and drawn at: the declared size (or
+// the caller's fallback) times the OS text-size multiplier. Every path that
+// needs a font size — Yoga measure, paint, caret math — must go through here,
+// or measurement and painting disagree the moment a user bumps their text size.
+inline float ResolveFontSize(const TextStyle &text, float fallback) {
+  return text.fontSize.value_or(fallback) * ResolveFontScale(text);
+}
+
 // CSS `line-height` resolution: an explicit length wins, then a unitless ratio
 // of the font size, then the engine default (~1.43em, CSS `normal`).
+// `fontSize` is expected to be already scaled (ResolveFontSize), so the ratio
+// and default track it; an explicit length is scaled here for the same reason
+// react-native scales lineHeight — a fixed line box would clip grown text.
 inline float ResolveLineHeight(const TextStyle &text, float fontSize) {
-  if (text.lineHeight) return *text.lineHeight;
+  if (text.lineHeight) return *text.lineHeight * ResolveFontScale(text);
   if (text.lineHeightRatio) return *text.lineHeightRatio * fontSize;
   return std::max(fontSize + 4.0f, fontSize * 1.43f);
 }

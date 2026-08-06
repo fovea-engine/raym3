@@ -14,6 +14,16 @@ public:
   static void SetLayoutDensity(float density);
   static float GetLayoutDensity();
 
+  // The OS text-size accessibility setting, as a multiplier on every font size
+  // (Android Configuration.fontScale, iOS Dynamic Type, the browser's default
+  // font size). 1.0 = "Default". Hosts publish it at boot and again whenever the
+  // user changes it. Unlike the density above this participates in *layout*, not
+  // just rasterization: bigger text has to reflow its container, so it is
+  // applied where a font size is resolved (ResolveFontSize in Style.h), not at
+  // the render boundary.
+  static void SetFontScale(float scale);
+  static float GetFontScale();
+
   static float DpToPx(float dp);
   static float PxToDp(float px);
   static Vector2 DpToPx(Vector2 dp);
