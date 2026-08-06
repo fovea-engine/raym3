@@ -277,6 +277,11 @@ public:
   float flingStartOffsetY = 0.0f;
   float flingDuration = 0.0f;
   float flingDistance = 0.0f;
+  // Momentum carried over from a fling that a new touch interrupted, so a
+  // second flick in the same direction builds on it instead of replacing it.
+  // Captured at press (the touch has to pin the content) and spent at release.
+  float flingResidualVelocity = 0.0f;
+  double flingResidualTime = 0.0;
   std::function<void()> onScroll;
   // Continuously time-driven paint (indeterminate/wavy progress, loading
   // spinners): the frame scheduler must keep rendering while this node exists.

@@ -3183,6 +3183,10 @@ constexpr float kMinFlingVelocity = 50.0f;
 constexpr float kMaxFlingVelocity = 8000.0f;
 constexpr float kScrollFriction = 0.95f;
 constexpr float kVelocityStopThreshold = 5.0f;
+// How long an interrupted fling's momentum stays available to the next flick.
+// Long enough to cover a press-drag-release flick, short enough that a
+// deliberate grab-and-hold does not inherit it.
+constexpr double kFlingChainWindowSeconds = 0.4;
 
 // Android ClampingScrollSimulation constants (Flutter scroll_simulation.dart).
 const float kFlingDecelerationRate =
@@ -3257,7 +3261,36 @@ static float FlingDurationFor(float velocity) {
   return kFlingDecelerationRate * kFlingInflexion * androidDuration;
 }
 
+// Velocity of an in-flight spline fling right now.
+// x(t) = D * (1 - (1-t)^r)  =>  x'(t) = (D*r/T) * (1-t)^(r-1), and D*r/T is the
+// velocity the fling started with.
+static float CurrentFlingVelocity(const Node &node) {
+  if (!node.flingActive || node.flingDuration <= 0.0f)
+    return 0.0f;
+  const double elapsed = GetTime() - node.flingStartTime;
+  const float t =
+      std::clamp(static_cast<float>(elapsed / node.flingDuration), 0.0f, 1.0f);
+  const float v0 =
+      node.flingDistance * kFlingDecelerationRate / node.flingDuration;
+  return v0 * std::pow(1.0f - t, kFlingDecelerationRate - 1.0f);
+}
+
 static void StartFling(const NodePtr &node, float velocity) {
+  // Flick, flick, flick to scroll a long way is one gesture as far as the user
+  // is concerned. Each press interrupts the previous fling, so without carrying
+  // the interrupted momentum forward the second flick *replaces* the first —
+  // it can even be slower than what was already running, which reads as the
+  // scroll stalling mid-flight rather than speeding up.
+  const double now = GetTime();
+  if (node->flingResidualVelocity != 0.0f &&
+      now - node->flingResidualTime <= kFlingChainWindowSeconds &&
+      (node->flingResidualVelocity > 0.0f) == (velocity > 0.0f)) {
+    ScrollTraceEvent("fling chain  v=%+8.1f + residual=%+8.1f", velocity,
+                     node->flingResidualVelocity);
+    velocity += node->flingResidualVelocity;
+  }
+  node->flingResidualVelocity = 0.0f;
+
   velocity = std::clamp(velocity, -kMaxFlingVelocity, kMaxFlingVelocity);
   float duration = FlingDurationFor(velocity);
   if (duration <= 0.0f)
@@ -3323,6 +3356,7 @@ static void ClearScrollVelocitiesOutside(const NodePtr &node,
     node->scrollVelocityX = 0.0f;
     node->scrollVelocityY = 0.0f;
     node->flingActive = false;
+    node->flingResidualVelocity = 0.0f;
   }
   for (const NodePtr &child : node->children)
     ClearScrollVelocitiesOutside(child, keepSubtree);
@@ -3633,7 +3667,14 @@ void ResolveScrollInput(const NodePtr &root) {
     if (Ctx().scroll.candidate) {
       Ctx().scroll.pressOrigin = pt;
       Ctx().scroll.lastPointer = pt;
+      // Pin the content to the finger, but remember what it was doing: a
+      // flick that lands mid-momentum should add to it (see StartFling).
+      const float residual = CurrentFlingVelocity(*Ctx().scroll.candidate);
       StopFling(Ctx().scroll.candidate);
+      if (residual != 0.0f) {
+        Ctx().scroll.candidate->flingResidualVelocity = residual;
+        Ctx().scroll.candidate->flingResidualTime = GetTime();
+      }
       Ctx().scroll.candidate->scrollVelocityX = 0.0f;
       VelocityTrackerReset();
       VelocityTrackerAddSample(GetTime(), pt.y);
