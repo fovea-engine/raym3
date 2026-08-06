@@ -184,6 +184,8 @@ TextStyle MergeTextStyles(const TextStyle &base,
     result.whiteSpace = overrideStyle.whiteSpace;
   if (overrideStyle.wordBreak)
     result.wordBreak = overrideStyle.wordBreak;
+  if (overrideStyle.selectable)
+    result.selectable = overrideStyle.selectable;
   return result;
 }
 

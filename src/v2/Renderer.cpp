@@ -1485,7 +1485,12 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
   for (const BoxShadow &shadow : style.boxShadows) {
     if (shadow.inset)
       continue;
-    int layers = std::max(1, (int)(shadow.blurRadius / 4.0f));
+    // Clamped: the layer count is a draw-call count, and blurRadius comes
+    // straight from author CSS. `box-shadow: 0 0 4000px` asked for a thousand
+    // rounded-rect draws for one shadow, on one node, every frame. Past ~32
+    // layers the extra passes are not visible anyway.
+    constexpr int kMaxShadowLayers = 32;
+    int layers = std::clamp((int)(shadow.blurRadius / 4.0f), 1, kMaxShadowLayers);
     for (int i = layers; i >= 1; --i) {
       float t = (float)i / (float)layers;
       float grow = shadow.spreadRadius + shadow.blurRadius * t * 0.5f;
@@ -2791,21 +2796,40 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   // Fixed-position pass: paint overlay nodes (Dialog, BottomSheet, etc.) on
   // top of all normal content, sorted ascending by zIndex (respecting fixed-root ancestry).
   if (!Ctx().fixedNodes.empty()) {
-    std::stable_sort(Ctx().fixedNodes.begin(), Ctx().fixedNodes.end(),
-                     [](const FixedNode &a, const FixedNode &b) {
-                       Node *ra = GetFixedRoot(a.node.get(), Ctx().parentMap);
-                       Node *rb = GetFixedRoot(b.node.get(), Ctx().parentMap);
-                       if (ra != rb) {
-                         return ra->zIndex < rb->zIndex;
-                       }
-                       if (IsDescendant(a.node, b.node, Ctx().parentMap)) {
-                         return false;
-                       }
-                       if (IsDescendant(b.node, a.node, Ctx().parentMap)) {
-                         return true;
-                       }
-                       return a.zIndex < b.zIndex;
-                     });
+    // Sort on a precomputed integer key rather than comparing ancestry inline.
+    // The old comparator mixed "descendant paints after its ancestor" with
+    // zIndex, and those two rules disagree: three fixed nodes can form a cycle
+    // (a < c because c descends from a, c < b and b < a on zIndex), which makes
+    // the predicate not a strict weak ordering — undefined behaviour in
+    // stable_sort, not merely an odd paint order.
+    //
+    // Ancestry is folded into the key instead: a node's effective z is raised to
+    // its fixed ancestor's, so a descendant can never sort below its ancestor
+    // while the comparison stays a plain integer test. fixedNodes is in tree
+    // pre-order (CollectFixedNodes walks pre-order), so ancestors already have
+    // lower indices and stable_sort keeps that order for equal keys.
+    std::vector<std::pair<int, int>> keys(Ctx().fixedNodes.size());
+    for (size_t i = 0; i < Ctx().fixedNodes.size(); ++i) {
+      const FixedNode &fn = Ctx().fixedNodes[i];
+      Node *root = GetFixedRoot(fn.node.get(), Ctx().parentMap);
+      int effectiveZ = fn.zIndex;
+      for (size_t j = 0; j < i; ++j) {
+        if (IsDescendant(fn.node, Ctx().fixedNodes[j].node, Ctx().parentMap))
+          effectiveZ = std::max(effectiveZ, keys[j].second);
+      }
+      keys[i] = {root ? root->zIndex : 0, effectiveZ};
+    }
+
+    // Sort indices, then apply — the key array is positional, so the elements
+    // cannot be permuted out from under it.
+    std::vector<size_t> order(Ctx().fixedNodes.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&keys](size_t a, size_t b) { return keys[a] < keys[b]; });
+    std::vector<FixedNode> sorted;
+    sorted.reserve(order.size());
+    for (size_t i : order) sorted.push_back(Ctx().fixedNodes[i]);
+    Ctx().fixedNodes.swap(sorted);
     for (const FixedNode &fn : Ctx().fixedNodes) {
       BuildParentMap(fn.node, Ctx().parentMap);
       RenderFixedNode(fn, bounds);

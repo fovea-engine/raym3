@@ -128,8 +128,13 @@ void PushScissor(Rectangle bounds) {
     ? Rectangle{0, 0, (float)renderW, (float)renderH}
     : s_scissorStack.back();
   Rectangle applied = IntersectAndClampScissor(bounds, current);
+  // A clip that does not overlap its parent is empty, not absent: push it so it
+  // clips everything out. Returning early instead left the stack one entry
+  // short while the caller still ran its matching PopScissor, so that pop took
+  // the *ancestor's* scissor off and every later draw in the frame was clipped
+  // by the wrong rect — content bleeding out of a card or a scroll view.
   if (applied.width < 1 || applied.height < 1)
-    return;
+    applied = {applied.x, applied.y, 0, 0};
   s_scissorStack.push_back(applied);
   BeginScissorMode((int)applied.x, (int)applied.y, (int)applied.width, (int)applied.height);
   if (s_scissorDebugEnabled)

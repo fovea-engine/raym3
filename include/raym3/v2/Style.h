@@ -197,7 +197,12 @@ struct ActiveAnimation {
   AnimationDirection direction = AnimationDirection::Normal;
   AnimationFill fill = AnimationFill::None;
   float x1 = 0.25f, y1 = 0.1f, x2 = 0.25f, y2 = 1.0f;
-  float elapsedMs = 0.0f;
+  // double, not float: this accumulates one frame delta per frame forever for
+  // an infinite animation. In float, the ULP catches up with a ~16ms delta at
+  // around 10^7 ms — a few hours in — and the animation first stutters, then
+  // freezes outright as `+= dt` stops changing the value. Kiosks and other
+  // always-on screens hit that.
+  double elapsedMs = 0.0;
   bool finished = false;
   std::vector<Keyframe> keyframes;                 // resolved, sorted by offset
   std::vector<TransitionProperty> animatedProps;    // union of props across stops

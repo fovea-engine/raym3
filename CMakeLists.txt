@@ -149,8 +149,14 @@ if(RAYM3_USE_YOGA)
             if(RAYM3_FETCH_DEPS)
                 message(FATAL_ERROR "RAYM3_USE_YOGA=ON but yogacore target was not created. Set YOGA_DIR, provide a yogacore target, or set RAYM3_USE_YOGA=OFF.")
             else()
-                message(WARNING "RAYM3_USE_YOGA=ON but RAYM3_FETCH_DEPS=OFF and yogacore target was not found. Building without Yoga support.")
-                target_compile_definitions(raym3 PUBLIC RAYM3_USE_YOGA=0)
+                # Not a warning: RAYM3_USE_YOGA=0 silently swaps real flexbox for
+                # the fallback layout, which is also O(depth) per node. The
+                # symptom is an app that lays out wrongly and scrolls slowly,
+                # with a build log nobody re-reads. Fail here instead.
+                message(FATAL_ERROR
+                    "RAYM3_USE_YOGA=ON but yogacore was not found and RAYM3_FETCH_DEPS=OFF. "
+                    "Set YOGA_DIR to a Yoga checkout, provide a yogacore target, enable "
+                    "RAYM3_FETCH_DEPS, or set RAYM3_USE_YOGA=OFF to opt into the fallback layout.")
             endif()
         endif()
     endif()

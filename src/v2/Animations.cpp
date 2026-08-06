@@ -153,17 +153,19 @@ namespace {
 
 // Effective progress (0..1) within one iteration, applying direction. Returns
 // the eased sample position; `done` set when a finite animation has ended.
-float IterationProgress(const ActiveAnimation& a, float runMs, bool& done) {
+float IterationProgress(const ActiveAnimation& a, double runMs, bool& done) {
   done = false;
-  const float dur = a.durationMs > 0.0f ? a.durationMs : 1.0f;
-  float iterF = runMs / dur;                 // fractional iteration count
+  const double dur = a.durationMs > 0.0f ? (double)a.durationMs : 1.0;
+  double iterF = runMs / dur;                // fractional iteration count
   const bool infinite = a.iterationCount < 0.0f;
-  if (!infinite && iterF >= a.iterationCount) {
+  if (!infinite && iterF >= (double)a.iterationCount) {
     done = true;
-    iterF = a.iterationCount;                 // clamp to the final position
+    iterF = (double)a.iterationCount;         // clamp to the final position
   }
   long iterIndex = (long)std::floor(iterF);
-  float local = iterF - (float)iterIndex;     // 0..1 within this iteration
+  // Reduce to the in-iteration fraction while still in double, so the float
+  // result keeps full precision no matter how many iterations have elapsed.
+  float local = (float)(iterF - (double)iterIndex);  // 0..1 within this iteration
   if (done) { local = 1.0f; iterIndex = std::max<long>(0, iterIndex - 1); }
 
   bool reverse = false;
@@ -180,8 +182,8 @@ float IterationProgress(const ActiveAnimation& a, float runMs, bool& done) {
 void TickNodeAnimations(const NodePtr& node, float dtMs) {
   if (!node) return;
   for (ActiveAnimation& a : node->activeAnimations) {
-    a.elapsedMs += dtMs;
-    const float runMs = a.elapsedMs - a.delayMs;
+    a.elapsedMs += (double)dtMs;
+    const double runMs = a.elapsedMs - (double)a.delayMs;
 
     // Delay phase: apply the start keyframe only if fill-mode paints backwards.
     if (runMs < 0.0f) {
