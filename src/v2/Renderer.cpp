@@ -3365,20 +3365,48 @@ static float VelocityTrackerEstimate(double releaseTime) {
   float ys[kVelocitySampleCapacity];
   int count = 0;
   double prevTime = releaseTime;
+
+  // The tracker is fed once per frame, so its time constants only make sense
+  // relative to the frame interval. The defaults assume ~60fps; under a heavy
+  // app running at 7fps the inter-sample gap (~133ms) blows past the 40ms
+  // assume-stopped cutoff and the 100ms horizon, so every release computed
+  // zero velocity and flings simply never fired — a swipe scrolled only its
+  // literal drag distance, and a long list took minutes of hand-dragging.
+  // Scale the cutoffs by the observed sample pacing (capped so a hung app
+  // does not accept arbitrarily stale history). A finger that pauses still
+  // produces a fresh same-position sample every frame, so widening these does
+  // not resurrect the stale-history case they exist for: a pause shows up as
+  // a near-zero slope, not as a stale gap.
+  double frameGap = 0.0;
+  if (Ctx().scroll.velocitySampleCount >= 2) {
+    const int newest = (Ctx().scroll.velocitySampleHead - 1 + kVelocitySampleCapacity) %
+                       kVelocitySampleCapacity;
+    const int prev = (Ctx().scroll.velocitySampleHead - 2 + 2 * kVelocitySampleCapacity) %
+                     kVelocitySampleCapacity;
+    frameGap = std::min(
+        0.25, Ctx().scroll.velocitySamples[newest].time -
+                  Ctx().scroll.velocitySamples[prev].time);
+  }
+  const double assumeStopped =
+      std::max(kVelocityAssumeStoppedSeconds, 2.5 * frameGap);
+  const double horizon = std::max(kVelocityHorizonSeconds, 3.5 * frameGap);
+  const int minSamples =
+      frameGap > kVelocityAssumeStoppedSeconds ? 2 : kVelocityMinSamples;
+
   for (int i = 0; i < Ctx().scroll.velocitySampleCount; ++i) {
     int idx = (Ctx().scroll.velocitySampleHead - 1 - i + 2 * kVelocitySampleCapacity) %
               kVelocitySampleCapacity;
     const ScrollSample &s = Ctx().scroll.velocitySamples[idx];
     double age = releaseTime - s.time;
     double gap = prevTime - s.time;
-    if (age > kVelocityHorizonSeconds || gap > kVelocityAssumeStoppedSeconds)
+    if (age > horizon || gap > assumeStopped)
       break;
     times[count] = -age;
     ys[count] = s.y;
     count++;
     prevTime = s.time;
   }
-  if (count < kVelocityMinSamples)
+  if (count < minSamples)
     return 0.0f;
 
   // Linear least squares: slope = (n*sum(ty) - sum(t)sum(y)) / (n*sum(tt) - sum(t)^2)
