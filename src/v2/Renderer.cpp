@@ -1878,7 +1878,33 @@ static void RenderTextNode(const Node &node, const Style &style) {
   const float underlineOffsetPx = Density::DpToPx(baselineDp + fontSize * 0.12f);
   const float strikeOffsetPx = Density::DpToPx(baselineDp - fontSize * 0.25f);
 
+  // Line-level culling.
+  //
+  // Node-level culling cannot help a Text node that is itself taller than the
+  // viewport: a long chat message or log card is ONE node, so it either paints
+  // entirely or not at all, and painting it entirely means drawing every glyph
+  // of every line — including the thousands scrolled far off screen. That is
+  // O(total text) per frame instead of O(visible text), and it is why a screen
+  // holding a handful of very long cards can sit at 30fps while reporting only
+  // ~130 painted nodes.
+  //
+  // The ambient cull rect is the intersection of every clip on the way down
+  // (scroll viewports included), so a line outside it cannot be visible. Skip
+  // those, but keep advancing `y` so every kept line still lands where it
+  // belongs.
+  const Rectangle &cullPx = g_cullStack.back();
+  const float cullTopPx = Density::DpToPx(cullPx.y);
+  const float cullBottomPx = Density::DpToPx(cullPx.y + cullPx.height);
+  const float lineAdvancePx = Density::DpToPx(prepared.options.lineHeight);
+  // One line of slack each way so a partially visible line still draws, and
+  // ascenders/descenders that overhang the line box are never clipped.
+  const float cullSlackPx = lineAdvancePx + Density::DpToPx(fontSize);
+
   for (const TextLine &line : layout.lines) {
+    if (y + cullSlackPx < cullTopPx || y - cullSlackPx > cullBottomPx) {
+      y += lineAdvancePx;
+      continue;
+    }
     float x = Density::DpToPx(node.layout.x);
     TextAlignment alignment = style.text.alignment.value_or(TextAlignment::Left);
     if (alignment == TextAlignment::Center) {
@@ -1898,7 +1924,7 @@ static void RenderTextNode(const Node &node, const Style &style) {
       const float sy = y + strikeOffsetPx;
       DrawLineEx({x, sy}, {x + lineWidthPx, sy}, thicknessPx, color);
     }
-    y += Density::DpToPx(prepared.options.lineHeight);
+    y += lineAdvancePx;
   }
 
   rlPopMatrix();

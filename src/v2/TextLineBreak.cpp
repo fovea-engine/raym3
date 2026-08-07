@@ -183,7 +183,14 @@ std::size_t WalkPreparedLines(const PreparedText &prepared, float maxWidth,
     const auto &fitAdvances =
         prepared.segments[segmentIndex].breakableFitAdvances;
     for (std::size_t g = startGraphemeIndex; g < fitAdvances.size(); ++g) {
-      float gw = fitAdvances[g];
+      // fitAdvances is CUMULATIVE from the token start (see
+      // BuildBreakableFitAdvances); this loop needs the one grapheme's width.
+      // Consuming the cumulative value directly meant that a few characters
+      // into a long unbreakable token, "this grapheme's width" exceeded any
+      // line width, so every remaining grapheme failed to fit and was emitted
+      // on its own line — a long URL or filename rendered as a full-screen
+      // vertical column of letters, with the hundreds-of-lines height to match.
+      float gw = fitAdvances[g] - (g > 0 ? fitAdvances[g - 1] : 0.0f);
       if (!state.hasContent) {
         startLineAtGrapheme(segmentIndex, g, gw);
       } else if (state.lineW + gw > fitLimit) {
