@@ -316,6 +316,11 @@ public:
   // (its `source` and `options`), so it is compared there directly rather than
   // being re-encoded into a key.
   mutable std::uint64_t preparedTextGeneration = 0;
+  // Bumped every time the prepared layout is actually rebuilt (text, text
+  // style, or font-atlas change). Retained layout watches it to know when a
+  // Text node's yoga measure is stale — the one signal Yoga's own style
+  // comparison cannot see, since font size and content are not layout styles.
+  mutable std::uint32_t preparedTextRevision = 0;
 
   bool inNavigationRail = false;
   bool inNavigationBar = false;

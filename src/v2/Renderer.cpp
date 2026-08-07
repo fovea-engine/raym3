@@ -526,6 +526,7 @@ static const PreparedText& GetOrPrepare(const Node* node) {
       cached->options.fontFamily == family && cached->source == node->text;
 
   if (!valid) {
+    node->preparedTextRevision++;
     TextLayoutOptions opts;
     opts.fontSize   = fontSize;
     opts.lineHeight = lineHeight;
@@ -746,8 +747,17 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
   Style effScratch;
   const Style &style = EffectiveStyleRef(node, effScratch);
 
+  // Every property this function can ever set is set on every call — to its
+  // Yoga default when the node's style leaves it unset. Retained layout reuses
+  // yoga nodes across frames with no reset step, so a conditional set here
+  // would let a *removed* style key keep last frame's value forever. The
+  // explicit default also costs nothing when nothing changed: Yoga's setters
+  // compare before dirtying.
+
   if (style.display == Display::None) {
     YGNodeStyleSetDisplay(ygNode, YGDisplayNone);
+  } else {
+    YGNodeStyleSetDisplay(ygNode, YGDisplayFlex);
   }
 
   // Fixed-position nodes are excluded from their parent's flex layout — they
@@ -761,22 +771,27 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
     YGNodeStyleSetOverflow(ygNode, YGOverflowScroll);
   } else if (style.overflow == Overflow::Hidden) {
     YGNodeStyleSetOverflow(ygNode, YGOverflowHidden);
+  } else {
+    YGNodeStyleSetOverflow(ygNode, YGOverflowVisible);
   }
 
   YGNodeStyleSetFlexDirection(
       ygNode, ToYogaFlexDirection(style.flexDirection.value_or(FlexDirection::Column)));
-  if (style.flexWrap) {
+  {
     YGWrap wrap = YGWrapNoWrap;
-    if (*style.flexWrap == FlexWrap::Wrap) wrap = YGWrapWrap;
-    else if (*style.flexWrap == FlexWrap::WrapReverse) wrap = YGWrapWrapReverse;
+    if (style.flexWrap) {
+      if (*style.flexWrap == FlexWrap::Wrap) wrap = YGWrapWrap;
+      else if (*style.flexWrap == FlexWrap::WrapReverse) wrap = YGWrapWrapReverse;
+    }
     YGNodeStyleSetFlexWrap(ygNode, wrap);
   }
-  if (style.justifyContent)
-    YGNodeStyleSetJustifyContent(ygNode, ToYogaJustify(*style.justifyContent));
-  if (style.alignItems)
-    YGNodeStyleSetAlignItems(ygNode, ToYogaAlign(*style.alignItems));
-  if (style.alignSelf)
-    YGNodeStyleSetAlignSelf(ygNode, ToYogaAlign(*style.alignSelf));
+  YGNodeStyleSetJustifyContent(
+      ygNode, style.justifyContent ? ToYogaJustify(*style.justifyContent)
+                                   : YGJustifyFlexStart);
+  YGNodeStyleSetAlignItems(
+      ygNode, style.alignItems ? ToYogaAlign(*style.alignItems) : YGAlignStretch);
+  YGNodeStyleSetAlignSelf(
+      ygNode, style.alignSelf ? ToYogaAlign(*style.alignSelf) : YGAlignAuto);
 
   if (style.position == PositionType::Absolute)
     YGNodeStyleSetPositionType(ygNode, YGPositionTypeAbsolute);
@@ -821,6 +836,8 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
   else if (!isText && !isRoot && !hasLayoutChildren && !skipIntrinsicWidth &&
            DefaultNodeWidth(node) > 0.0f)
     YGNodeStyleSetWidth(ygNode, DefaultNodeWidth(node));
+  else
+    YGNodeStyleSetWidthAuto(ygNode);
 
   if (style.heightPercent)
     YGNodeStyleSetHeightPercent(ygNode, *style.heightPercent);
@@ -828,6 +845,8 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
     YGNodeStyleSetHeight(ygNode, *style.height);
   else if (!isText && !isRoot && !hasLayoutChildren && DefaultNodeHeight(node) > 0.0f)
     YGNodeStyleSetHeight(ygNode, DefaultNodeHeight(node));
+  else
+    YGNodeStyleSetHeightAuto(ygNode);
 
   // Scroll containers must not report their content as their min-size, or the
   // flex parent expands to contain them (classic `min-height: 0` flex fix) and
@@ -838,24 +857,27 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
     YGNodeStyleSetMinWidthPercent(ygNode, *style.minWidthPercent);
   else if (style.minWidth)
     YGNodeStyleSetMinWidth(ygNode, *style.minWidth);
-  else if (scrolls)
-    YGNodeStyleSetMinWidth(ygNode, 0.0f);
+  else
+    YGNodeStyleSetMinWidth(ygNode, scrolls ? 0.0f : YGUndefined);
   if (style.minHeightPercent)
     YGNodeStyleSetMinHeightPercent(ygNode, *style.minHeightPercent);
   else if (style.minHeight)
     YGNodeStyleSetMinHeight(ygNode, *style.minHeight);
-  else if (scrolls)
-    YGNodeStyleSetMinHeight(ygNode, 0.0f);
+  else
+    YGNodeStyleSetMinHeight(ygNode, scrolls ? 0.0f : YGUndefined);
   if (style.maxWidthPercent)
     YGNodeStyleSetMaxWidthPercent(ygNode, *style.maxWidthPercent);
   else if (style.maxWidth)
     YGNodeStyleSetMaxWidth(ygNode, *style.maxWidth);
+  else
+    YGNodeStyleSetMaxWidth(ygNode, YGUndefined);
   if (style.maxHeightPercent)
     YGNodeStyleSetMaxHeightPercent(ygNode, *style.maxHeightPercent);
   else if (style.maxHeight)
     YGNodeStyleSetMaxHeight(ygNode, *style.maxHeight);
-  if (style.flexGrow)
-    YGNodeStyleSetFlexGrow(ygNode, *style.flexGrow);
+  else
+    YGNodeStyleSetMaxHeight(ygNode, YGUndefined);
+  YGNodeStyleSetFlexGrow(ygNode, style.flexGrow.value_or(0.0f));
   // Web defaults flex-shrink to 1; Yoga defaults it to 0. Without shrink, a
   // flex child with flex-basis:auto (= content size) never shrinks back to a
   // definite parent, so tall content (e.g. a scroll list) inflates the whole
@@ -876,13 +898,16 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
     YGNodeStyleSetFlexBasisPercent(ygNode, *style.flexBasisPercent);
   else if (style.flexBasis)
     YGNodeStyleSetFlexBasis(ygNode, *style.flexBasis);
+  else
+    YGNodeStyleSetFlexBasisAuto(ygNode);
 
-  if (style.gap)
-    YGNodeStyleSetGap(ygNode, YGGutterAll, *style.gap);
-  if (style.rowGap)
-    YGNodeStyleSetGap(ygNode, YGGutterRow, *style.rowGap);
-  if (style.columnGap)
-    YGNodeStyleSetGap(ygNode, YGGutterColumn, *style.columnGap);
+  // Row/Column fall back to All inside Yoga, and YGUndefined is the unset
+  // state — so writing undefined to an unset gutter preserves that fallback.
+  YGNodeStyleSetGap(ygNode, YGGutterAll, style.gap ? *style.gap : YGUndefined);
+  YGNodeStyleSetGap(ygNode, YGGutterRow,
+                    style.rowGap ? *style.rowGap : YGUndefined);
+  YGNodeStyleSetGap(ygNode, YGGutterColumn,
+                    style.columnGap ? *style.columnGap : YGUndefined);
 
   if (style.margin.TopIsAuto())
     YGNodeStyleSetMarginAuto(ygNode, YGEdgeTop);
@@ -905,15 +930,17 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
   YGNodeStyleSetPadding(ygNode, YGEdgeBottom, style.padding.Bottom());
   YGNodeStyleSetPadding(ygNode, YGEdgeLeft, style.padding.Left());
 
-  if (style.position == PositionType::Absolute || style.position == PositionType::Relative) {
-    if (style.inset.top)
-      YGNodeStyleSetPosition(ygNode, YGEdgeTop, *style.inset.top);
-    if (style.inset.right)
-      YGNodeStyleSetPosition(ygNode, YGEdgeRight, *style.inset.right);
-    if (style.inset.bottom)
-      YGNodeStyleSetPosition(ygNode, YGEdgeBottom, *style.inset.bottom);
-    if (style.inset.left)
-      YGNodeStyleSetPosition(ygNode, YGEdgeLeft, *style.inset.left);
+  {
+    const bool positioned = style.position == PositionType::Absolute ||
+                            style.position == PositionType::Relative;
+    const auto edge = [&](YGEdge e, const std::optional<float> &v) {
+      YGNodeStyleSetPosition(ygNode, e,
+                             (positioned && v) ? *v : YGUndefined);
+    };
+    edge(YGEdgeTop, style.inset.top);
+    edge(YGEdgeRight, style.inset.right);
+    edge(YGEdgeBottom, style.inset.bottom);
+    edge(YGEdgeLeft, style.inset.left);
   }
 }
 
@@ -1166,7 +1193,7 @@ namespace {
 struct RetainedYG {
   YGNodeRef yg = nullptr;
   uint64_t gen = 0;          // mark-and-sweep visit stamp
-  bool textHadPrepared = false;
+  uint32_t textRevision = 0; // last preparedTextRevision measured
   // Kind the yoga node was configured for. Measure functions are attached per
   // kind, so a node whose kind changes has to be reconfigured.
   NodeKind configuredKind = NodeKind::View;
@@ -1183,15 +1210,10 @@ struct RetainedYG {
 // entry runs *after* reconcile, so it could not prevent either.
 std::unordered_map<std::uint64_t, RetainedYG> g_retainedYoga;
 uint64_t g_retainedGen = 0;
-
-// Pristine style source: YGNodeCopyStyle from this blank node resets a reused
-// yoga node to defaults before ApplyYogaStyle re-applies the current style —
-// the retained equivalent of BuildYogaTree starting from a fresh YGNodeNew()
-// (removed style keys must fall back to defaults, not linger).
-YGNodeRef retainedBlankNode() {
-  static YGNodeRef blank = YGNodeNew();
-  return blank;
-}
+// Bounds of the last actually-executed layout pass, so an unchanged clean tree
+// can skip YGNodeCalculateLayout outright (see retainedCalculate).
+float g_retainedLastW = -1.0f;
+float g_retainedLastH = -1.0f;
 
 void retainedReconcile(const NodePtr &node, bool isRoot,
                        bool parentStretchesWidth,
@@ -1216,18 +1238,29 @@ void retainedReconcile(const NodePtr &node, bool isRoot,
   r.gen = g_retainedGen;
   stats.nodesReconciled++;
 
-  // Reset-to-default + re-apply. Yoga's style setters compare before marking
-  // dirty, so an unchanged node stays clean and YGNodeCalculateLayout can
-  // short-circuit its subtree.
-  YGNodeCopyStyle(r.yg, retainedBlankNode());
+  // Apply the style exhaustively: every property ApplyYogaStyle can ever set
+  // is set on every call, to its default when the node's style leaves it unset.
+  // Yoga's setters compare before marking dirty, so an unchanged node stays
+  // clean and YGNodeCalculateLayout short-circuits its subtree.
+  //
+  // This used to be a copy-from-blank reset followed by a sparse re-apply, on
+  // the same "setters compare" reasoning — but YGNodeCopyStyle also compares,
+  // against the *blank*, so it marked every styled node dirty every frame and
+  // then propagated that to the root. The one mechanism meant to make retained
+  // layout incremental is what forced a full-tree relayout per frame; on a
+  // 10k-node tree that was ~70% of the frame.
   ApplyYogaStyle(r.yg, *node, isRoot, parentStretchesWidth);
 
-  // Text re-measure: the prepared-text cache is invalidated on any text or
-  // text-style change; a missing cache means the measurement is stale.
+  // Text re-measure: content, text style and font-atlas changes are invisible
+  // to Yoga's style comparison, so track the prepared-layout revision instead.
+  // GetOrPrepare validates the cache in place (cheap field compares on a hit)
+  // and bumps the revision only when it truly rebuilt.
   if (node->kind == NodeKind::Text) {
-    const bool prepared = node->preparedTextCache.has_value();
-    if (!prepared || !r.textHadPrepared) YGNodeMarkDirty(r.yg);
-    r.textHadPrepared = prepared;
+    GetOrPrepare(node.get());
+    if (r.textRevision != node->preparedTextRevision) {
+      YGNodeMarkDirty(r.yg);
+      r.textRevision = node->preparedTextRevision;
+    }
   }
 
   // Children: rebuild the yoga edge list only when it differs from the
@@ -1331,7 +1364,20 @@ static YGNodeRef retainedCalculate(const NodePtr &root, Rectangle bounds,
   if (!ygRoot) return nullptr;
   YGNodeStyleSetWidth(ygRoot, bounds.width);
   YGNodeStyleSetHeight(ygRoot, bounds.height);
-  YGNodeCalculateLayout(ygRoot, bounds.width, bounds.height, YGDirectionLTR);
+  // A clean root means the whole tree is clean — dirtiness propagates upward —
+  // and its stored layout is already the answer for these bounds. Skipping the
+  // call matters because YGNodeCalculateLayout is not free on a clean tree: it
+  // ends with roundLayoutResultsToPixelGrid, a full-tree walk, every call.
+  // StoreYogaLayout still runs in our caller either way; it also bakes scroll
+  // offsets, which change without dirtying yoga.
+  // (hasNewLayout is deliberately not part of this gate: raym3 never clears
+  // it, so it is true forever after the first pass and would defeat the skip.)
+  if (YGNodeIsDirty(ygRoot) ||
+      bounds.width != g_retainedLastW || bounds.height != g_retainedLastH) {
+    YGNodeCalculateLayout(ygRoot, bounds.width, bounds.height, YGDirectionLTR);
+    g_retainedLastW = bounds.width;
+    g_retainedLastH = bounds.height;
+  }
   return ygRoot;
 }
 
