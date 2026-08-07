@@ -1,5 +1,7 @@
 #include "raym3/v2/TextLineBreak.h"
 
+#include <climits>
+
 #include "raym3/v2/EmojiFont.h"
 #include <algorithm>
 #include <cmath>
@@ -291,6 +293,44 @@ std::size_t WalkPreparedLines(const PreparedText &prepared, float maxWidth,
   return lineCount;
 }
 
+// Split one laid-out line into style-uniform pieces.
+//
+// Segments were already cut at span boundaries in PrepareTextWithSpans, so a
+// piece is a run of consecutive segments sharing spanIndex. Widths come from
+// the segments' own measurements, taken with that span's font — measuring the
+// concatenated line with one font would not match what gets painted.
+void BuildLinePieces(const PreparedText &prepared, const LineBreakCursor &start,
+                     const LineBreakCursor &end, TextLine &line) {
+  float x = 0.0f;
+  int currentSpan = INT_MIN;
+  for (std::size_t i = start.segmentIndex;
+       i < end.segmentIndex && i < prepared.segments.size(); ++i) {
+    const PreparedSegment &seg = prepared.segments[i];
+    if (seg.kind == SegmentBreakKind::HardBreak) continue;
+    std::string text = seg.text;
+    if (i == start.segmentIndex && start.graphemeIndex > 0) {
+      const auto bounds = GraphemeBoundaries(seg.text);
+      if (start.graphemeIndex < bounds.size())
+        text = seg.text.substr(bounds[start.graphemeIndex]);
+    }
+    if (i + 1 == end.segmentIndex && end.graphemeIndex > 0) {
+      const auto bounds = GraphemeBoundaries(text);
+      if (end.graphemeIndex < bounds.size())
+        text = text.substr(0, bounds[end.graphemeIndex]);
+    }
+    if (text.empty()) continue;
+    const float w = seg.width;
+    if (seg.spanIndex == currentSpan && !line.pieces.empty()) {
+      line.pieces.back().text += text;
+      line.pieces.back().width += w;
+    } else {
+      line.pieces.push_back({text, seg.spanIndex, x, w});
+      currentSpan = seg.spanIndex;
+    }
+    x += w;
+  }
+}
+
 TextLayoutResult LayoutInner(const PreparedText &prepared, float maxWidth,
                              float lineFitEpsilon, bool applyWholeLineGuard,
                              const MeasureTextCallback *measure) {
@@ -320,8 +360,10 @@ TextLayoutResult LayoutInner(const PreparedText &prepared, float maxWidth,
                                   end.segmentIndex <= prepared.segments.size()
                               ? prepared.segments[end.segmentIndex - 1].byteEnd
                               : prepared.source.size();
-                      result.lines.push_back(
-                          {text, byteStart, byteEnd, linePaintWidth, y});
+                      TextLine line{text, byteStart, byteEnd, linePaintWidth, y, {}};
+                      if (!prepared.spans.empty())
+                        BuildLinePieces(prepared, start, end, line);
+                      result.lines.push_back(std::move(line));
                       result.width = std::max(result.width, linePaintWidth);
                       result.height += prepared.options.lineHeight;
                       y += prepared.options.lineHeight;
@@ -341,8 +383,10 @@ TextLayoutResult LayoutInner(const PreparedText &prepared, float maxWidth,
       const float wholeWidth = (*measure)(prepared.source, prepared.options);
       if (wholeWidth <= maxWidth + lineFitEpsilon) {
         result.lines.clear();
-        result.lines.push_back(
-            {prepared.source, 0, prepared.source.size(), wholeWidth, 0.0f});
+        TextLine whole{prepared.source, 0, prepared.source.size(), wholeWidth, 0.0f, {}};
+        if (!prepared.spans.empty())
+          BuildLinePieces(prepared, {0, 0}, {prepared.segments.size(), 0}, whole);
+        result.lines.push_back(std::move(whole));
         result.width = wholeWidth;
         result.height = prepared.options.lineHeight;
         return result;

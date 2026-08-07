@@ -244,6 +244,10 @@ public:
       ExternalViewHitTestBehavior::Opaque;
 
   std::string text;
+  // Rich-text runs inside `text` (markdown bold/italic/code, syntax
+  // highlighting). Empty for plain text. Byte ranges into `text`, sorted and
+  // non-overlapping; see TextSpan.
+  std::vector<TextSpan> textSpans;
   ButtonVariant buttonVariant = ButtonVariant::Filled;
   TextInputProps textInput;
   TextEditState textEdit;

@@ -523,7 +523,8 @@ static const PreparedText& GetOrPrepare(const Node* node) {
       cached->options.wordBreak == wordBreak &&
       cached->options.maxLines == maxLines &&
       cached->options.overflow == overflow &&
-      cached->options.fontFamily == family && cached->source == node->text;
+      cached->options.fontFamily == family && cached->source == node->text &&
+      cached->spans == node->textSpans;
 
   if (!valid) {
     node->preparedTextRevision++;
@@ -538,7 +539,8 @@ static const PreparedText& GetOrPrepare(const Node* node) {
     opts.wordBreak  = wordBreak;
     opts.maxLines   = maxLines;
     opts.overflow   = overflow;
-    node->preparedTextCache = PrepareText(node->text, opts);
+    node->preparedTextCache =
+        PrepareTextWithSpans(node->text, opts, node->textSpans);
     node->preparedTextGeneration = generation;
   }
   return *node->preparedTextCache;
@@ -1912,10 +1914,61 @@ static void RenderTextNode(const Node &node, const Style &style) {
     } else if (alignment == TextAlignment::Right) {
       x += Density::DpToPx(node.layout.width - line.width);
     }
-    DrawTextWithEmoji(resolvedFont, line.text, {x, y},
-                      Density::DpToPx(fontSize),
-                      Density::DpToPx(letterSpacing), color);
-    const float lineWidthPx = Density::DpToPx(line.width);
+    if (line.pieces.empty()) {
+      DrawTextWithEmoji(resolvedFont, line.text, {x, y},
+                        Density::DpToPx(fontSize),
+                        Density::DpToPx(letterSpacing), color);
+    } else {
+      // Rich text: each piece carries its own span style. Resolving the font
+      // per piece is what lets bold/italic/code sit inside one wrapping
+      // paragraph — the thing that previously forced a separate Text node
+      // (and therefore a separate line box) per styled run.
+      for (const TextLinePiece &piece : line.pieces) {
+        const TextSpan *sp =
+            (piece.spanIndex >= 0 && piece.spanIndex < (int)prepared.spans.size())
+                ? &prepared.spans[(std::size_t)piece.spanIndex]
+                : nullptr;
+        const float px = x + Density::DpToPx(piece.x);
+        Color pieceColor = (sp && sp->color) ? *sp->color : color;
+        if (g_renderOpacity < 1.0f)
+          pieceColor.a = (unsigned char)std::clamp(
+              pieceColor.a * g_renderOpacity, 0.0f, 255.0f);
+        Font pieceFont = resolvedFont;
+        if (sp && (sp->weight || sp->fontStyle || sp->fontFamily)) {
+          const FontWeight w = sp->weight.value_or(weight);
+          const FontStyle st = sp->fontStyle.value_or(fontStyle);
+          if (sp->fontFamily && !sp->fontFamily->empty()) {
+            FontManager::EnsureGlyphsForFamily(*sp->fontFamily, (int)fontSize,
+                                               piece.text);
+            pieceFont = FontManager::LoadFontByFamily(*sp->fontFamily, (int)fontSize);
+          } else {
+            FontManager::EnsureGlyphsForText(w, st, (int)fontSize, piece.text);
+            pieceFont = Theme::GetFont(fontSize, w, st);
+          }
+        }
+        if (sp && sp->backgroundColor) {
+          Color bg = *sp->backgroundColor;
+          if (g_renderOpacity < 1.0f)
+            bg.a = (unsigned char)std::clamp(bg.a * g_renderOpacity, 0.0f, 255.0f);
+          DrawRectangleRec({px, y, Density::DpToPx(piece.width),
+                            Density::DpToPx(prepared.options.lineHeight)},
+                           bg);
+        }
+        DrawTextWithEmoji(pieceFont, piece.text, {px, y},
+                          Density::DpToPx(fontSize),
+                          Density::DpToPx(letterSpacing), pieceColor);
+        const float pieceW = Density::DpToPx(piece.width);
+        if ((underline || (sp && sp->underline)) && pieceW > 0.0f) {
+          const float uy = y + underlineOffsetPx;
+          DrawLineEx({px, uy}, {px + pieceW, uy}, thicknessPx, pieceColor);
+        }
+        if ((lineThrough || (sp && sp->lineThrough)) && pieceW > 0.0f) {
+          const float sy = y + strikeOffsetPx;
+          DrawLineEx({px, sy}, {px + pieceW, sy}, thicknessPx, pieceColor);
+        }
+      }
+    }
+    const float lineWidthPx = line.pieces.empty() ? Density::DpToPx(line.width) : 0.0f;
     if (underline && lineWidthPx > 0.0f) {
       const float uy = y + underlineOffsetPx;
       DrawLineEx({x, uy}, {x + lineWidthPx, uy}, thicknessPx, color);

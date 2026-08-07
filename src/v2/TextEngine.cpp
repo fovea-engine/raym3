@@ -207,7 +207,8 @@ std::vector<float> BuildBreakableFitAdvances(
 void PushMeasuredSegment(PreparedText &prepared, std::string text, float width,
                          float lineEndFitAdvance, float lineEndPaintAdvance,
                          SegmentBreakKind kind, std::size_t byteStart,
-                         std::vector<float> breakableFitAdvances) {
+                         std::vector<float> breakableFitAdvances,
+                         int spanIndex = -1) {
   if (kind != SegmentBreakKind::Text && kind != SegmentBreakKind::Space)
     prepared.simpleLineWalkFastPath = false;
   if (!breakableFitAdvances.empty())
@@ -222,6 +223,7 @@ void PushMeasuredSegment(PreparedText &prepared, std::string text, float width,
   seg.byteStart = byteStart;
   seg.byteEnd = byteStart + seg.text.size();
   seg.breakableFitAdvances = std::move(breakableFitAdvances);
+  seg.spanIndex = spanIndex;
   prepared.segments.push_back(std::move(seg));
 }
 
@@ -229,7 +231,8 @@ void PushMeasuredTextSegment(PreparedText &prepared, std::string text,
                              SegmentBreakKind kind, std::size_t byteStart,
                              bool wordLike, bool allowOverflowBreaks,
                              const MeasureTextCallback &measure,
-                             const TextLayoutOptions &options) {
+                             const TextLayoutOptions &options,
+                             int spanIndex = -1) {
   float width =
       AddLetterSpacing(measure(text, options), text, options.letterSpacing, kind);
 
@@ -248,7 +251,7 @@ void PushMeasuredTextSegment(PreparedText &prepared, std::string text,
     breakable = BuildBreakableFitAdvances(text, measure, options);
 
   PushMeasuredSegment(prepared, std::move(text), width, lineEndFit, lineEndPaint,
-                      kind, byteStart, std::move(breakable));
+                      kind, byteStart, std::move(breakable), spanIndex);
 }
 
 } // namespace
@@ -280,10 +283,56 @@ std::vector<std::size_t> GraphemeBoundaries(std::string_view text) {
   return EmojiAwareGraphemeBoundaries(text);
 }
 
+namespace {
+// Style a segment measures/paints with: the node's options, overridden by the
+// span it falls inside. Kept here so measurement and painting cannot disagree.
+TextLayoutOptions OptionsForSpan(const TextLayoutOptions &base,
+                                 const std::vector<TextSpan> &spans,
+                                 int spanIndex) {
+  if (spanIndex < 0 || spanIndex >= (int)spans.size()) return base;
+  const TextSpan &sp = spans[(std::size_t)spanIndex];
+  TextLayoutOptions out = base;
+  if (sp.weight) out.weight = *sp.weight;
+  if (sp.fontStyle) out.fontStyle = *sp.fontStyle;
+  if (sp.fontFamily) out.fontFamily = *sp.fontFamily;
+  return out;
+}
+
+// Index of the span covering `byte`, or -1.
+int SpanIndexAt(const std::vector<TextSpan> &spans, std::size_t byte) {
+  for (std::size_t i = 0; i < spans.size(); ++i) {
+    if (byte >= spans[i].byteStart && byte < spans[i].byteEnd) return (int)i;
+    if (spans[i].byteStart > byte) break;  // sorted
+  }
+  return -1;
+}
+
+// Byte offsets where the style changes within [start, end).
+void CollectSpanCuts(const std::vector<TextSpan> &spans, std::size_t start,
+                     std::size_t end, std::vector<std::size_t> &out) {
+  for (const TextSpan &sp : spans) {
+    if (sp.byteEnd <= start) continue;
+    if (sp.byteStart >= end) break;
+    if (sp.byteStart > start && sp.byteStart < end) out.push_back(sp.byteStart);
+    if (sp.byteEnd > start && sp.byteEnd < end) out.push_back(sp.byteEnd);
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+}
+} // namespace
+
 PreparedText PrepareText(std::string text, const TextLayoutOptions &options,
                          MeasureTextCallback measure) {
+  return PrepareTextWithSpans(std::move(text), options, {}, std::move(measure));
+}
+
+PreparedText PrepareTextWithSpans(std::string text,
+                                  const TextLayoutOptions &options,
+                                  std::vector<TextSpan> spans,
+                                  MeasureTextCallback measure) {
   PreparedText prepared;
   prepared.options = options;
+  prepared.spans = std::move(spans);
   prepared.simpleLineWalkFastPath = options.letterSpacing == 0.0f;
 
   MeasureTextCallback measureFn =
@@ -335,8 +384,33 @@ PreparedText PrepareText(std::string text, const TextLayoutOptions &options,
       continue;
     }
 
+    if (!prepared.spans.empty()) {
+      // A segment that straddles a style change has to become several
+      // segments: each must measure with its own font, and the painter draws
+      // one piece per style.
+      std::vector<std::size_t> cuts;
+      CollectSpanCuts(prepared.spans, seg.byteStart,
+                      seg.byteStart + seg.text.size(), cuts);
+      if (!cuts.empty()) {
+        std::size_t from = seg.byteStart;
+        cuts.push_back(seg.byteStart + seg.text.size());
+        for (std::size_t cut : cuts) {
+          if (cut <= from) continue;
+          std::string piece = seg.text.substr(from - seg.byteStart, cut - from);
+          const int spanIndex = SpanIndexAt(prepared.spans, from);
+          PushMeasuredTextSegment(
+              prepared, piece, seg.kind, from, seg.wordLike, true, measureFn,
+              OptionsForSpan(options, prepared.spans, spanIndex), spanIndex);
+          from = cut;
+        }
+        continue;
+      }
+    }
     PushMeasuredTextSegment(prepared, seg.text, seg.kind, seg.byteStart,
-                            seg.wordLike, true, measureFn, options);
+                            seg.wordLike, true, measureFn,
+                            OptionsForSpan(options, prepared.spans,
+                                           SpanIndexAt(prepared.spans, seg.byteStart)),
+                            SpanIndexAt(prepared.spans, seg.byteStart));
   }
 
   return prepared;
