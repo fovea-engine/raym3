@@ -3,6 +3,8 @@
 #include "raym3/config.h"
 #include "raym3/v2/Density.h"
 
+#include <rlgl.h>
+
 #if defined(__EMSCRIPTEN__)
 #include "EmbeddedFonts.h"
 #endif
@@ -159,6 +161,27 @@ void RebaseToEm(Font &font, int cssSize) {
   font.baseSize = std::max(1, v2::Density::RasterPixels(static_cast<float>(cssSize)));
 }
 
+// Free a font atlas that is being replaced mid-frame.
+//
+// rlgl batches glyph quads and only flushes when the bound texture changes, so
+// two Text nodes sharing a face accumulate into ONE batch with no flush between
+// them. Re-baking that face (a later node used a codepoint the atlas lacked —
+// "·" is the usual culprit, since the seed is ASCII) would otherwise free the
+// texture the already-batched quads still point at: the next draw binds the new
+// atlas, that bind flushes the pending batch, and the earlier node's glyphs
+// sample freed memory. Vulkan renders whatever is there (random glyph soup),
+// Metal reads opaque white so each glyph becomes a solid block in the text
+// colour. Because rendering is on demand, that single bad frame then stays on
+// screen until something else forces a repaint, which is why it reads as
+// permanent corruption rather than a flicker.
+//
+// Submitting the queued geometry first means those quads are drawn while the
+// old atlas is still alive; only then is it safe to unload.
+void RetireFont(const Font &font) {
+  rlDrawRenderBatchActive();
+  UnloadFont(font);
+}
+
 } // namespace
 
 Font FontManager::LoadDefaultUiFont(FontWeight weight, FontStyle style,
@@ -269,7 +292,7 @@ void FontManager::EnsureGlyphsForText(FontWeight weight, FontStyle style,
   const auto cps = SortedCodepoints(it->second.codepoints);
   Font rebuilt = BakeFont(weight, style, size, cps);
   if (rebuilt.texture.id == 0) return;
-  if (it->second.font.texture.id != 0) UnloadFont(it->second.font);
+  if (it->second.font.texture.id != 0) RetireFont(it->second.font);
   it->second.font = rebuilt;
   ++fontGeneration_;
   if (size == 16 && weight == FontWeight::Regular &&
@@ -414,7 +437,8 @@ void FontManager::EnsureGlyphsForFamily(std::string_view name, int size,
           ? LoadCustomFontFromMemory(reg->second.bytes, size, cps)
           : LoadCustomFont(reg->second.path, size, cps);
   if (rebuilt.texture.id == 0) return;
-  if (it->second.font.texture.id != 0) UnloadFont(it->second.font);
+  // Same mid-frame hazard as EnsureGlyphsForText; see RetireFont.
+  if (it->second.font.texture.id != 0) RetireFont(it->second.font);
   it->second.font = rebuilt;
   ++fontGeneration_;
 }

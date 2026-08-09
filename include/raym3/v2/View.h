@@ -390,6 +390,15 @@ public:
 };
 
 NodePtr View(const ViewProps &props, std::vector<NodePtr> children = {});
+
+// Fill in the Text defaults (font size, `normal` line height, letter spacing)
+// for whatever the caller left unset. Text() applies this at construction;
+// callers that fold in additional style sources AFTER creating the node — the
+// binary command buffer applies its CSS class in a later command — must re-run
+// it once everything has merged, or the construction-time default outranks the
+// later source.
+void ApplyTextStyleDefaults(Style &style);
+
 NodePtr Text(std::string text, const TextProps &props = {});
 NodePtr TextInput(const TextInputProps &props);
 NodePtr Button(const ButtonProps &props, std::vector<NodePtr> children = {});

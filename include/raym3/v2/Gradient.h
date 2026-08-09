@@ -23,6 +23,15 @@ void NormalizeGradientStops(LinearGradient &gradient);
 // as in browsers, so a stop fading to `transparent` does not darken on the way.
 Color SampleGradient(const LinearGradient &gradient, float t);
 
+// Drops the lazily compiled GPU gradient program after the graphics surface or
+// device is recreated. The next gradient draw recompiles it against the live
+// backend state.
+// Dead device (handles forgotten, never unloaded).
+void GradientResetDeviceCache();
+// Live device (resources actually released) — mirrors FontManager's
+// ResetDeviceCache / InvalidateLiveDeviceCache split.
+void GradientInvalidateLiveDeviceCache();
+
 // Paints `gradient` over the rounded rect, scaled by `opacity` (0..1). Linear
 // gradients use a cartesian mesh, conic gradients an angular fan — a fan keeps
 // the centre singularity sharp instead of smearing it across a grid cell.

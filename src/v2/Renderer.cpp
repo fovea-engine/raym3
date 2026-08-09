@@ -723,6 +723,14 @@ static YGSize MeasureTextNode(YGNodeConstRef ygNode, float width,
 
   const PreparedText& prep = GetOrPrepare(node);
   float maxW = (widthMode != YGMeasureModeUndefined) ? width : 0.0f;
+  // Exactly-0 means Yoga really gave this text a zero-width box (e.g. a
+  // `flex-basis: 0` chain before free space is distributed). LayoutText's
+  // `maxWidth <= 0` sentinel means UNCONSTRAINED, which reported one line's
+  // height for that zero-width box — the small height then stuck as ancestor
+  // flex bases while the final pass painted the full wrapped text over them.
+  // Wrap per-grapheme instead (what CSS does at width: 0): the height is tall,
+  // which is the truthful answer for a zero-width box.
+  if (widthMode == YGMeasureModeExactly && width <= 0.0f) maxW = 0.01f;
   TextLayoutResult res = LayoutText(prep, maxW);
 
   float outW = res.width;

@@ -4,6 +4,7 @@
 #include "raym3/config.h"
 #include "raym3/fonts/FontManager.h"
 #include "raym3/v2/Density.h"
+#include <rlgl.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -240,9 +241,20 @@ void RegisterIcon(int codepoint, int sizeDp, bool filled, const std::string &set
   bool inserted = set.requests.insert(key).second;
   bool cpInserted = set.codepoints.insert(codepoint).second;
   if (cpInserted) {
+    // RegisterIcon is reached from DrawIcon, so this drop is mid-frame. On
+    // native these fonts only feed atlas baking, but the Emscripten path draws
+    // straight from them (see GetSetFont in DrawIcon), which would leave
+    // already-batched glyphs pointing at a freed texture. Flushing first costs
+    // one extra submit on the rare frame that discovers a new codepoint.
+    bool flushed = false;
     for (auto &[fontKey, font] : set.fonts) {
-      if (font.texture.id != 0)
+      if (font.texture.id != 0) {
+        if (!flushed) {
+          rlDrawRenderBatchActive();
+          flushed = true;
+        }
         UnloadFont(font);
+      }
     }
     set.fonts.clear();
   }
@@ -333,8 +345,19 @@ static void EnsureAtlas(const std::string &setName, IconSetState &set) {
                             (float)entry.cellPx};
   }
 
-  if (set.atlas.id != 0)
+  if (set.atlas.id != 0) {
+    // EnsureAtlas runs from DrawIcon, i.e. mid-frame: reaching a screen that
+    // uses an icon this set has not packed yet rebuilds the atlas while icons
+    // drawn earlier in the same frame are still sitting in the rlgl batch,
+    // pointing at the texture about to be freed. Submitting the queued
+    // geometry first draws them against the atlas they were recorded with.
+    // Without this the freed id is promptly recycled — often by a font atlas —
+    // and those quads sample whatever landed there, which is why paging
+    // through tabs produced glyph-shaped garbage. Same hazard, and same fix,
+    // as FontManager's RetireFont.
+    rlDrawRenderBatchActive();
     UnloadTexture(set.atlas);
+  }
   set.atlas = LoadTextureFromImage(atlasImg);
   SetTextureFilter(set.atlas, TEXTURE_FILTER_BILINEAR);
   if (std::getenv("RAYM3_ICON_ATLAS_DBG"))
