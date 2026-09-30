@@ -423,11 +423,9 @@ raym3 is an independent, self-contained project. Icons come from the material-de
 
 ## Changelog
 
-### v2.0.0 - Rayact sync (not released yet: repo only, no tag)
+### v2.0.0 - Rayact sync (in the repo, not tagged as a release yet)
 
 This brings in the work done for [Rayact](https://github.com/raythings/rayact): text spans and selection, real CSS gradients, retained layout, external views, a system UI font and OS text-size scaling. **It has breaking changes**, listed first.
-
-> **Known issue, fix coming in a follow-up update:** a `backgroundGradient` on a node with `borderRadius > 0` draws nothing on plain raylib OpenGL 3.3 (checked on macOS). Gradients on square nodes draw correctly. The cause is not confirmed yet; the rounded gradient mesh is the suspect. Until the update lands, either use `borderRadius = 0` with a gradient, or paint a solid `backgroundColor` on rounded nodes. Because of this, v2.0.0 is not tagged or released.
 
 #### Breaking: source changes (your code stops compiling)
 - **`LinearGradient`** now starts with `GradientKind kind`, then `angleDegrees`, `centerX`, `centerY`, `stops`. `LinearGradient{90.0f, {...}}` no longer compiles. Use designated initializers or assign the fields.
@@ -464,6 +462,8 @@ This brings in the work done for [Rayact](https://github.com/raythings/rayact): 
 - `RetainedLayout*` (opt-in), `CancelFling`, `ReplayCurrentClips`, `SetSelectionMenuHost`, `SetHostClickCount`.
 
 #### Fixed
+- **Rounded gradients drew nothing on plain raylib OpenGL/GLES.** The gradient meshes (linear, conic and border-area) wind their triangles clockwise on screen, and raylib's plain GL path culls those. Culling is now switched off around each mesh, with the batch flushed on both sides. Checked by rendering linear gradients on macOS OpenGL 3.3. Conic and border-area got the same change but were not rendered, and the Metal, Vulkan and WebGPU backends were not run.
+- **Rounded corners on a horizontal gradient came out chamfered.** The extra rows for the corner were spread over the whole height. They are now packed into the two corner bands.
 - Layout no longer marks every node dirty each frame. Text cache keys are no longer rebuilt on every measure.
 - Clip-stack balance, mid-frame atlas and texture frees, frame stats read from the context that rendered.
 

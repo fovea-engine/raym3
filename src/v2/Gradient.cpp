@@ -311,6 +311,22 @@ std::vector<float> StopPositionsAlong(const LinearGradient &gradient, float from
   return out;
 }
 
+
+// The gradient meshes wind their triangles clockwise on screen. raylib's plain
+// OpenGL/GLES path culls back faces (front is counter-clockwise), so without this
+// every rounded gradient vanished there. Culling is switched off around a mesh;
+// the batch is flushed on both sides so the state applies to exactly these draws.
+struct NoBackfaceCulling {
+  NoBackfaceCulling() {
+    rlDrawRenderBatchActive();
+    rlDisableBackfaceCulling();
+  }
+  ~NoBackfaceCulling() {
+    rlDrawRenderBatchActive();
+    rlEnableBackfaceCulling();
+  }
+};
+
 template <typename Sampler>
 void DrawRoundedMesh(const Rectangle &box, float r, const std::vector<float> &xs,
                      const std::vector<float> &ys, const Sampler &sample) {
@@ -320,6 +336,7 @@ void DrawRoundedMesh(const Rectangle &box, float r, const std::vector<float> &xs
   for (size_t i = 0; i < ys.size(); ++i)
     RoundedRowLimits(box, r, ys[i], lefts[i], rights[i]);
 
+  NoBackfaceCulling noCull;
   rlBegin(RL_TRIANGLES);
   for (size_t row = 0; row + 1 < ys.size(); ++row) {
     const float y0 = ys[row], y1 = ys[row + 1];
@@ -446,6 +463,7 @@ void DrawConicFan(const Rectangle &box, float r, const LinearGradient &gradient,
     return Vector2{center.x + dir.x * t, center.y + dir.y * t};
   };
 
+  NoBackfaceCulling noCull;
   rlBegin(RL_TRIANGLES);
   for (size_t i = 0; i + 1 < angles.size(); ++i) {
     const float a0 = angles[i], a1 = angles[i + 1];
@@ -1039,6 +1057,7 @@ void DrawGradientBorderArea(Rectangle outer, float outerRadius, Rectangle inner,
     inPt = {center.x + dir.x * std::min(ti, to), center.y + dir.y * std::min(ti, to)};
   };
 
+  NoBackfaceCulling noCull;
   rlBegin(RL_TRIANGLES);
   for (size_t i = 0; i + 1 < angles.size(); ++i) {
     Vector2 o0, i0, o1, i1;
@@ -1121,6 +1140,18 @@ void DrawGradientRoundedRect(Rectangle box, float cornerRadius,
   const int ny = std::max(DivisionCountWeighted(box.height, wy), CornerRowFloor(r));
   const std::vector<float> xs =
       BuildDivisionsN(box.x, box.x + box.width, nx, pinnedX);
+  // Concentrate rows inside the two corner bands. CornerRowFloor only raises the
+  // total row count, which spreads the extra rows over the whole height; on a tall
+  // box with a horizontal gradient the arc then got one or two samples and the
+  // corner came out chamfered instead of round.
+  if (r > 0.5f) {
+    const int bandRows = std::clamp((int)std::ceil(r / 1.5f), 4, 32);
+    for (int k = 1; k < bandRows; ++k) {
+      const float d = r * ((float)k / (float)bandRows);
+      pinnedY.push_back(box.y + d);
+      pinnedY.push_back(box.y + box.height - d);
+    }
+  }
   const std::vector<float> ys =
       BuildDivisionsN(box.y, box.y + box.height, ny, pinnedY);
   DrawRoundedMesh(box, r, xs, ys, [&](Vector2 p) {
