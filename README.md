@@ -423,6 +423,50 @@ raym3 is an independent, self-contained project. Icons come from the material-de
 
 ## Changelog
 
+### v2.0.0 - Rayact sync (not released yet: repo only, no tag)
+
+This brings in the work done for [Rayact](https://github.com/raythings/rayact): text spans and selection, real CSS gradients, retained layout, external views, a system UI font and OS text-size scaling. **It has breaking changes**, listed first.
+
+> **Known issue, fix coming in a follow-up update:** a `backgroundGradient` on a node with `borderRadius > 0` draws nothing on plain raylib OpenGL 3.3 (checked on macOS). Gradients on square nodes draw correctly. The cause is not confirmed yet; the rounded gradient mesh is the suspect. Until the update lands, either use `borderRadius = 0` with a gradient, or paint a solid `backgroundColor` on rounded nodes. Because of this, v2.0.0 is not tagged or released.
+
+#### Breaking: source changes (your code stops compiling)
+- **`LinearGradient`** now starts with `GradientKind kind`, then `angleDegrees`, `centerX`, `centerY`, `stops`. `LinearGradient{90.0f, {...}}` no longer compiles. Use designated initializers or assign the fields.
+- **`TextLayoutOptions`, `PreparedSegment`, `RenderStats`** gained members in the middle (`fontStyle`, `maxLines`, `overflow`, `spanIndex`, `paintedCount`). Positional brace-initialisation breaks or silently shifts values. Use designated initializers.
+- **`v2::Node`** has a new `const stableId`, so it can be copied but no longer assigned or swapped. Construct a new node instead of assigning.
+- **`Node::preparedTextKey`** is removed. It is replaced by `preparedTextGeneration` and `preparedTextRevision`. Compare `preparedTextCache->source` and `->options` plus the generation instead.
+- **`TextFieldVariant`** gained `Plain`. A `switch` over it without `default` warns, and errors under `-Werror=switch`.
+- **`ActiveAnimation::elapsedMs`** is now a `double`. Only code that binds a `float&` to it is affected.
+- **`TextCacheKey(...)`** and **`BeginInputFrame(...)`** gained trailing defaulted parameters. Calls compile as before. Function pointers or `std::function` bound to the old signatures do not.
+- **`TextStyle`** gained many fields in the middle. Designated initializers are fine, positional ones break.
+- `Style.h` now includes `<algorithm>` and `Density.h`.
+- CMake: with `RAYM3_USE_YOGA=ON`, `RAYM3_FETCH_DEPS=OFF` and no `yogacore` target, configure now stops with an error. It used to warn and turn Yoga off.
+
+#### Breaking: behaviour changes (same code, different result)
+- **Gradient angles follow CSS.** `0` points up and angles run clockwise, so `180` is top to bottom and `90` is left to right. Before, angles snapped to four blends and `90` painted top to bottom. Multi-stop gradients now honour every stop. Rewrite `90` as `180` for a vertical gradient.
+- **Alpha is honoured** for `backgroundColor` and `borderColor`. Semi-transparent colours used to paint opaque.
+- **`font-size` is the em size.** Text draws roughly 10-15% larger than before (a 24 px label measured about 11% wider) and wraps sooner, so layouts shift.
+- **The default font on native platforms is the system UI font** (SF, Segoe UI, fontconfig), not Roboto. Roboto is only embedded for Emscripten.
+- **Long unbreakable words wrap at the line width.** They used to produce one letter per line.
+- **OS text scale** applies to text and text fields once the host calls `Density::SetFontScale`. The default is 1.0, so nothing changes until then. Opt out per run with `allowFontScaling = false`.
+- **Node ids are never reused.** `DisposeNode` now removes the node from its parent, and clears `root` if the root is disposed. It used to stay alive and keep painting.
+- **Scrolling:** the fling velocity tracker scales to the real frame rate, and a second flick within 400 ms adds the leftover momentum of the first.
+- **Fixed-position z-order** uses a precomputed key. The old sort had undefined behaviour, so ties may order differently.
+- **Clipping:** a scissor that does not overlap now pushes an empty rect, which fixes an unbalanced clip stack. Vulkan (`rlvk`) uses real stencil rounded clipping. WebGPU (`rlwg`) falls back to a square scissor.
+- **Emoji:** Windows uses DirectWrite and macOS/iOS use CoreText. A custom emoji font now overrides the OS rasteriser.
+- `overflow: hidden` still clips to the outer edge of the border, not the padding box. This is unchanged, but note it if you put images in bordered, rounded nodes.
+
+#### Added
+- Selectable `Text` (`TextStyle::selectable`) with shared selection geometry, and styled spans inside one `Text` node.
+- CSS gradients: linear and conic, evaluated per pixel with dithering, multiple background layers, `border-area` clipping.
+- `ExternalView` for native views embedded in the tree.
+- Percent dimensions, per-edge borders, caret and selection colours, `maxLines`, `overflow`, underline and line-through.
+- `Density::Set/GetFontScale`, `FontManager` glyph-cache helpers, system UI font lookup.
+- `RetainedLayout*` (opt-in), `CancelFling`, `ReplayCurrentClips`, `SetSelectionMenuHost`, `SetHostClickCount`.
+
+#### Fixed
+- Layout no longer marks every node dirty each frame. Text cache keys are no longer rebuilt on every measure.
+- Clip-stack balance, mid-frame atlas and texture frees, frame stats read from the context that rendered.
+
 ### v1.5.0 - Scissor API & Emscripten Support
 - **Scissor Stack API**: Public `PushScissor`, `PopScissor`, `BeginScissor`, `GetCurrentScissorBounds` for custom clipping regions. Scissors intersect and stack correctly.
 - **Scissor Debug**: `SetScissorDebug`, `IsScissorDebug`, `DrawScissorDebug` for visualizing active scissor regions.

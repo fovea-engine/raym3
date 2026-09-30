@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(raym3 VERSION 1.0.0 LANGUAGES CXX)
+project(raym3 VERSION 2.0.0 LANGUAGES CXX)
 
 if(APPLE)
     enable_language(OBJCXX)
