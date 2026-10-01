@@ -1,8 +1,10 @@
 #pragma once
 
 #include "raym3/types.h"
+#include "raym3/v2/ExternalView.h"
 #include "raym3/v2/Style.h"
 #include "raym3/v2/TextEngine.h"
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -117,6 +119,10 @@ struct TextInputProps {
   // parent (e.g. a search bar) owns the single state layer. See
   // TextFieldOptions.
   bool drawStateLayer = true;
+  // Mobile hosts can supply a real transparent native editor. Raym3 still
+  // paints the Material container, label, outline, and state layer, but leaves
+  // glyphs, selection, composing text, and the caret to that editor.
+  bool nativeEditor = false;
   std::function<void(const std::string &)> onChange;
   std::function<void()> onFocus;
   std::function<void()> onBlur;
@@ -215,6 +221,14 @@ class Node {
 public:
   explicit Node(NodeKind kind);
 
+  // Identity that survives the allocator.
+  //
+  // Node addresses get reused: free a node and the next allocation can land on
+  // the same bytes. Anything that remembers a node across frames by pointer
+  // therefore risks attaching the old node's state to an unrelated new one, so
+  // per-node side tables key on this instead.
+  const std::uint64_t stableId;
+
   NodeKind kind;
   std::string id;
   Style style;
@@ -224,8 +238,16 @@ public:
   int zIndex = 0;
   bool inkRipple = false;
   std::function<void()> onPress;
+  int externalViewId = 0;
+  bool externalViewPreservesFrameworkUnderlay = false;
+  ExternalViewHitTestBehavior externalViewHitTestBehavior =
+      ExternalViewHitTestBehavior::Opaque;
 
   std::string text;
+  // Rich-text runs inside `text` (markdown bold/italic/code, syntax
+  // highlighting). Empty for plain text. Byte ranges into `text`, sorted and
+  // non-overlapping; see TextSpan.
+  std::vector<TextSpan> textSpans;
   ButtonVariant buttonVariant = ButtonVariant::Filled;
   TextInputProps textInput;
   TextEditState textEdit;
@@ -268,6 +290,11 @@ public:
   float flingStartOffsetY = 0.0f;
   float flingDuration = 0.0f;
   float flingDistance = 0.0f;
+  // Momentum carried over from a fling that a new touch interrupted, so a
+  // second flick in the same direction builds on it instead of replacing it.
+  // Captured at press (the touch has to pin the content) and spent at release.
+  float flingResidualVelocity = 0.0f;
+  double flingResidualTime = 0.0;
   std::function<void()> onScroll;
   // Continuously time-driven paint (indeterminate/wavy progress, loading
   // spinners): the frame scheduler must keep rendering while this node exists.
@@ -288,7 +315,16 @@ public:
   // Pretext-style two-phase text cache: prepare once (segment + measure),
   // layout many times (pure arithmetic). Invalidated when text or font changes.
   mutable std::optional<PreparedText> preparedTextCache;
-  mutable std::string preparedTextKey; // text + fontSize + weight fingerprint
+  // Font-atlas generation the cached layout was prepared against. Everything
+  // else the cache identity depends on already lives in preparedTextCache
+  // (its `source` and `options`), so it is compared there directly rather than
+  // being re-encoded into a key.
+  mutable std::uint64_t preparedTextGeneration = 0;
+  // Bumped every time the prepared layout is actually rebuilt (text, text
+  // style, or font-atlas change). Retained layout watches it to know when a
+  // Text node's yoga measure is stale — the one signal Yoga's own style
+  // comparison cannot see, since font size and content are not layout styles.
+  mutable std::uint32_t preparedTextRevision = 0;
 
   bool inNavigationRail = false;
   bool inNavigationBar = false;
@@ -354,6 +390,15 @@ public:
 };
 
 NodePtr View(const ViewProps &props, std::vector<NodePtr> children = {});
+
+// Fill in the Text defaults (font size, `normal` line height, letter spacing)
+// for whatever the caller left unset. Text() applies this at construction;
+// callers that fold in additional style sources AFTER creating the node — the
+// binary command buffer applies its CSS class in a later command — must re-run
+// it once everything has merged, or the construction-time default outranks the
+// later source.
+void ApplyTextStyleDefaults(Style &style);
+
 NodePtr Text(std::string text, const TextProps &props = {});
 NodePtr TextInput(const TextInputProps &props);
 NodePtr Button(const ButtonProps &props, std::vector<NodePtr> children = {});

@@ -7,7 +7,13 @@
 
 namespace raym3::v2 {
 
-Node::Node(NodeKind nodeKind) : kind(nodeKind) {}
+namespace {
+// Monotonic and never reused for the lifetime of the process.
+std::uint64_t g_nextStableNodeId = 1;
+}  // namespace
+
+Node::Node(NodeKind nodeKind)
+    : stableId(g_nextStableNodeId++), kind(nodeKind) {}
 
 static void ApplyViewProps(Node &node, const ViewProps &props) {
   node.id = props.id;
@@ -31,21 +37,33 @@ NodePtr View(const ViewProps &props, std::vector<NodePtr> children) {
   return node;
 }
 
+void ApplyTextStyleDefaults(Style &style) {
+  if (!style.text.fontSize)
+    style.text.fontSize = Theme::GetTypographyScale().bodyMedium;
+  if (!style.text.lineHeight && !style.text.lineHeightRatio) {
+    // CSS `normal` line-height: proportional to the font size (~1.4×), not a
+    // fixed value. A constant (the old 20dp) collapsed large text (fontSize 30
+    // with lineHeight 20 overlapped) and over-spaced tiny text. A unitless
+    // ratio is left unresolved here so it still tracks a font size set later.
+    const float fs = *style.text.fontSize;
+    style.text.lineHeight = std::max(fs + 4.0f, fs * 1.4f);
+  }
+  if (!style.text.letterSpacing)
+    style.text.letterSpacing = 0.25f;
+}
+
 NodePtr Text(std::string text, const TextProps &props) {
   auto node = std::make_shared<Node>(NodeKind::Text);
   node->id = props.id;
   node->style = props.style;
-  if (!node->style.text.fontSize)
-    node->style.text.fontSize = Theme::GetTypographyScale().bodyMedium;
-  if (!node->style.text.lineHeight) {
-    // CSS `normal` line-height: proportional to the font size (~1.4×), not a
-    // fixed value. A constant (the old 20dp) collapsed large text (fontSize 30
-    // with lineHeight 20 overlapped) and over-spaced tiny text.
-    const float fs = *node->style.text.fontSize;
-    node->style.text.lineHeight = std::max(fs + 4.0f, fs * 1.4f);
-  }
-  if (!node->style.text.letterSpacing)
-    node->style.text.letterSpacing = 0.25f;
+  // These defaults are baked at construction, which is only correct when the
+  // caller has already folded in every style source. The binary command buffer
+  // has NOT: it sends the CSS class as a separate command after the create, so
+  // a baked default here would outrank the class (class merges UNDER the node's
+  // style) and a `.title { font-size: 32px }` silently rendered at bodyMedium.
+  // That path re-runs ApplyTextStyleDefaults after its merge instead — same
+  // reasoning as the deliberately-unbaked colour below.
+  ApplyTextStyleDefaults(node->style);
   // Deliberately DO NOT bake a colour here. Baking Theme::onSurface at creation
   // froze the text to whatever scheme was active when the node was built, so a
   // later light/dark switch could not repaint it, and it also defeated the CSS

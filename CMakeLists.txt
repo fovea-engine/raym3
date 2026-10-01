@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(raym3 VERSION 1.0.0 LANGUAGES CXX)
+project(raym3 VERSION 2.0.0 LANGUAGES CXX)
 
 if(APPLE)
     enable_language(OBJCXX)
@@ -149,8 +149,14 @@ if(RAYM3_USE_YOGA)
             if(RAYM3_FETCH_DEPS)
                 message(FATAL_ERROR "RAYM3_USE_YOGA=ON but yogacore target was not created. Set YOGA_DIR, provide a yogacore target, or set RAYM3_USE_YOGA=OFF.")
             else()
-                message(WARNING "RAYM3_USE_YOGA=ON but RAYM3_FETCH_DEPS=OFF and yogacore target was not found. Building without Yoga support.")
-                target_compile_definitions(raym3 PUBLIC RAYM3_USE_YOGA=0)
+                # Not a warning: RAYM3_USE_YOGA=0 silently swaps real flexbox for
+                # the fallback layout, which is also O(depth) per node. The
+                # symptom is an app that lays out wrongly and scrolls slowly,
+                # with a build log nobody re-reads. Fail here instead.
+                message(FATAL_ERROR
+                    "RAYM3_USE_YOGA=ON but yogacore was not found and RAYM3_FETCH_DEPS=OFF. "
+                    "Set YOGA_DIR to a Yoga checkout, provide a yogacore target, enable "
+                    "RAYM3_FETCH_DEPS, or set RAYM3_USE_YOGA=OFF to opt into the fallback layout.")
             endif()
         endif()
     endif()
@@ -191,6 +197,24 @@ if(APPLE)
         ${RAYM3_CORETEXT_FRAMEWORK}
         ${RAYM3_COREGRAPHICS_FRAMEWORK}
     )
+endif()
+
+# EmojiRasterizerWindows.cpp is matched by GLOB_RECURSE; empty TU off-Windows.
+# PUBLIC so the final exe (static raym3) picks up DWrite/D2D/WIC/D3D at link time.
+if(WIN32)
+    target_link_libraries(raym3 PUBLIC dwrite d2d1 windowscodecs ole32 d3d11 dxgi)
+endif()
+
+# Optional fontconfig for Linux system-UI font resolution.
+if(UNIX AND NOT APPLE AND NOT ANDROID AND NOT EMSCRIPTEN)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(RAYM3_FONTCONFIG QUIET fontconfig)
+        if(RAYM3_FONTCONFIG_FOUND)
+            target_include_directories(raym3 PRIVATE ${RAYM3_FONTCONFIG_INCLUDE_DIRS})
+            target_link_libraries(raym3 PRIVATE ${RAYM3_FONTCONFIG_LIBRARIES})
+        endif()
+    endif()
 endif()
 
 set_target_properties(raym3 PROPERTIES
@@ -285,9 +309,12 @@ else()
     target_compile_definitions(raym3 PRIVATE RAYM3_EMBED_RESOURCES=0)
 endif()
 
+# Material / emoji fonts only — Roboto ships embedded for web and is not
+# packaged for native hosts (those use the platform UI face).
 install(DIRECTORY resources/fonts
     DESTINATION share/raym3/resources
     FILES_MATCHING PATTERN "*.ttf"
+    PATTERN "Roboto" EXCLUDE
 )
 
 if(RAYM3_INSTALL_ALL_ICONS)

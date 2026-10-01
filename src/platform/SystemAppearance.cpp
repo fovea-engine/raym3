@@ -5,6 +5,19 @@
 #include <functional>
 #include <thread>
 
+// Platform headers belong at global scope. Including <windows.h> inside
+// namespace raym3 nests every Windows SDK declaration in it, so the COM headers
+// see an incomplete ::_GUID and fail to compile.
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#elif !defined(__APPLE__) && !defined(__ANDROID__)
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#endif
+
 namespace raym3 {
 
 static std::function<void(bool)> g_onChange;
@@ -15,17 +28,24 @@ static std::thread g_watcherThread;
 bool platformReadSystemDarkMode();
 void platformStartWatcher(std::function<void()> signalChange);
 void platformStopWatcher();
-#elif defined(_WIN32)
-#include <windows.h>
-#else
-#include <cstdio>
-#include <cstdlib>
-#include <string>
+#elif defined(__ANDROID__)
+bool platformReadSystemDarkMode();
 #endif
 
 bool SystemAppearance::IsDarkMode() {
 #if defined(__APPLE__)
     return platformReadSystemDarkMode();
+#elif defined(__ANDROID__)
+    return platformReadSystemDarkMode();
+#elif defined(__EMSCRIPTEN__)
+    // The browser is the source of truth. Without this the web build fell into
+    // the generic branch below and shelled out to `gsettings`, which is
+    // meaningless under Emscripten — so the native M3 palette never followed
+    // the OS, even though the CSS prefers-color-scheme rules did.
+    return EM_ASM_INT({
+        return (window.matchMedia &&
+                window.matchMedia('(prefers-color-scheme: dark)').matches) ? 1 : 0;
+    }) != 0;
 #elif defined(_WIN32)
     DWORD value = 1;
     DWORD size = sizeof(value);
@@ -71,6 +91,10 @@ void SystemAppearance::StartWatching(std::function<void(bool isDark)> onChange) 
     platformStartWatcher([]() {
         if (g_onChange) g_onChange(SystemAppearance::IsDarkMode());
     });
+#elif defined(__ANDROID__)
+    // Configuration changes are delivered by the Android host and applied
+    // from the engine's regular JS/render pump.
+    if (g_onChange) g_onChange(SystemAppearance::IsDarkMode());
 #elif defined(_WIN32)
     g_watcherThread = std::thread([]() {
         bool lastDark = SystemAppearance::IsDarkMode();
@@ -102,6 +126,8 @@ void SystemAppearance::StopWatching() {
     g_watcherRunning = false;
 #if defined(__APPLE__)
     platformStopWatcher();
+#elif defined(__ANDROID__)
+    // The host owns Android configuration observation.
 #elif defined(_WIN32)
     if (g_watcherThread.joinable()) g_watcherThread.join();
 #else

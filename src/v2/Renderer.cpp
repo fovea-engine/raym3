@@ -2,6 +2,7 @@
 #include "raym3/v2/TextSelectionOverlay.h"
 #include "raym3/v2/RenderContext.h"
 #include "raym3/v2/TextInput.h"
+#include "raym3/v2/TextSelection.h"
 
 #include "raym3/components/Button.h"
 #include "raym3/fonts/FontManager.h"
@@ -10,6 +11,7 @@
 #include "raym3/styles/Theme.h"
 #include "raym3/v2/Controls.h"
 #include "raym3/v2/Density.h"
+#include "raym3/v2/Gradient.h"
 #include "raym3/v2/Input.h"
 #include "raym3/v2/MaterialTokens.h"
 #include "raym3/v2/Ripple.h"
@@ -19,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdarg>
 #include <cstdlib>
 #include <cstdio>
 #include <unordered_map>
@@ -36,6 +39,18 @@ namespace raym3::v2 {
 // M3 default backdrop scrim alpha (style.scrimOpacity overrides per-overlay).
 static constexpr float kDefaultScrimOpacity = 0.32f;
 static thread_local float g_renderOpacity = 1.0f;
+
+// Counters for the frame that most recently finished painting, published out of
+// the RenderContext that rendered it.
+//
+// Callers ask for these *after* the frame — a host's diagnostics hook runs from
+// JS, long after the render loop set its per-screen context back to null. Read
+// straight off Ctx() that lands on the default context, which never renders
+// anything, so every counter comes back zero.
+static RenderStats s_publishedStats;
+static void PublishRenderStats(const RenderStats &stats) {
+  s_publishedStats = stats;
+}
 
 // Inherited text color (CSS `color` cascade). A node whose style sets a text
 // color establishes it for its subtree; a Text with no color of its own uses
@@ -62,6 +77,38 @@ static Color ResolveTextColor(const std::optional<Color> &own) {
 // isn't drawn while off-screen.
 static thread_local std::vector<Rectangle> g_cullStack;
 
+static std::array<float, 9> MultiplyTransform(
+    const std::array<float, 9> &a, const std::array<float, 9> &b) {
+  std::array<float, 9> out{};
+  for (int row = 0; row < 3; ++row)
+    for (int col = 0; col < 3; ++col)
+      for (int k = 0; k < 3; ++k)
+        out[row * 3 + col] += a[row * 3 + k] * b[k * 3 + col];
+  return out;
+}
+
+static std::array<float, 9> NodeTransform(const Node &node,
+                                          const Style &style) {
+  constexpr float kPi = 3.14159265358979323846f;
+  const float radians = style.rotation.value_or(0.0f) * kPi / 180.0f;
+  const float cosine = std::cos(radians);
+  const float sine = std::sin(radians);
+  const float scale = style.scale.value_or(1.0f);
+  const float cx = node.layout.x + node.layout.width * 0.5f;
+  const float cy = node.layout.y + node.layout.height * 0.5f;
+  const float tx = style.translateX.value_or(0.0f);
+  const float ty = style.translateY.value_or(0.0f);
+  const std::array<float, 9> toOrigin = {1, 0, -cx, 0, 1, -cy, 0, 0, 1};
+  const std::array<float, 9> rotateScale = {
+      cosine * scale, -sine * scale, 0,
+      sine * scale, cosine * scale, 0,
+      0, 0, 1};
+  const std::array<float, 9> fromOrigin = {
+      1, 0, cx + tx, 0, 1, cy + ty, 0, 0, 1};
+  return MultiplyTransform(fromOrigin,
+                           MultiplyTransform(rotateScale, toOrigin));
+}
+
 static bool RectsOverlap(const Rectangle& a, const Rectangle& b) {
   return a.x < b.x + b.width && a.x + a.width > b.x &&
          a.y < b.y + b.height && a.y + a.height > b.y;
@@ -77,8 +124,18 @@ static Rectangle IntersectRect(const Rectangle& a, const Rectangle& b) {
 
 float CurrentRenderOpacity() { return g_renderOpacity; }
 
+// raylib's ColorAlpha REPLACES the alpha channel (result.a = 255*alpha), which
+// silently discards a colour's own alpha. Every user-supplied colour
+// (background, border, gradient stops, shadows) must instead have the render
+// opacity SCALED into whatever alpha it already carries, or `#RRGGBBAA`,
+// `rgb(r g b / 50%)` and packed 0xRRGGBBAA all paint fully opaque.
+Color ScaleAlpha(Color color, float factor) {
+  const float a = (float)color.a * std::clamp(factor, 0.0f, 1.0f);
+  return Color{color.r, color.g, color.b, (unsigned char)std::lround(std::clamp(a, 0.0f, 255.0f))};
+}
+
 Color ApplyRenderOpacity(Color color) {
-  return ColorAlpha(color, g_renderOpacity);
+  return ScaleAlpha(color, g_renderOpacity);
 }
 
 // All mutable render/input/text-input state lives in RenderContext (see
@@ -110,12 +167,24 @@ static float DefaultNodeHeight(const Node &node) {
   switch (node.kind) {
   case NodeKind::Button:
     return 40.0f;
-  case NodeKind::TextInput:
-    return 56.0f;
-  case NodeKind::Text:
-    return node.style.height.value_or(node.style.text.lineHeight.value_or(
-        node.style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium) *
-            1.43f));
+  case NodeKind::TextInput: {
+    // Material variants have a fixed 56dp container. A plain field is
+    // react-native's TextInput: no intrinsic minimum of its own, sized by the
+    // text line box plus whatever padding the caller set (Yoga heights are
+    // border-box, so padding is added here).
+    if (node.textInput.variant != TextFieldVariant::Plain)
+      return 56.0f;
+    const float fontSize = ResolveFontSize(node.style.text, 16.0f);
+    float height = ResolveLineHeight(node.style.text, fontSize);
+    if (node.textInput.multiline)
+      height *= 2.0f;
+    return height + node.style.padding.Top() + node.style.padding.Bottom();
+  }
+  case NodeKind::Text: {
+    const float fontSize =
+        ResolveFontSize(node.style.text, Theme::GetTypographyScale().bodyMedium);
+    return node.style.height.value_or(ResolveLineHeight(node.style.text, fontSize));
+  }
   default:
     return 0.0f;
   }
@@ -129,13 +198,61 @@ static float DefaultNodeWidth(const Node &node) {
     return 240.0f;
   case NodeKind::Text: {
     float fontSize =
-        node.style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium);
+        ResolveFontSize(node.style.text, Theme::GetTypographyScale().bodyMedium);
     FontWeight weight = node.style.text.weight.value_or(FontWeight::Regular);
     return Renderer::MeasureText(node.text.c_str(), fontSize, weight).x;
   }
   default:
     return 0.0f;
   }
+}
+
+// True when EffectiveStyle would return `node.style` unchanged: no interaction
+// state override applies and the nav-rail adjustment does not kick in. This is
+// the overwhelmingly common case (every plain View/Text, every list row).
+static inline bool EffectiveStyleIsBase(const Node &node) {
+  if (node.inNavigationRail && node.role == NodeRole::NavItem) return false;
+  switch (node.state) {
+  case ComponentState::Hovered:  return !node.stateStyles.hovered;
+  case ComponentState::Pressed:  return !node.stateStyles.pressed;
+  case ComponentState::Focused:  return !node.stateStyles.focused;
+  case ComponentState::Disabled: return !node.stateStyles.disabled;
+  default: return true;
+  }
+}
+
+static Style EffectiveStyle(const Node &node);
+
+// Copy-free EffectiveStyle for read-only callers. `Style` is a ~60-optional
+// struct holding vectors and strings, so returning it by value costs a heap
+// allocation per call — and the per-frame layout/paint walks call it several
+// times PER NODE (once for the node, once per child for the Fixed test, once
+// for stretch resolution). Handing back a reference to node.style on the base
+// path removes that entirely; the rare adjusted path fills the caller's
+// scratch. Callers that MUTATE the result must keep using EffectiveStyle.
+static inline const Style &EffectiveStyleRef(const Node &node, Style &scratch) {
+  if (EffectiveStyleIsBase(node)) return node.style;
+  scratch = EffectiveStyle(node);
+  return scratch;
+}
+
+// Fixed-position-and-painted test without materializing a Style at all. This is
+// the per-child question the paint walk asks, and answering it with a full
+// EffectiveStyle copy was one allocation per child per frame.
+static inline bool EffectiveIsFixedAndVisible(const Node &node) {
+  if (EffectiveStyleIsBase(node))
+    return node.style.position == PositionType::Fixed &&
+           node.style.display != Display::None;
+  Style scratch;
+  const Style &s = EffectiveStyleRef(node, scratch);
+  return s.position == PositionType::Fixed && s.display != Display::None;
+}
+
+// Fixed-position test without materializing a Style at all.
+static inline bool EffectiveIsFixed(const Node &node) {
+  if (EffectiveStyleIsBase(node)) return node.style.position == PositionType::Fixed;
+  Style scratch;
+  return EffectiveStyleRef(node, scratch).position == PositionType::Fixed;
 }
 
 static Style EffectiveStyle(const Node &node) {
@@ -254,13 +371,16 @@ static float FlutterEaseInOutCubicEmphasized(float t) {
 
 // Walks the parent map from `node` up to the root, returning true if
 // `ancestor` is `node` itself or any of its ancestors.
+// Reads the committed map, not the working one: every caller is an input
+// handler running after Render committed the frame, and the working map is
+// swapped out at that point (see the end of Render).
 static bool NodeWithinSubtree(const Node *node, const Node *ancestor) {
   const Node *curr = node;
   while (curr) {
     if (curr == ancestor)
       return true;
-    auto it = Ctx().parentMap.find(const_cast<Node *>(curr));
-    curr = (it != Ctx().parentMap.end()) ? it->second.get() : nullptr;
+    auto it = Ctx().committedParentMap.find(const_cast<Node *>(curr));
+    curr = (it != Ctx().committedParentMap.end()) ? it->second.get() : nullptr;
   }
   return false;
 }
@@ -304,7 +424,9 @@ static bool NodeIsInteractive(const Node &node) {
          node.onRequestClose || node.onLongPress || node.onPressIn ||
          node.onPressOut || node.onDragStart || node.onDragMove ||
          node.onDragEnd || node.focusable || IsControlKind(node.kind) ||
-         node.kind == NodeKind::Button || node.kind == NodeKind::TextInput;
+         node.kind == NodeKind::Button || node.kind == NodeKind::TextInput ||
+         (node.kind == NodeKind::Text &&
+          node.style.text.selectable.value_or(false));
 }
 
 // True if the committed hovered/active node is `node` itself or a descendant
@@ -364,35 +486,100 @@ static ComponentState ComputeState(const Node &node) {
 // Returns (and caches) the PreparedText for a Text node.
 // Pretext pattern: prepare once per text+font change, layout many times.
 static const PreparedText& GetOrPrepare(const Node* node) {
-  float fontSize = node->style.text.fontSize.value_or(16.0f);
+  float fontSize = ResolveFontSize(node->style.text, 16.0f);
   FontWeight weight = node->style.text.weight.value_or(FontWeight::Regular);
+  FontStyle fontStyle = node->style.text.fontStyle.value_or(FontStyle::Normal);
   const std::string& family = node->style.text.fontFamily.value_or(std::string{});
   WhiteSpace whiteSpace = node->style.text.whiteSpace.value_or(
       node->kind == NodeKind::TextInput ? WhiteSpace::PreWrap : WhiteSpace::Normal);
   WordBreak wordBreak = node->style.text.wordBreak.value_or(WordBreak::Normal);
   float letterSpacing = node->style.text.letterSpacing.value_or(0.25f);
-  std::string key = TextCacheKey(node->text, fontSize, weight, family, whiteSpace,
-                                 wordBreak, letterSpacing);
+  const int maxLines = std::max(0, node->style.text.maxLines.value_or(0));
+  const TextOverflow overflow =
+      node->style.text.overflow.value_or(TextOverflow::Clip);
+  const float lineHeight = ResolveLineHeight(node->style.text, fontSize);
+  // Validate the cache against what it was actually built from. This used to
+  // format a key string per call — snprintf with float conversion, three
+  // to_string calls and a copy of the whole text — and Yoga calls the measure
+  // function that lands here several times per text node per layout pass, so
+  // profiling put ~11% of the frame inside __dtoa. PreparedText already records
+  // its source and options, so nothing has to be encoded at all.
+  //
+  // The comparison reads the cached options in place rather than building a
+  // TextLayoutOptions to compare against: that struct owns a fontFamily string,
+  // so materializing one per call would just trade the old allocation for a
+  // new one on the hit path, which is the path that matters.
+  const std::uint64_t generation = FontManager::FontGeneration();
+  const PreparedText *cached =
+      node->preparedTextCache ? &*node->preparedTextCache : nullptr;
+  const bool valid =
+      cached && node->preparedTextGeneration == generation &&
+      cached->options.fontSize == fontSize &&
+      cached->options.lineHeight == lineHeight &&
+      cached->options.letterSpacing == letterSpacing &&
+      cached->options.weight == weight &&
+      cached->options.fontStyle == fontStyle &&
+      cached->options.whiteSpace == whiteSpace &&
+      cached->options.wordBreak == wordBreak &&
+      cached->options.maxLines == maxLines &&
+      cached->options.overflow == overflow &&
+      cached->options.fontFamily == family && cached->source == node->text &&
+      cached->spans == node->textSpans;
 
-  if (!node->preparedTextCache || node->preparedTextKey != key) {
+  if (!valid) {
+    node->preparedTextRevision++;
     TextLayoutOptions opts;
     opts.fontSize   = fontSize;
-    opts.lineHeight = node->style.text.lineHeight.value_or(
-        std::max(fontSize + 4.0f, fontSize * 1.43f));
+    opts.lineHeight = lineHeight;
     opts.letterSpacing = letterSpacing;
     opts.weight     = weight;
+    opts.fontStyle  = fontStyle;
     opts.fontFamily = family;
     opts.whiteSpace = whiteSpace;
     opts.wordBreak  = wordBreak;
-    node->preparedTextCache = PrepareText(node->text, opts);
-    node->preparedTextKey   = std::move(key);
+    opts.maxLines   = maxLines;
+    opts.overflow   = overflow;
+    node->preparedTextCache =
+        PrepareTextWithSpans(node->text, opts, node->textSpans);
+    node->preparedTextGeneration = generation;
   }
   return *node->preparedTextCache;
+}
+
+// Public accessor for TextSelection.cpp: selection geometry must be derived
+// from exactly the prepare/layout the renderer draws with.
+const PreparedText &GetPreparedTextForNode(const Node &node) {
+  return GetOrPrepare(&node);
 }
 
 static float ClampScrollOffset(float offset, float contentSize, float viewportSize) {
   float maxOffset = std::max(0.0f, contentSize - viewportSize);
   return std::max(0.0f, std::min(offset, maxOffset));
+}
+
+// Clamp both axes to this frame's content size, then apply the follow-end pin.
+// Every layout path routes through here so the two writes stay attributable:
+// the clamp is symmetric, but the follow-end pin only ever pushes toward the
+// bottom, which makes it the prime suspect for direction-dependent behaviour.
+static void ClampScrollOffsetsForLayout(const NodePtr &node,
+                                        bool applyFollowEnd) {
+  const float oldX = node->scrollOffsetX;
+  const float oldY = node->scrollOffsetY;
+  node->scrollOffsetX = ClampScrollOffset(
+      node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
+  node->scrollOffsetY = ClampScrollOffset(
+      node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
+  ScrollTraceOffsetWrite(*node, ScrollWriteSource::Clamp, 'x', oldX,
+                         node->scrollOffsetX);
+  ScrollTraceOffsetWrite(*node, ScrollWriteSource::Clamp, 'y', oldY,
+                         node->scrollOffsetY);
+  if (applyFollowEnd && node->scrollFollowEnd) {
+    const float pinned =
+        std::max(0.0f, node->scrollContentHeight - node->layout.height);
+    ScrollTraceOffsetWrite(*node, ScrollWriteSource::FollowEnd, 'y',
+                           node->scrollOffsetY, pinned);
+    node->scrollOffsetY = pinned;
+  }
 }
 
 static float MeasureNodeHeight(const NodePtr &node, float contentW) {
@@ -413,7 +600,19 @@ static float MeasureNodeHeight(const NodePtr &node, float contentW) {
     return textH;
   }
 
-  if (node->children.empty()) {
+  // A text input's native-editor overlay child is absolutely positioned and
+  // contributes no content height — keep the intrinsic size (see the Yoga
+  // path's hasLayoutChildren).
+  const bool measuresFromChildren =
+      node->kind == NodeKind::TextInput
+          ? std::any_of(node->children.begin(), node->children.end(),
+                        [](const NodePtr &child) {
+                          return child && child->style.position.value_or(
+                                              PositionType::Relative) !=
+                                              PositionType::Absolute;
+                        })
+          : !node->children.empty();
+  if (!measuresFromChildren) {
     float h = DefaultNodeHeight(*node);
     if (style.minHeight) h = std::max(h, *style.minHeight);
     if (style.maxHeight) h = std::min(h, *style.maxHeight);
@@ -524,6 +723,14 @@ static YGSize MeasureTextNode(YGNodeConstRef ygNode, float width,
 
   const PreparedText& prep = GetOrPrepare(node);
   float maxW = (widthMode != YGMeasureModeUndefined) ? width : 0.0f;
+  // Exactly-0 means Yoga really gave this text a zero-width box (e.g. a
+  // `flex-basis: 0` chain before free space is distributed). LayoutText's
+  // `maxWidth <= 0` sentinel means UNCONSTRAINED, which reported one line's
+  // height for that zero-width box — the small height then stuck as ancestor
+  // flex bases while the final pass painted the full wrapped text over them.
+  // Wrap per-grapheme instead (what CSS does at width: 0): the height is tall,
+  // which is the truthful answer for a zero-width box.
+  if (widthMode == YGMeasureModeExactly && width <= 0.0f) maxW = 0.01f;
   TextLayoutResult res = LayoutText(prep, maxW);
 
   float outW = res.width;
@@ -535,11 +742,32 @@ static YGSize MeasureTextNode(YGNodeConstRef ygNode, float width,
   return {outW, outH};
 }
 
-static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
-  const Style style = EffectiveStyle(node);
+// True when a child of this node with an auto width will be stretched to the
+// parent's content width — i.e. the parent is a column (width is the cross
+// axis) and it does not opt out of the default `align-items: stretch`.
+static bool StretchesChildWidth(const Style &parentStyle) {
+  const FlexDirection dir = parentStyle.flexDirection.value_or(FlexDirection::Column);
+  const bool column = dir == FlexDirection::Column || dir == FlexDirection::ColumnReverse;
+  if (!column) return false;
+  return !parentStyle.alignItems || *parentStyle.alignItems == Align::Stretch;
+}
+
+static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot,
+                           bool parentStretchesWidth) {
+  Style effScratch;
+  const Style &style = EffectiveStyleRef(node, effScratch);
+
+  // Every property this function can ever set is set on every call — to its
+  // Yoga default when the node's style leaves it unset. Retained layout reuses
+  // yoga nodes across frames with no reset step, so a conditional set here
+  // would let a *removed* style key keep last frame's value forever. The
+  // explicit default also costs nothing when nothing changed: Yoga's setters
+  // compare before dirtying.
 
   if (style.display == Display::None) {
     YGNodeStyleSetDisplay(ygNode, YGDisplayNone);
+  } else {
+    YGNodeStyleSetDisplay(ygNode, YGDisplayFlex);
   }
 
   // Fixed-position nodes are excluded from their parent's flex layout — they
@@ -553,22 +781,27 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
     YGNodeStyleSetOverflow(ygNode, YGOverflowScroll);
   } else if (style.overflow == Overflow::Hidden) {
     YGNodeStyleSetOverflow(ygNode, YGOverflowHidden);
+  } else {
+    YGNodeStyleSetOverflow(ygNode, YGOverflowVisible);
   }
 
   YGNodeStyleSetFlexDirection(
       ygNode, ToYogaFlexDirection(style.flexDirection.value_or(FlexDirection::Column)));
-  if (style.flexWrap) {
+  {
     YGWrap wrap = YGWrapNoWrap;
-    if (*style.flexWrap == FlexWrap::Wrap) wrap = YGWrapWrap;
-    else if (*style.flexWrap == FlexWrap::WrapReverse) wrap = YGWrapWrapReverse;
+    if (style.flexWrap) {
+      if (*style.flexWrap == FlexWrap::Wrap) wrap = YGWrapWrap;
+      else if (*style.flexWrap == FlexWrap::WrapReverse) wrap = YGWrapWrapReverse;
+    }
     YGNodeStyleSetFlexWrap(ygNode, wrap);
   }
-  if (style.justifyContent)
-    YGNodeStyleSetJustifyContent(ygNode, ToYogaJustify(*style.justifyContent));
-  if (style.alignItems)
-    YGNodeStyleSetAlignItems(ygNode, ToYogaAlign(*style.alignItems));
-  if (style.alignSelf)
-    YGNodeStyleSetAlignSelf(ygNode, ToYogaAlign(*style.alignSelf));
+  YGNodeStyleSetJustifyContent(
+      ygNode, style.justifyContent ? ToYogaJustify(*style.justifyContent)
+                                   : YGJustifyFlexStart);
+  YGNodeStyleSetAlignItems(
+      ygNode, style.alignItems ? ToYogaAlign(*style.alignItems) : YGAlignStretch);
+  YGNodeStyleSetAlignSelf(
+      ygNode, style.alignSelf ? ToYogaAlign(*style.alignSelf) : YGAlignAuto);
 
   if (style.position == PositionType::Absolute)
     YGNodeStyleSetPositionType(ygNode, YGPositionTypeAbsolute);
@@ -579,35 +812,82 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
   // a full-line measure (that ignores wrapping and overflows the parent).
   bool isText = (node.kind == NodeKind::Text);
 
-  if (style.width)
-    YGNodeStyleSetWidth(ygNode, *style.width);
-  else if (!isText && !isRoot && node.children.empty() && DefaultNodeWidth(node) > 0.0f)
-    YGNodeStyleSetWidth(ygNode, DefaultNodeWidth(node));
+  // react-native parity: a TextInput has no intrinsic width — it fills the
+  // parent, the way `align-items: stretch` (Yoga's default) sizes any auto-width
+  // child. The old fixed 240dp default made every field the same stubby box
+  // regardless of its container, so every call site had to restate width: '100%'.
+  // The intrinsic width is kept only where stretching cannot happen (a row
+  // parent, or a parent that opts out of stretch) and the node is not flex-sized,
+  // so a field in a row still shows up instead of collapsing to nothing.
+  // A text input's only child on mobile is the absolutely-positioned native
+  // editor overlay; it is not content and must not suppress the field's
+  // intrinsic size the way real children do (that is what collapsed every
+  // unstyled TextInput to zero height on Android/iOS).
+  const bool hasLayoutChildren =
+      node.kind == NodeKind::TextInput
+          ? std::any_of(node.children.begin(), node.children.end(),
+                        [](const NodePtr &child) {
+                          return child && child->style.position.value_or(
+                                              PositionType::Relative) !=
+                                              PositionType::Absolute;
+                        })
+          : !node.children.empty();
+  const bool selfOptsOutOfStretch = style.alignSelf && *style.alignSelf != Align::Stretch;
+  const bool flexSized = style.flexGrow.value_or(0.0f) > 0.0f ||
+                         style.flexBasis.has_value() || style.flexBasisPercent.has_value();
+  const bool widthComesFromParent =
+      (parentStretchesWidth && !selfOptsOutOfStretch) || flexSized;
+  const bool skipIntrinsicWidth = node.kind == NodeKind::TextInput && widthComesFromParent;
 
-  if (style.height)
+  if (style.widthPercent)
+    YGNodeStyleSetWidthPercent(ygNode, *style.widthPercent);
+  else if (style.width)
+    YGNodeStyleSetWidth(ygNode, *style.width);
+  else if (!isText && !isRoot && !hasLayoutChildren && !skipIntrinsicWidth &&
+           DefaultNodeWidth(node) > 0.0f)
+    YGNodeStyleSetWidth(ygNode, DefaultNodeWidth(node));
+  else
+    YGNodeStyleSetWidthAuto(ygNode);
+
+  if (style.heightPercent)
+    YGNodeStyleSetHeightPercent(ygNode, *style.heightPercent);
+  else if (style.height)
     YGNodeStyleSetHeight(ygNode, *style.height);
-  else if (!isText && !isRoot && node.children.empty() && DefaultNodeHeight(node) > 0.0f)
+  else if (!isText && !isRoot && !hasLayoutChildren && DefaultNodeHeight(node) > 0.0f)
     YGNodeStyleSetHeight(ygNode, DefaultNodeHeight(node));
+  else
+    YGNodeStyleSetHeightAuto(ygNode);
 
   // Scroll containers must not report their content as their min-size, or the
   // flex parent expands to contain them (classic `min-height: 0` flex fix) and
   // nothing ever overflows. Default the unset min axis to 0 so the parent's
   // flex sizing wins and content overflows internally.
   bool scrolls = style.overflow == Overflow::Scroll;
-  if (style.minWidth)
+  if (style.minWidthPercent)
+    YGNodeStyleSetMinWidthPercent(ygNode, *style.minWidthPercent);
+  else if (style.minWidth)
     YGNodeStyleSetMinWidth(ygNode, *style.minWidth);
-  else if (scrolls)
-    YGNodeStyleSetMinWidth(ygNode, 0.0f);
-  if (style.minHeight)
+  else
+    YGNodeStyleSetMinWidth(ygNode, scrolls ? 0.0f : YGUndefined);
+  if (style.minHeightPercent)
+    YGNodeStyleSetMinHeightPercent(ygNode, *style.minHeightPercent);
+  else if (style.minHeight)
     YGNodeStyleSetMinHeight(ygNode, *style.minHeight);
-  else if (scrolls)
-    YGNodeStyleSetMinHeight(ygNode, 0.0f);
-  if (style.maxWidth)
+  else
+    YGNodeStyleSetMinHeight(ygNode, scrolls ? 0.0f : YGUndefined);
+  if (style.maxWidthPercent)
+    YGNodeStyleSetMaxWidthPercent(ygNode, *style.maxWidthPercent);
+  else if (style.maxWidth)
     YGNodeStyleSetMaxWidth(ygNode, *style.maxWidth);
-  if (style.maxHeight)
+  else
+    YGNodeStyleSetMaxWidth(ygNode, YGUndefined);
+  if (style.maxHeightPercent)
+    YGNodeStyleSetMaxHeightPercent(ygNode, *style.maxHeightPercent);
+  else if (style.maxHeight)
     YGNodeStyleSetMaxHeight(ygNode, *style.maxHeight);
-  if (style.flexGrow)
-    YGNodeStyleSetFlexGrow(ygNode, *style.flexGrow);
+  else
+    YGNodeStyleSetMaxHeight(ygNode, YGUndefined);
+  YGNodeStyleSetFlexGrow(ygNode, style.flexGrow.value_or(0.0f));
   // Web defaults flex-shrink to 1; Yoga defaults it to 0. Without shrink, a
   // flex child with flex-basis:auto (= content size) never shrinks back to a
   // definite parent, so tall content (e.g. a scroll list) inflates the whole
@@ -624,15 +904,20 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
     YGNodeStyleSetFlexShrink(ygNode, 0.0f);
   else
     YGNodeStyleSetFlexShrink(ygNode, 1.0f);
-  if (style.flexBasis)
+  if (style.flexBasisPercent)
+    YGNodeStyleSetFlexBasisPercent(ygNode, *style.flexBasisPercent);
+  else if (style.flexBasis)
     YGNodeStyleSetFlexBasis(ygNode, *style.flexBasis);
+  else
+    YGNodeStyleSetFlexBasisAuto(ygNode);
 
-  if (style.gap)
-    YGNodeStyleSetGap(ygNode, YGGutterAll, *style.gap);
-  if (style.rowGap)
-    YGNodeStyleSetGap(ygNode, YGGutterRow, *style.rowGap);
-  if (style.columnGap)
-    YGNodeStyleSetGap(ygNode, YGGutterColumn, *style.columnGap);
+  // Row/Column fall back to All inside Yoga, and YGUndefined is the unset
+  // state — so writing undefined to an unset gutter preserves that fallback.
+  YGNodeStyleSetGap(ygNode, YGGutterAll, style.gap ? *style.gap : YGUndefined);
+  YGNodeStyleSetGap(ygNode, YGGutterRow,
+                    style.rowGap ? *style.rowGap : YGUndefined);
+  YGNodeStyleSetGap(ygNode, YGGutterColumn,
+                    style.columnGap ? *style.columnGap : YGUndefined);
 
   if (style.margin.TopIsAuto())
     YGNodeStyleSetMarginAuto(ygNode, YGEdgeTop);
@@ -655,22 +940,26 @@ static void ApplyYogaStyle(YGNodeRef ygNode, const Node &node, bool isRoot) {
   YGNodeStyleSetPadding(ygNode, YGEdgeBottom, style.padding.Bottom());
   YGNodeStyleSetPadding(ygNode, YGEdgeLeft, style.padding.Left());
 
-  if (style.position == PositionType::Absolute || style.position == PositionType::Relative) {
-    if (style.inset.top)
-      YGNodeStyleSetPosition(ygNode, YGEdgeTop, *style.inset.top);
-    if (style.inset.right)
-      YGNodeStyleSetPosition(ygNode, YGEdgeRight, *style.inset.right);
-    if (style.inset.bottom)
-      YGNodeStyleSetPosition(ygNode, YGEdgeBottom, *style.inset.bottom);
-    if (style.inset.left)
-      YGNodeStyleSetPosition(ygNode, YGEdgeLeft, *style.inset.left);
+  {
+    const bool positioned = style.position == PositionType::Absolute ||
+                            style.position == PositionType::Relative;
+    const auto edge = [&](YGEdge e, const std::optional<float> &v) {
+      YGNodeStyleSetPosition(ygNode, e,
+                             (positioned && v) ? *v : YGUndefined);
+    };
+    edge(YGEdgeTop, style.inset.top);
+    edge(YGEdgeRight, style.inset.right);
+    edge(YGEdgeBottom, style.inset.bottom);
+    edge(YGEdgeLeft, style.inset.left);
   }
 }
 
-static YGNodeRef BuildYogaTree(const NodePtr &node, bool isRoot) {
+static YGNodeRef BuildYogaTree(const NodePtr &node, bool isRoot,
+                               bool parentStretchesWidth = true) {
   YGNodeRef ygNode = YGNodeNew();
+  Ctx().lastStats.yogaNodesBuilt++;
   YGNodeSetContext(ygNode, node.get());
-  ApplyYogaStyle(ygNode, *node, isRoot);
+  ApplyYogaStyle(ygNode, *node, isRoot, parentStretchesWidth);
 
   // Text nodes: let Yoga call MeasureTextNode with the real available width
   // so wrapping and multi-line height are computed correctly.
@@ -678,8 +967,11 @@ static YGNodeRef BuildYogaTree(const NodePtr &node, bool isRoot) {
     YGNodeSetMeasureFunc(ygNode, MeasureTextNode);
   }
 
+  Style stretchScratch;
+  const bool stretchesChildren =
+      StretchesChildWidth(EffectiveStyleRef(*node, stretchScratch));
   for (const NodePtr &child : node->children) {
-    YGNodeRef ygChild = BuildYogaTree(child, false);
+    YGNodeRef ygChild = BuildYogaTree(child, false, stretchesChildren);
     YGNodeInsertChild(ygNode, ygChild, YGNodeGetChildCount(ygNode));
   }
 
@@ -694,7 +986,8 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
   node->layout = {x, y, YGNodeLayoutGetWidth(ygNode),
                   YGNodeLayoutGetHeight(ygNode)};
 
-  Style style = EffectiveStyle(*node);
+  Style effScratch;
+  const Style &style = EffectiveStyleRef(*node, effScratch);
   bool scrolls = style.overflow == Overflow::Scroll;
 
   // Measure this frame's content extent from Yoga's own child geometry BEFORE
@@ -712,7 +1005,7 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
     // Fixed-position children are display:none in this Yoga pass (laid out by
     // LayoutFixed against the viewport instead) and don't contribute to
     // scrollable content.
-    if (EffectiveStyle(*node->children[i]).position == PositionType::Fixed)
+    if (EffectiveIsFixed(*node->children[i]))
       continue;
     YGNodeRef ygChild = YGNodeGetChild(ygNode, i);
     contentRight = std::max(contentRight, YGNodeLayoutGetLeft(ygChild) + YGNodeLayoutGetWidth(ygChild));
@@ -722,10 +1015,7 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
   node->scrollContentHeight = contentBottom;
 
   if (scrolls) {
-    node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
-    node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
-    if (node->scrollFollowEnd)
-      node->scrollOffsetY = std::max(0.0f, node->scrollContentHeight - node->layout.height);
+    ClampScrollOffsetsForLayout(node, /*applyFollowEnd=*/true);
   } else {
     node->scrollOffsetX = 0.0f;
     node->scrollOffsetY = 0.0f;
@@ -737,7 +1027,7 @@ static void StoreYogaLayout(const NodePtr &node, YGNodeRef ygNode, float parentX
   for (uint32_t i = 0; i < count; ++i) {
     // Skip Fixed children here too: writing their 0x0 Yoga result would clobber
     // the fixed-pass layout that hit-testing and ancestor-clip checks read.
-    if (EffectiveStyle(*node->children[i]).position == PositionType::Fixed)
+    if (EffectiveIsFixed(*node->children[i]))
       continue;
     StoreYogaLayout(node->children[i], YGNodeGetChild(ygNode, i), childParentX, childParentY);
   }
@@ -780,8 +1070,7 @@ static void LayoutFallback(const NodePtr &node, Rectangle bounds) {
   float contentH = std::max(0.0f, node->layout.height - padTop - padBottom);
   bool scrolls = style.overflow == Overflow::Scroll;
   if (scrolls) {
-    node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
-    node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
+    ClampScrollOffsetsForLayout(node, /*applyFollowEnd=*/false);
     cursorX -= node->scrollOffsetX;
     cursorY -= node->scrollOffsetY;
   } else {
@@ -880,10 +1169,7 @@ static void LayoutFallback(const NodePtr &node, Rectangle bounds) {
   node->scrollContentWidth = contentRight;
   node->scrollContentHeight = contentBottom;
   if (scrolls) {
-    node->scrollOffsetX = ClampScrollOffset(node->scrollOffsetX, node->scrollContentWidth, node->layout.width);
-    node->scrollOffsetY = ClampScrollOffset(node->scrollOffsetY, node->scrollContentHeight, node->layout.height);
-    if (node->scrollFollowEnd)
-      node->scrollOffsetY = std::max(0.0f, node->scrollContentHeight - node->layout.height);
+    ClampScrollOffsetsForLayout(node, /*applyFollowEnd=*/true);
   }
 }
 
@@ -891,6 +1177,7 @@ void UpdateLayout(const NodePtr &root, Rectangle bounds) {
   if (!root)
     return;
 
+  Ctx().lastStats.yogaNodesBuilt = 0;
   MarkNavigationRailContext(root, false, 0.0f);
   MarkNavigationBarContext(root, false);
 
@@ -904,6 +1191,369 @@ void UpdateLayout(const NodePtr &root, Rectangle bounds) {
 #else
   LayoutFallback(root, bounds);
 #endif
+}
+
+// --- Retained layout mirror --------------------------------------------------
+// A persistent Yoga tree keyed by Node*, reconciled per call. See Renderer.h.
+// Reuses ApplyYogaStyle / MeasureTextNode / StretchesChildWidth above, so the
+// style mapping can never drift from the per-frame BuildYogaTree path.
+#if RAYM3_USE_YOGA
+namespace {
+
+struct RetainedYG {
+  YGNodeRef yg = nullptr;
+  uint64_t gen = 0;          // mark-and-sweep visit stamp
+  uint32_t textRevision = 0; // last preparedTextRevision measured
+  // Kind the yoga node was configured for. Measure functions are attached per
+  // kind, so a node whose kind changes has to be reconfigured.
+  NodeKind configuredKind = NodeKind::View;
+};
+// Keyed by Node::stableId, not by address.
+//
+// Keying on the pointer meant a node freed in one frame and a different node
+// allocated at the same address in the next found the dead node's entry — and
+// since the entry already had a yoga node, the "first time we see this node"
+// setup was skipped. A Text landing on a recycled non-Text address never got
+// its measure function and collapsed to 0x0 ("the text disappeared after the
+// list re-rendered"); a View landing on a recycled Text address kept a measure
+// function it should not have. The sweep that would have removed the stale
+// entry runs *after* reconcile, so it could not prevent either.
+std::unordered_map<std::uint64_t, RetainedYG> g_retainedYoga;
+uint64_t g_retainedGen = 0;
+// Bounds of the last actually-executed layout pass, so an unchanged clean tree
+// can skip YGNodeCalculateLayout outright (see retainedCalculate).
+float g_retainedLastW = -1.0f;
+float g_retainedLastH = -1.0f;
+
+void retainedReconcile(const NodePtr &node, bool isRoot,
+                       bool parentStretchesWidth,
+                       RetainedLayoutStats &stats) {
+  RetainedYG &r = g_retainedYoga[node->stableId];
+  if (!r.yg) {
+    r.yg = YGNodeNew();
+    stats.yogaNodesCreated++;
+    r.configuredKind = NodeKind::View;  // fresh yoga node has no measure func
+  }
+  // The context is a bare pointer, so refresh it every reconcile rather than
+  // only at creation: the same stableId always means the same node, but the
+  // NodePtr it lives behind can be re-seated.
+  YGNodeSetContext(r.yg, node.get());
+  if (r.configuredKind != node->kind) {
+    // Only Text measures itself; Yoga requires a measure function to sit on a
+    // childless node, which Text is.
+    YGNodeSetMeasureFunc(
+        r.yg, node->kind == NodeKind::Text ? MeasureTextNode : nullptr);
+    r.configuredKind = node->kind;
+  }
+  r.gen = g_retainedGen;
+  stats.nodesReconciled++;
+
+  // Apply the style exhaustively: every property ApplyYogaStyle can ever set
+  // is set on every call, to its default when the node's style leaves it unset.
+  // Yoga's setters compare before marking dirty, so an unchanged node stays
+  // clean and YGNodeCalculateLayout short-circuits its subtree.
+  //
+  // This used to be a copy-from-blank reset followed by a sparse re-apply, on
+  // the same "setters compare" reasoning — but YGNodeCopyStyle also compares,
+  // against the *blank*, so it marked every styled node dirty every frame and
+  // then propagated that to the root. The one mechanism meant to make retained
+  // layout incremental is what forced a full-tree relayout per frame; on a
+  // 10k-node tree that was ~70% of the frame.
+  ApplyYogaStyle(r.yg, *node, isRoot, parentStretchesWidth);
+
+  // Text re-measure: content, text style and font-atlas changes are invisible
+  // to Yoga's style comparison, so track the prepared-layout revision instead.
+  // GetOrPrepare validates the cache in place (cheap field compares on a hit)
+  // and bumps the revision only when it truly rebuilt.
+  if (node->kind == NodeKind::Text) {
+    GetOrPrepare(node.get());
+    if (r.textRevision != node->preparedTextRevision) {
+      YGNodeMarkDirty(r.yg);
+      r.textRevision = node->preparedTextRevision;
+    }
+  }
+
+  // Children: rebuild the yoga edge list only when it differs from the
+  // retained tree's order (pointer compare — cheap in the common case).
+  const uint32_t ygCount = YGNodeGetChildCount(r.yg);
+  bool same = ygCount == node->children.size();
+  if (same) {
+    for (uint32_t i = 0; i < ygCount; ++i) {
+      auto it = g_retainedYoga.find(node->children[i]->stableId);
+      if (it == g_retainedYoga.end() || YGNodeGetChild(r.yg, i) != it->second.yg) {
+        same = false;
+        break;
+      }
+    }
+  }
+
+  Style stretchScratch;
+  const bool stretches =
+      StretchesChildWidth(EffectiveStyleRef(*node, stretchScratch));
+  for (const NodePtr &child : node->children)
+    retainedReconcile(child, false, stretches, stats);
+
+  if (!same) {
+    YGNodeRemoveAllChildren(r.yg);
+    // re-read: recursion above may have rehashed the map
+    YGNodeRef selfYg = g_retainedYoga[node->stableId].yg;
+    for (const NodePtr &child : node->children) {
+      YGNodeRef childYg = g_retainedYoga[child->stableId].yg;
+      if (YGNodeRef owner = YGNodeGetOwner(childYg))
+        YGNodeRemoveChild(owner, childYg);
+      YGNodeInsertChild(selfYg, childYg, YGNodeGetChildCount(selfYg));
+    }
+  }
+}
+
+void retainedPrune(RetainedLayoutStats &stats) {
+  for (auto it = g_retainedYoga.begin(); it != g_retainedYoga.end();) {
+    if (it->second.gen != g_retainedGen) {
+      if (it->second.yg) {
+        if (YGNodeRef owner = YGNodeGetOwner(it->second.yg))
+          YGNodeRemoveChild(owner, it->second.yg);
+        YGNodeFree(it->second.yg);
+      }
+      it = g_retainedYoga.erase(it);
+      stats.yogaNodesFreed++;
+    } else {
+      ++it;
+    }
+  }
+}
+
+// Compare in parent-relative coordinates: StoreYogaLayout accumulates parent
+// origins and applies scroll translations to descendants; relative offsets
+// sidestep both (child.x - parent.x + parent.scrollOffset == yoga Left).
+void retainedCompare(const NodePtr &node, const Node *parent, Rectangle bounds,
+                     int &logged, int maxLog, RetainedLayoutStats &stats) {
+  const Style style = EffectiveStyle(*node);
+  if (style.position == PositionType::Fixed) return;  // separate layout pass
+  if (style.display == Display::None) return;
+
+  auto it = g_retainedYoga.find(node->stableId);
+  if (it == g_retainedYoga.end() || !it->second.yg) return;
+  YGNodeRef yg = it->second.yg;
+
+  constexpr float kEps = 0.75f;
+  const float relX = parent ? node->layout.x - parent->layout.x + parent->scrollOffsetX
+                            : node->layout.x - bounds.x;
+  const float relY = parent ? node->layout.y - parent->layout.y + parent->scrollOffsetY
+                            : node->layout.y - bounds.y;
+  const float dx = std::fabs(relX - YGNodeLayoutGetLeft(yg));
+  const float dy = std::fabs(relY - YGNodeLayoutGetTop(yg));
+  const float dw = std::fabs(node->layout.width - YGNodeLayoutGetWidth(yg));
+  const float dh = std::fabs(node->layout.height - YGNodeLayoutGetHeight(yg));
+  if (dx > kEps || dy > kEps || dw > kEps || dh > kEps) {
+    stats.divergences++;
+    if (logged < maxLog) {
+      logged++;
+      TraceLog(LOG_WARNING,
+               "RETAINED-LAYOUT diverge id=%s kind=%d rel=(%.1f,%.1f %.1fx%.1f) "
+               "retained=(%.1f,%.1f %.1fx%.1f)",
+               node->id.c_str(), (int)node->kind, relX, relY,
+               node->layout.width, node->layout.height,
+               YGNodeLayoutGetLeft(yg), YGNodeLayoutGetTop(yg),
+               YGNodeLayoutGetWidth(yg), YGNodeLayoutGetHeight(yg));
+    }
+  }
+  for (const NodePtr &child : node->children)
+    retainedCompare(child, node.get(), bounds, logged, maxLog, stats);
+}
+
+}  // namespace
+
+// Reconcile + calculate. Shared by verify and authoritative modes; returns the
+// root's retained Yoga node (null when the tree is empty).
+static YGNodeRef retainedCalculate(const NodePtr &root, Rectangle bounds,
+                                   RetainedLayoutStats &stats) {
+  g_retainedGen++;
+  retainedReconcile(root, true, true, stats);
+  retainedPrune(stats);
+  YGNodeRef ygRoot = g_retainedYoga[root->stableId].yg;
+  if (!ygRoot) return nullptr;
+  YGNodeStyleSetWidth(ygRoot, bounds.width);
+  YGNodeStyleSetHeight(ygRoot, bounds.height);
+  // A clean root means the whole tree is clean — dirtiness propagates upward —
+  // and its stored layout is already the answer for these bounds. Skipping the
+  // call matters because YGNodeCalculateLayout is not free on a clean tree: it
+  // ends with roundLayoutResultsToPixelGrid, a full-tree walk, every call.
+  // StoreYogaLayout still runs in our caller either way; it also bakes scroll
+  // offsets, which change without dirtying yoga.
+  // (hasNewLayout is deliberately not part of this gate: raym3 never clears
+  // it, so it is true forever after the first pass and would defeat the skip.)
+  if (YGNodeIsDirty(ygRoot) ||
+      bounds.width != g_retainedLastW || bounds.height != g_retainedLastH) {
+    YGNodeCalculateLayout(ygRoot, bounds.width, bounds.height, YGDirectionLTR);
+    g_retainedLastW = bounds.width;
+    g_retainedLastH = bounds.height;
+  }
+  return ygRoot;
+}
+
+RetainedLayoutStats RetainedLayoutVerify(const NodePtr &root, Rectangle bounds,
+                                         int maxLogPerCall) {
+  RetainedLayoutStats stats;
+  if (!root) return stats;
+  if (!retainedCalculate(root, bounds, stats)) return stats;
+  int logged = 0;
+  retainedCompare(root, nullptr, bounds, logged, maxLogPerCall, stats);
+  return stats;
+}
+
+RetainedLayoutStats RetainedUpdateLayout(const NodePtr &root, Rectangle bounds) {
+  RetainedLayoutStats stats;
+  if (!root) return stats;
+  MarkNavigationRailContext(root, false, 0.0f);
+  MarkNavigationBarContext(root, false);
+  YGNodeRef ygRoot = retainedCalculate(root, bounds, stats);
+  if (!ygRoot) return stats;
+  // Same commit walk as the per-frame path: writes node->layout, content
+  // extents, scroll clamp + follow-end. Retained yoga children are kept in
+  // node->children order by retainedReconcile, so the index pairing holds.
+  StoreYogaLayout(root, ygRoot, bounds.x, bounds.y);
+  // Report the mirror's allocation count, not the whole tree: with retained
+  // layout this should be ~0 in steady state and only spike on mount.
+  Ctx().lastStats.yogaNodesBuilt = stats.yogaNodesCreated;
+  return stats;
+}
+
+void RetainedLayoutReset() {
+  for (auto &[node, r] : g_retainedYoga) {
+    (void)node;
+    if (r.yg) {
+      if (YGNodeRef owner = YGNodeGetOwner(r.yg))
+        YGNodeRemoveChild(owner, r.yg);
+      YGNodeFree(r.yg);
+    }
+  }
+  g_retainedYoga.clear();
+}
+#else
+RetainedLayoutStats RetainedLayoutVerify(const NodePtr &, Rectangle, int) {
+  return {};
+}
+RetainedLayoutStats RetainedUpdateLayout(const NodePtr &root, Rectangle bounds) {
+  UpdateLayout(root, bounds);   // no Yoga build: fallback path is already retained-free
+  return {};
+}
+void RetainedLayoutReset() {}
+#endif
+
+// Per-edge border painter: each side keeps its own width and colour, and the
+// corners are stroked as quarter rings so border-radius CURVES the stroke.
+// The previous version painted four square bands and clipped them to the
+// rounded outer contour, which cut the corners off (a diagonal nick) instead of
+// bending the line around them. The arc is split at 45deg per corner — the same
+// miter CSS uses when the two sides differ in width or colour.
+static void DrawPerEdgeBorder(const Rectangle &box, float cornerRadius,
+                              float top, float right, float bottom, float left,
+                              Color cTop, Color cRight, Color cBottom,
+                              Color cLeft) {
+  const float r = std::max(
+      0.0f, std::min(cornerRadius, std::min(box.width, box.height) * 0.5f));
+  if (r <= 0.0f) {
+    // Square box: butt-join the bands so translucent colours don't double-blend
+    // where two sides meet.
+    if (top > 0.0f)
+      DrawRectangleRec({box.x, box.y, box.width, top}, cTop);
+    if (bottom > 0.0f)
+      DrawRectangleRec({box.x, box.y + box.height - bottom, box.width, bottom},
+                       cBottom);
+    const float vy = box.y + top;
+    const float vh = std::max(0.0f, box.height - top - bottom);
+    if (left > 0.0f)
+      DrawRectangleRec({box.x, vy, left, vh}, cLeft);
+    if (right > 0.0f)
+      DrawRectangleRec({box.x + box.width - right, vy, right, vh}, cRight);
+    return;
+  }
+
+  const int segs = 16;
+  const float hSpan = std::max(0.0f, box.width - 2.0f * r);
+  const float vSpan = std::max(0.0f, box.height - 2.0f * r);
+  if (top > 0.0f && hSpan > 0.0f)
+    DrawRectangleRec({box.x + r, box.y, hSpan, top}, cTop);
+  if (bottom > 0.0f && hSpan > 0.0f)
+    DrawRectangleRec({box.x + r, box.y + box.height - bottom, hSpan, bottom},
+                     cBottom);
+  if (left > 0.0f && vSpan > 0.0f)
+    DrawRectangleRec({box.x, box.y + r, left, vSpan}, cLeft);
+  if (right > 0.0f && vSpan > 0.0f)
+    DrawRectangleRec({box.x + box.width - right, box.y + r, right, vSpan},
+                     cRight);
+
+  // raylib angles: 0deg = +x, 90deg = +y (down). Two adjoining edges meet at the
+  // CSS Backgrounds 3 §6.2 transition line — the ray from the box's outer corner
+  // to its inner corner — and each side keeps its own solid colour, exactly as
+  // browsers and RN paint it. The split is at 45deg only when the two widths are
+  // equal; a 6px edge meeting a 1px one turns almost the whole arc over to the
+  // thick side. (A smooth colour ramp across the corner would look nicer on a
+  // tilt-lit border, but it is not what CSS specifies, and the idiom that IS
+  // spec — a conic-gradient painted into border-box under a padding-box layer —
+  // gets that effect without redefining border-*-color.)
+  auto corner = [&](Vector2 c, float a0, float wA, Color colA, float wB,
+                    Color colB) {
+    const float span = 90.0f;
+    // Fraction of the arc belonging to edge A (the edge at the arc's START angle).
+    // The transition line runs from the box's outer corner to its inner corner,
+    // which sits at (wA, wB) in the corner's local axes, so it lies atan2(wA, wB)
+    // off A's own direction: the THICKER edge takes most of the arc. Verified
+    // against Chrome with a 10px/2px pair — the 10px side wraps the corner and the
+    // 2px side keeps only a sliver. Degenerate pairs fall back to the midpoint.
+    float split = 0.5f;
+    if (wA > 0.0f || wB > 0.0f)
+      split = std::atan2(wA, wB) / ((float)M_PI * 0.5f);
+    split = std::clamp(split, 0.0f, 1.0f);
+    const float mid = a0 + span * split;
+    if (wA > 0.0f && colA.a > 0 && mid > a0)
+      DrawRing(c, std::max(0.0f, r - wA), r, a0, mid, segs, colA);
+    if (wB > 0.0f && colB.a > 0 && a0 + span > mid)
+      DrawRing(c, std::max(0.0f, r - wB), r, mid, a0 + span, segs, colB);
+  };
+  const Vector2 tl{box.x + r, box.y + r};
+  const Vector2 tr{box.x + box.width - r, box.y + r};
+  const Vector2 br{box.x + box.width - r, box.y + box.height - r};
+  const Vector2 bl{box.x + r, box.y + box.height - r};
+  corner(tl, 180.0f, left, cLeft, top, cTop);
+  corner(tr, 270.0f, top, cTop, right, cRight);
+  corner(br, 0.0f, right, cRight, bottom, cBottom);
+  corner(bl, 90.0f, bottom, cBottom, left, cLeft);
+
+  // An edge thicker than the radius: its arc bottoms out at inner radius 0, so a
+  // wedge is left between the quarter disc and the straight run. Fill it with
+  // that edge's colour (no overlap with the bands or the arcs by construction).
+  if (top > r) {
+    if (left < r)
+      DrawRectangleRec({box.x + left, box.y + r, r - left, top - r}, cTop);
+    if (right < r)
+      DrawRectangleRec({box.x + box.width - r, box.y + r, r - right, top - r},
+                       cTop);
+  }
+  if (bottom > r) {
+    const float y = box.y + box.height - bottom;
+    if (left < r)
+      DrawRectangleRec({box.x + left, y, r - left, bottom - r}, cBottom);
+    if (right < r)
+      DrawRectangleRec({box.x + box.width - r, y, r - right, bottom - r},
+                       cBottom);
+  }
+  if (left > r) {
+    if (top < r)
+      DrawRectangleRec({box.x + r, box.y + top, left - r, r - top}, cLeft);
+    if (bottom < r)
+      DrawRectangleRec({box.x + r, box.y + box.height - r, left - r,
+                        r - bottom},
+                       cLeft);
+  }
+  if (right > r) {
+    const float x = box.x + box.width - right;
+    if (top < r)
+      DrawRectangleRec({x, box.y + top, right - r, r - top}, cRight);
+    if (bottom < r)
+      DrawRectangleRec({x, box.y + box.height - r, right - r, r - bottom},
+                       cRight);
+  }
 }
 
 static void DrawNodeBackground(const Node &node, const Style &style) {
@@ -946,7 +1596,12 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
   for (const BoxShadow &shadow : style.boxShadows) {
     if (shadow.inset)
       continue;
-    int layers = std::max(1, (int)(shadow.blurRadius / 4.0f));
+    // Clamped: the layer count is a draw-call count, and blurRadius comes
+    // straight from author CSS. `box-shadow: 0 0 4000px` asked for a thousand
+    // rounded-rect draws for one shadow, on one node, every frame. Past ~32
+    // layers the extra passes are not visible anyway.
+    constexpr int kMaxShadowLayers = 32;
+    int layers = std::clamp((int)(shadow.blurRadius / 4.0f), 1, kMaxShadowLayers);
     for (int i = layers; i >= 1; --i) {
       float t = (float)i / (float)layers;
       float grow = shadow.spreadRadius + shadow.blurRadius * t * 0.5f;
@@ -958,7 +1613,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
       };
       raym3::Renderer::DrawRoundedRectangle(
           bounds, radius + grow,
-          ColorAlpha(shadow.color, opacity * ((float)shadow.color.a / 255.0f) / (float)layers));
+          ScaleAlpha(shadow.color, opacity / (float)layers));
     }
   }
   if (style.backdropBlur && *style.backdropBlur > 0.0f) {
@@ -966,24 +1621,99 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
     // preserves draw order. Backends with render-target blur can replace this
     // with an actual sampled backdrop pass without changing the public API.
   }
-  if (style.backgroundGradient && style.backgroundGradient->stops.size() >= 2) {
-    const auto &stops = style.backgroundGradient->stops;
-    Color first = ColorAlpha(stops.front().color, opacity);
-    Color last = ColorAlpha(stops.back().color, opacity);
-    float angle = fmodf(style.backgroundGradient->angleDegrees + 360.0f, 360.0f);
-    if (angle >= 45.0f && angle < 135.0f) {
-      DrawRectangleGradientEx(backgroundLayout, first, last, last, first);
-    } else if (angle >= 225.0f && angle < 315.0f) {
-      DrawRectangleGradientEx(backgroundLayout, last, first, first, last);
-    } else if (angle >= 135.0f && angle < 225.0f) {
-      DrawRectangleGradientEx(backgroundLayout, last, last, first, first);
-    } else {
-      DrawRectangleGradientEx(backgroundLayout, first, first, last, last);
+  // ── background layers ──────────────────────────────────────────────────────
+  // A layer is confined to its CSS box area. Painting a gradient into border-box
+  // and then covering the middle with a padding-box layer is how the web draws a
+  // gradient border that follows border-radius — `border-image` cannot, because
+  // per spec it ignores the radius.
+  auto areaBox = [&](BoxArea area, float &areaRadius) -> Rectangle {
+    if (area == BoxArea::BorderBox || area == BoxArea::BorderArea) {
+      areaRadius = radius;
+      return backgroundLayout;
     }
+    float t = ResolveBorderWidth(style, BoxEdge::Top);
+    float rt = ResolveBorderWidth(style, BoxEdge::Right);
+    float b = ResolveBorderWidth(style, BoxEdge::Bottom);
+    float l = ResolveBorderWidth(style, BoxEdge::Left);
+    if (area == BoxArea::ContentBox) {
+      t += style.padding.Top();
+      rt += style.padding.Right();
+      b += style.padding.Bottom();
+      l += style.padding.Left();
+    }
+    // CSS shrinks each corner's radius by its own adjoining border width, giving
+    // an ellipse per corner. With one shared radius, subtracting the LARGEST
+    // inset is the safe rounding: too small only lets a sliver of the outer layer
+    // show at the corners, whereas too large would let the inner layer overlap
+    // and hide the stroke it is supposed to reveal.
+    areaRadius = std::max(0.0f, radius - std::max(std::max(t, rt), std::max(b, l)));
+    return Rectangle{backgroundLayout.x + l, backgroundLayout.y + t,
+                     std::max(0.0f, backgroundLayout.width - l - rt),
+                     std::max(0.0f, backgroundLayout.height - t - b)};
+  };
+  auto paintLayer = [&](const BackgroundLayer &layer) {
+    float originRadius = radius;
+    const Rectangle originBox = areaBox(layer.origin, originRadius);
+    if (layer.clip == BoxArea::BorderArea) {
+      // Ring-only layer. A flat colour is expressed as a two-stop gradient so
+      // both cases share the annulus painter.
+      LinearGradient solid;
+      const LinearGradient *paint = nullptr;
+      if (layer.gradient && !layer.gradient->stops.empty()) {
+        paint = &*layer.gradient;
+      } else if (layer.color) {
+        solid.stops.push_back({*layer.color, 0.0f, true});
+        solid.stops.push_back({*layer.color, 1.0f, true});
+        paint = &solid;
+      }
+      if (!paint)
+        return;
+      float innerRadius = radius;
+      const Rectangle innerBox = areaBox(BoxArea::PaddingBox, innerRadius);
+      DrawGradientBorderArea(backgroundLayout, radius, innerBox, innerRadius,
+                             *paint, opacity, &originBox);
+      return;
+    }
+    float clipRadius = radius;
+    const Rectangle clipBox = areaBox(layer.clip, clipRadius);
+    if (clipBox.width <= 0.0f || clipBox.height <= 0.0f)
+      return;
+    if (layer.gradient && !layer.gradient->stops.empty()) {
+      DrawGradientRoundedRect(clipBox, clipRadius, *layer.gradient, opacity,
+                              &originBox);
+    } else if (layer.color) {
+      raym3::Renderer::DrawRoundedRectangle(clipBox, clipRadius,
+                                            ScaleAlpha(*layer.color, opacity));
+    }
+  };
+  if (!style.backgroundLayers.empty()) {
+    // `background-color` sits UNDER every layer, clipped by the last layer's clip
+    // box (CSS Backgrounds 3 §3.10) — including `border-area`, which confines the
+    // colour to the ring as well.
+    if (style.backgroundColor) {
+      BackgroundLayer colorLayer;
+      colorLayer.color = *style.backgroundColor;
+      colorLayer.clip = style.backgroundLayers.back().clip;
+      colorLayer.origin = colorLayer.clip == BoxArea::BorderArea
+                              ? BoxArea::BorderBox
+                              : colorLayer.clip;
+      paintLayer(colorLayer);
+    }
+    // CSS paints the FIRST layer on top, so walk the list backwards.
+    for (auto it = style.backgroundLayers.rbegin();
+         it != style.backgroundLayers.rend(); ++it)
+      paintLayer(*it);
+  } else if (style.backgroundGradient &&
+             !style.backgroundGradient->stops.empty()) {
+    // Legacy single-gradient field, now through the same painter. This fixes two
+    // long-standing gaps: DrawRectangleGradientEx interpolated only the first and
+    // last stop (mid-stops were dropped), and it ignored border-radius.
+    DrawGradientRoundedRect(backgroundLayout, radius, *style.backgroundGradient,
+                            opacity);
   }
-  if (style.backgroundColor) {
+  if (style.backgroundColor && style.backgroundLayers.empty()) {
     raym3::Renderer::DrawRoundedRectangle(backgroundLayout, radius,
-                                          ColorAlpha(*style.backgroundColor, opacity));
+                                          ScaleAlpha(*style.backgroundColor, opacity));
     if (node.role == NodeRole::BottomSheet && radius > 0.0f) {
       // A modal bottom sheet is attached to the viewport edge. Only its top
       // corners are rounded; fill the lower radius band so the bottom-left and
@@ -993,7 +1723,7 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
            backgroundLayout.y + std::max(0.0f, backgroundLayout.height - radius),
            backgroundLayout.width,
            std::min(radius, backgroundLayout.height)},
-          ColorAlpha(*style.backgroundColor, opacity));
+          ScaleAlpha(*style.backgroundColor, opacity));
     }
   }
   // A plain interactive View (onPress, non-material) gets an implicit hover/press
@@ -1018,9 +1748,55 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
         backgroundLayout, radius,
         ColorAlpha(Color{sl.r, sl.g, sl.b, 255}, opacity * node.animStateAlpha));
   }
-  if (style.borderColor && style.borderWidth.value_or(0.0f) > 0.0f) {
+  bool perEdgeBorders = HasPerEdgeBorders(style);
+  bool borderDrawn = false;
+  if (perEdgeBorders) {
+    // Per-edge fields that RESOLVE identical on all four sides are still a
+    // uniform border — paint it with the rounded stroke so border-radius is
+    // honoured. Genuinely uneven edges use the edge-by-edge painter below,
+    // clipped to the same rounded outer contour as the background.
+    const Color fb = style.borderColor.value_or(Color{0, 0, 0, 0});
+    const float w0 = ResolveBorderWidth(style, BoxEdge::Top);
+    const Color c0 = ResolveBorderColor(style, BoxEdge::Top, fb);
+    bool uniform = true;
+    for (BoxEdge e : {BoxEdge::Right, BoxEdge::Bottom, BoxEdge::Left}) {
+      const Color c = ResolveBorderColor(style, e, fb);
+      if (ResolveBorderWidth(style, e) != w0 ||
+          c.r != c0.r || c.g != c0.g || c.b != c0.b || c.a != c0.a) {
+        uniform = false;
+        break;
+      }
+    }
+    if (uniform) {
+      perEdgeBorders = false;
+      // Draw here (not via the shared-field branch below): translucent border
+      // colours must not be stroked twice.
+      if (w0 > 0.0f && c0.a > 0) {
+        raym3::Renderer::DrawRoundedRectangleEx(backgroundLayout, radius,
+                                                ScaleAlpha(c0, opacity), w0);
+      }
+      borderDrawn = true;
+    }
+  }
+  if (perEdgeBorders) {
+    const Color fallback = style.borderColor.value_or(Color{0, 0, 0, 0});
+    const float top    = ResolveBorderWidth(style, BoxEdge::Top);
+    const float right  = ResolveBorderWidth(style, BoxEdge::Right);
+    const float bottom = ResolveBorderWidth(style, BoxEdge::Bottom);
+    const float left   = ResolveBorderWidth(style, BoxEdge::Left);
+    // Uneven edges: geometric painter — straight runs stop at the corner boxes
+    // and quarter rings bend the stroke around the radius. No stencil clip: the
+    // stroke never leaves the rounded contour, so this also works on backends
+    // whose stencil wrappers are no-ops (rlwg).
+    DrawPerEdgeBorder(
+        backgroundLayout, radius, top, right, bottom, left,
+        ScaleAlpha(ResolveBorderColor(style, BoxEdge::Top, fallback), opacity),
+        ScaleAlpha(ResolveBorderColor(style, BoxEdge::Right, fallback), opacity),
+        ScaleAlpha(ResolveBorderColor(style, BoxEdge::Bottom, fallback), opacity),
+        ScaleAlpha(ResolveBorderColor(style, BoxEdge::Left, fallback), opacity));
+  } else if (!borderDrawn && style.borderColor && style.borderWidth.value_or(0.0f) > 0.0f) {
     raym3::Renderer::DrawRoundedRectangleEx(
-        backgroundLayout, radius, ColorAlpha(*style.borderColor, opacity),
+        backgroundLayout, radius, ScaleAlpha(*style.borderColor, opacity),
         *style.borderWidth);
   }
   for (const BoxShadow &shadow : style.boxShadows) {
@@ -1030,36 +1806,66 @@ static void DrawNodeBackground(const Node &node, const Style &style) {
     raym3::Renderer::DrawRoundedRectangleEx(
         {backgroundLayout.x + shadow.offsetX, backgroundLayout.y + shadow.offsetY,
          backgroundLayout.width, backgroundLayout.height},
-        radius, ColorAlpha(shadow.color, opacity), width);
+        radius, ScaleAlpha(shadow.color, opacity), width);
   }
 }
 
 static void RenderTextNode(const Node &node, const Style &style) {
   float fontSize =
-      style.text.fontSize.value_or(Theme::GetTypographyScale().bodyMedium);
+      ResolveFontSize(style.text, Theme::GetTypographyScale().bodyMedium);
   float letterSpacing = style.text.letterSpacing.value_or(0.25f);
   FontWeight weight = style.text.weight.value_or(FontWeight::Regular);
+  FontStyle fontStyle = style.text.fontStyle.value_or(FontStyle::Normal);
   std::string fontFamily = style.text.fontFamily.value_or(std::string{});
+  const bool underline = style.text.underline.value_or(false);
+  const bool lineThrough = style.text.lineThrough.value_or(false);
   // Reuse the cached PreparedText from Yoga measure phase — no re-measurement.
   const PreparedText& prepared = GetOrPrepare(&node);
   TextLayoutResult layout = LayoutText(prepared, node.layout.width);
   Color color = ApplyRenderOpacity(ResolveTextColor(style.text.color));
+
+  // Selection highlight for `selectable` Text — drawn in dp space (ambient
+  // matrix) before the glyphs. Zero cost when the flag is off.
+  if (style.text.selectable.value_or(false)) {
+    const int selStart = node.textEdit.selectionStart;
+    const int selEnd = node.textEdit.selectionEnd;
+    if (selStart >= 0 && selEnd >= 0 && selStart != selEnd) {
+      Color selColor = Theme::GetColorScheme().primary;
+      selColor.a = 76;
+      if (node.textInput.hasSelectionColor)
+        selColor = node.textInput.selectionColor;
+      for (const Rectangle &r : TextNodeSelectionRects(node, selStart, selEnd))
+        DrawRectangleRec(r, ApplyRenderOpacity(selColor));
+    }
+  }
   // Layout coords are in dp; the font texture was generated at pixel size
   // (size * GetDpiScale()) and we want to sample it 1:1, not 1:(1/dp).
   // So we render OUTSIDE the host's dp-scaling matrix, at the pixel
   // position. node.layout.x/y is in dp — multiply by dp to get pixels.
   const float dp = Density::GetLayoutDensity();
-  // Split the leading (line-height minus the em box) equally above and below the
-  // text, so a line's glyphs sit centred in their line box — matching CSS/RN. We
-  // previously top-anchored each line (all leading below), which made text sit
+  // Split the leading (line-height minus the glyph box) equally above and below
+  // the text, so a line's glyphs sit centred in their line box — matching CSS/RN.
+  // We previously top-anchored each line (all leading below), which made text sit
   // high in its box and look off-centre inside Yoga-centred containers.
+  // The glyph box is ascent+descent, ~1.17 em on our UI faces — not one em — so
+  // subtracting fontSize here (as this did while font-size still meant the
+  // ascent−descent band) now pushes every line too low.
+  const FontVMetrics faceMetrics =
+      fontFamily.empty() ? FontManager::MetricsFor(weight, fontStyle)
+                         : FontManager::MetricsForFamily(fontFamily);
+  const float glyphBoxDp = fontSize * (faceMetrics.ascent + faceMetrics.descent);
   const float lineHeightDp = prepared.options.lineHeight;
-  const float halfLeadingDp = std::max(0.0f, (lineHeightDp - fontSize) * 0.5f);
+  const float halfLeadingDp = std::max(0.0f, (lineHeightDp - glyphBoxDp) * 0.5f);
   float y = Density::DpToPx(node.layout.y + halfLeadingDp);
 
-  // Resolve font once — custom family or Roboto.
+  if (fontFamily.empty()) {
+    FontManager::EnsureGlyphsForText(weight, fontStyle, (int)fontSize,
+                                     node.text);
+  } else {
+    FontManager::EnsureGlyphsForFamily(fontFamily, (int)fontSize, node.text);
+  }
   Font resolvedFont = fontFamily.empty()
-      ? Theme::GetFont(fontSize, weight)
+      ? Theme::GetFont(fontSize, weight, fontStyle)
       : FontManager::LoadFontByFamily(fontFamily, (int)fontSize);
 
   // Draw text in pixel space: the font texture was generated at size * dp, so
@@ -1073,7 +1879,42 @@ static void RenderTextNode(const Node &node, const Style &style) {
   rlPushMatrix();
   rlScalef(1.0f / dp, 1.0f / dp, 1.0f);
 
+  const float thicknessPx =
+      std::max(1.0f, Density::DpToPx(std::max(1.0f, fontSize * 0.06f)));
+  // Both decorations hang off the baseline (ascent below the draw origin), not
+  // off the top of the line: the underline just under it, the strike through the
+  // middle of the x-height band.
+  const float baselineDp = fontSize * faceMetrics.ascent;
+  const float underlineOffsetPx = Density::DpToPx(baselineDp + fontSize * 0.12f);
+  const float strikeOffsetPx = Density::DpToPx(baselineDp - fontSize * 0.25f);
+
+  // Line-level culling.
+  //
+  // Node-level culling cannot help a Text node that is itself taller than the
+  // viewport: a long chat message or log card is ONE node, so it either paints
+  // entirely or not at all, and painting it entirely means drawing every glyph
+  // of every line — including the thousands scrolled far off screen. That is
+  // O(total text) per frame instead of O(visible text), and it is why a screen
+  // holding a handful of very long cards can sit at 30fps while reporting only
+  // ~130 painted nodes.
+  //
+  // The ambient cull rect is the intersection of every clip on the way down
+  // (scroll viewports included), so a line outside it cannot be visible. Skip
+  // those, but keep advancing `y` so every kept line still lands where it
+  // belongs.
+  const Rectangle &cullPx = g_cullStack.back();
+  const float cullTopPx = Density::DpToPx(cullPx.y);
+  const float cullBottomPx = Density::DpToPx(cullPx.y + cullPx.height);
+  const float lineAdvancePx = Density::DpToPx(prepared.options.lineHeight);
+  // One line of slack each way so a partially visible line still draws, and
+  // ascenders/descenders that overhang the line box are never clipped.
+  const float cullSlackPx = lineAdvancePx + Density::DpToPx(fontSize);
+
   for (const TextLine &line : layout.lines) {
+    if (y + cullSlackPx < cullTopPx || y - cullSlackPx > cullBottomPx) {
+      y += lineAdvancePx;
+      continue;
+    }
     float x = Density::DpToPx(node.layout.x);
     TextAlignment alignment = style.text.alignment.value_or(TextAlignment::Left);
     if (alignment == TextAlignment::Center) {
@@ -1081,10 +1922,70 @@ static void RenderTextNode(const Node &node, const Style &style) {
     } else if (alignment == TextAlignment::Right) {
       x += Density::DpToPx(node.layout.width - line.width);
     }
-    DrawTextWithEmoji(resolvedFont, line.text, {x, y},
-                      Density::DpToPx(fontSize),
-                      Density::DpToPx(letterSpacing), color);
-    y += Density::DpToPx(prepared.options.lineHeight);
+    if (line.pieces.empty()) {
+      DrawTextWithEmoji(resolvedFont, line.text, {x, y},
+                        Density::DpToPx(fontSize),
+                        Density::DpToPx(letterSpacing), color);
+    } else {
+      // Rich text: each piece carries its own span style. Resolving the font
+      // per piece is what lets bold/italic/code sit inside one wrapping
+      // paragraph — the thing that previously forced a separate Text node
+      // (and therefore a separate line box) per styled run.
+      for (const TextLinePiece &piece : line.pieces) {
+        const TextSpan *sp =
+            (piece.spanIndex >= 0 && piece.spanIndex < (int)prepared.spans.size())
+                ? &prepared.spans[(std::size_t)piece.spanIndex]
+                : nullptr;
+        const float px = x + Density::DpToPx(piece.x);
+        Color pieceColor = (sp && sp->color) ? *sp->color : color;
+        if (g_renderOpacity < 1.0f)
+          pieceColor.a = (unsigned char)std::clamp(
+              pieceColor.a * g_renderOpacity, 0.0f, 255.0f);
+        Font pieceFont = resolvedFont;
+        if (sp && (sp->weight || sp->fontStyle || sp->fontFamily)) {
+          const FontWeight w = sp->weight.value_or(weight);
+          const FontStyle st = sp->fontStyle.value_or(fontStyle);
+          if (sp->fontFamily && !sp->fontFamily->empty()) {
+            FontManager::EnsureGlyphsForFamily(*sp->fontFamily, (int)fontSize,
+                                               piece.text);
+            pieceFont = FontManager::LoadFontByFamily(*sp->fontFamily, (int)fontSize);
+          } else {
+            FontManager::EnsureGlyphsForText(w, st, (int)fontSize, piece.text);
+            pieceFont = Theme::GetFont(fontSize, w, st);
+          }
+        }
+        if (sp && sp->backgroundColor) {
+          Color bg = *sp->backgroundColor;
+          if (g_renderOpacity < 1.0f)
+            bg.a = (unsigned char)std::clamp(bg.a * g_renderOpacity, 0.0f, 255.0f);
+          DrawRectangleRec({px, y, Density::DpToPx(piece.width),
+                            Density::DpToPx(prepared.options.lineHeight)},
+                           bg);
+        }
+        DrawTextWithEmoji(pieceFont, piece.text, {px, y},
+                          Density::DpToPx(fontSize),
+                          Density::DpToPx(letterSpacing), pieceColor);
+        const float pieceW = Density::DpToPx(piece.width);
+        if ((underline || (sp && sp->underline)) && pieceW > 0.0f) {
+          const float uy = y + underlineOffsetPx;
+          DrawLineEx({px, uy}, {px + pieceW, uy}, thicknessPx, pieceColor);
+        }
+        if ((lineThrough || (sp && sp->lineThrough)) && pieceW > 0.0f) {
+          const float sy = y + strikeOffsetPx;
+          DrawLineEx({px, sy}, {px + pieceW, sy}, thicknessPx, pieceColor);
+        }
+      }
+    }
+    const float lineWidthPx = line.pieces.empty() ? Density::DpToPx(line.width) : 0.0f;
+    if (underline && lineWidthPx > 0.0f) {
+      const float uy = y + underlineOffsetPx;
+      DrawLineEx({x, uy}, {x + lineWidthPx, uy}, thicknessPx, color);
+    }
+    if (lineThrough && lineWidthPx > 0.0f) {
+      const float sy = y + strikeOffsetPx;
+      DrawLineEx({x, sy}, {x + lineWidthPx, sy}, thicknessPx, color);
+    }
+    y += lineAdvancePx;
   }
 
   rlPopMatrix();
@@ -1136,9 +2037,19 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
 
   Ctx().lastStats.nodeCount++;
   node->state = ComputeState(*node);
-  Style style = EffectiveStyle(*node);
+  Style effScratch;
+  const Style &style = EffectiveStyleRef(*node, effScratch);
   const float parentOpacity = g_renderOpacity;
   g_renderOpacity *= std::clamp(style.opacity.value_or(1.0f), 0.0f, 1.0f);
+  const size_t parentMutatorCount = Ctx().externalViewMutators.size();
+  const float localOpacity =
+      std::clamp(style.opacity.value_or(1.0f), 0.0f, 1.0f);
+  if (Ctx().externalViewEmbedder && localOpacity < 1.0f) {
+    ExternalViewMutator mutator;
+    mutator.kind = ExternalViewMutatorKind::Opacity;
+    mutator.opacity = localOpacity;
+    Ctx().externalViewMutators.push_back(mutator);
+  }
   // Establish this node's text color for its subtree (CSS `color` inheritance).
   const std::optional<Color> parentInheritedText = g_inheritedTextColor;
   if (style.text.color) g_inheritedTextColor = style.text.color;
@@ -1176,9 +2087,16 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     if ((insideClip || clips) && !RectsOverlap(node->layout, cull)) {
       g_renderOpacity = parentOpacity; // restore; normal path restores at end
       g_inheritedTextColor = parentInheritedText;
+      Ctx().externalViewMutators.resize(parentMutatorCount);
       return;
     }
   }
+
+  // Survived culling — this node actually paints. Everything above (state,
+  // style resolution, stack-order entry, onLayout) already ran for culled
+  // nodes too, so the gap between paintedCount and nodeCount is the work the
+  // cull does NOT save.
+  Ctx().lastStats.paintedCount++;
 
   // First-class controls: tick toggle animation + paint directly (no
   // customRender / no host-side polling).
@@ -1270,6 +2188,12 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     rlRotatef(style.rotation.value_or(0.0f), 0.0f, 0.0f, 1.0f);
     rlScalef(sc, sc, 1.0f);
     rlTranslatef(-cx, -cy, 0.0f);
+    if (Ctx().externalViewEmbedder) {
+      ExternalViewMutator mutator;
+      mutator.kind = ExternalViewMutatorKind::Transform;
+      mutator.transform = NodeTransform(*node, style);
+      Ctx().externalViewMutators.push_back(mutator);
+    }
   }
 
   DrawNodeBackground(*node, style);
@@ -1296,10 +2220,46 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   } else if (clipped) {
     PushScissor(node->layout);
   }
+  if (Ctx().externalViewEmbedder && clipped) {
+    ExternalViewMutator mutator;
+    mutator.kind = useStencil ? ExternalViewMutatorKind::ClipRoundedRect
+                              : ExternalViewMutatorKind::ClipRect;
+    mutator.rect = node->layout;
+    mutator.radius = clipRadius;
+    Ctx().externalViewMutators.push_back(mutator);
+  }
   // Narrow the cull region to this node's rect for its subtree (paint culling,
   // parallel to the scissor/stencil clip above but in DP space).
   if (clipped)
     g_cullStack.push_back(IntersectRect(node->layout, g_cullStack.back()));
+
+  bool embeddedExternalView = false;
+  if (node->externalViewId != 0 && Ctx().externalViewEmbedder) {
+    ExternalViewComposition composition;
+    composition.externalViewId = node->externalViewId;
+    composition.bounds = node->layout;
+    composition.preservesFrameworkUnderlay =
+        node->externalViewPreservesFrameworkUnderlay;
+    composition.hitTestBehavior = node->externalViewHitTestBehavior;
+    composition.mutators = Ctx().externalViewMutators;
+    if (auto it = Ctx().externalViewOcclusions.find(node->externalViewId);
+        it != Ctx().externalViewOcclusions.end()) {
+      composition.occludingRegions = it->second;
+    }
+    // Nothing painted over this view: the host can leave the current target
+    // selected and skip the overlay entirely.
+    composition.requiresOverlay = !composition.occludingRegions.empty();
+    embeddedExternalView =
+        Ctx().externalViewEmbedder->CompositeExternalView(composition);
+    if (embeddedExternalView) {
+      Ctx().externalViewCount++;
+      // Selecting an overlay starts a new physical color/depth/stencil target.
+      // Restore the still-active logical clips without adding duplicate stack
+      // entries, so later Rayact content is sliced exactly at this boundary.
+      if (Ctx().externalViewEmbedder->RequiresClipReplay())
+        raym3::ReplayCurrentClips();
+    }
+  }
 
   switch (node->kind) {
   case NodeKind::Button: {
@@ -1308,7 +2268,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     float radius = style.borderRadius.value_or(0.0f);
     Color textColor = ApplyRenderOpacity(ResolveTextColor(style.text.color));
     float fontSize =
-        style.text.fontSize.value_or(Theme::GetTypographyScale().labelLarge);
+        ResolveFontSize(style.text, Theme::GetTypographyScale().labelLarge);
 
     if (CheckCollisionPointRec(GetMousePosition(), node->layout))
       raym3::RequestCursor(MOUSE_CURSOR_POINTING_HAND);
@@ -1331,7 +2291,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     RenderTextInputNode(*node);
     break;
   case NodeKind::Custom:
-    if (node->customRender)
+    if (node->customRender && !embeddedExternalView)
       node->customRender(node->layout);
     break;
   case NodeKind::View:
@@ -1345,28 +2305,48 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     break;
   }
 
-  std::vector<NodePtr> children = node->children;
-  std::stable_sort(children.begin(), children.end(),
-                   [](const NodePtr &a, const NodePtr &b) {
-                     return a->zIndex < b->zIndex;
-                   });
-
-  // Collect fixed-position children into the global overlay queue rather than
-  // rendering them in-place — they are painted after all normal content.
+  // Paint order for this node's children.
+  //
+  // This runs for every node, every frame, so it is the hot spot of the paint
+  // pass. It used to copy the child vector (a heap allocation plus a refcount
+  // bump per child), stable_sort it unconditionally, then build a *second*
+  // vector while calling EffectiveStyle by value per child — and Style is a
+  // ~60-optional struct holding vectors and a string, so that is another
+  // allocation each. Almost every node has all-zero zIndex, no fixed children
+  // and no null slots, and in that case the node's own child vector is already
+  // the answer.
+  //
+  // Scan once to find out; only materialize a new vector when the order or the
+  // membership actually has to change.
+  std::vector<NodePtr> reorderedChildren;
+  const std::vector<NodePtr> *paintList = &node->children;
   {
-    std::vector<NodePtr> flowChildren;
-    flowChildren.reserve(children.size());
-    for (const NodePtr &child : children) {
-      if (!child) continue;
-      Style cs = EffectiveStyle(*child);
-      if (cs.position == PositionType::Fixed && cs.display != Display::None) {
-        // Skip rendering in-place; collected recursively in the pre-pass of Render().
-      } else {
-        flowChildren.push_back(child);
-      }
+    bool needsSort = false;
+    bool needsFilter = false;
+    const NodePtr *prev = nullptr;
+    for (const NodePtr &child : node->children) {
+      if (!child) { needsFilter = true; continue; }
+      if (prev && child->zIndex < (*prev)->zIndex) needsSort = true;
+      if (!needsFilter && EffectiveIsFixedAndVisible(*child)) needsFilter = true;
+      prev = &child;
     }
-    children = std::move(flowChildren);
+    if (needsSort || needsFilter) {
+      reorderedChildren.reserve(node->children.size());
+      for (const NodePtr &child : node->children) {
+        // Fixed children are not painted in place — the pre-pass in Render()
+        // collects them into the overlay queue and paints them above everything.
+        if (!child || EffectiveIsFixedAndVisible(*child)) continue;
+        reorderedChildren.push_back(child);
+      }
+      if (needsSort)
+        std::stable_sort(reorderedChildren.begin(), reorderedChildren.end(),
+                         [](const NodePtr &a, const NodePtr &b) {
+                           return a->zIndex < b->zIndex;
+                         });
+      paintList = &reorderedChildren;
+    }
   }
+  const std::vector<NodePtr> &children = *paintList;
 
   // Nav item active-indicator pill. Flutter's NavigationBar does not slide one
   // shared indicator between destinations; each destination owns a pill that
@@ -1662,6 +2642,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     rlPopMatrix();
   g_renderOpacity = parentOpacity;
   g_inheritedTextColor = parentInheritedText;
+  Ctx().externalViewMutators.resize(parentMutatorCount);
 }
 
 // Compute screen-relative layout for a fixed-position node.
@@ -1888,12 +2869,82 @@ static void CollectFixedNodes(const NodePtr &node, std::vector<FixedNode> &fixed
 
   for (const NodePtr &child : node->children) {
     if (!child) continue;
-    Style cs = EffectiveStyle(*child);
-    if (cs.position == PositionType::Fixed && cs.display != Display::None) {
+    // Whole-tree walk once per frame; the by-value Style it used to build here
+    // was an allocation per node just to read two enums.
+    if (EffectiveIsFixedAndVisible(*child))
       fixedNodes.push_back({child, child->zIndex});
-    }
     CollectFixedNodes(child, fixedNodes);
   }
+}
+
+static bool HasRenderableExternalView(const NodePtr &node, Rectangle bounds) {
+  if (!node || node->style.display == Display::None)
+    return false;
+  if (node->externalViewId != 0 && RectsOverlap(node->layout, bounds))
+    return true;
+  for (const NodePtr &child : node->children)
+    if (HasRenderableExternalView(child, bounds))
+      return true;
+  return false;
+}
+
+// True when a node puts pixels of its own on screen. A pure layout container
+// contributes nothing, so it must not force a platform view onto an overlay.
+// Deliberately conservative: anything uncertain counts as painting, because a
+// false positive only costs the overlay we would have allocated anyway, while a
+// false negative would draw framework content *underneath* a platform view.
+static bool NodePaintsContent(const NodePtr &node) {
+  if (!node) return false;
+  if (node->externalViewId != 0) return false;   // the platform view itself
+  const Style &style = node->style;
+  if (style.backgroundColor && style.backgroundColor->a > 0) return true;
+  if (style.backgroundGradient) return true;
+  if (!node->text.empty()) return true;
+  // TextInput paints its own field chrome, glyphs and caret from TextInputProps
+  // rather than the generic Style fields above. Count its full bounds as a
+  // framework layer so a platform view underneath cannot steal its clicks.
+  if (node->kind == NodeKind::TextInput) return true;
+  if (style.borderWidth.value_or(0.0f) > 0.0f) return true;
+  if (node->customRender) return true;
+  if (node->inkRipple) return true;
+  return false;
+}
+
+// Collect, for every external view, the regions of later-painted framework
+// content that overlap it. Paint order is this DFS, so "later" is simply
+// "visited after"; fixed-position nodes paint in a pass after the whole tree,
+// so they count against every view regardless of tree position.
+static void CollectExternalViewOcclusions(
+    const NodePtr &node, Rectangle viewport,
+    std::vector<std::pair<int, Rectangle>> &seenViews,
+    std::unordered_map<int, std::vector<ExternalViewOcclusion>> &out) {
+  if (!node || node->style.display == Display::None) return;
+
+  if (node->externalViewId != 0) {
+    if (RectsOverlap(node->layout, viewport))
+      seenViews.emplace_back(node->externalViewId, node->layout);
+    // A platform view's own subtree is its content, not framework content
+    // drawn over it.
+    return;
+  }
+
+  if (!seenViews.empty() && NodePaintsContent(node)) {
+    Style occlusionScratch;
+    const Style &occlusionStyle = EffectiveStyleRef(*node, occlusionScratch);
+    const float radius = std::max(
+        0.0f, occlusionStyle.borderRadius.value_or(0.0f));
+    for (const auto &[viewId, viewRect] : seenViews) {
+      if (!RectsOverlap(node->layout, viewRect)) continue;
+      const Rectangle intersection = IntersectRect(node->layout, viewRect);
+      out[viewId].push_back({
+          intersection,
+          std::min(radius,
+                   std::min(intersection.width, intersection.height) * 0.5f)});
+    }
+  }
+
+  for (const NodePtr &child : node->children)
+    CollectExternalViewOcclusions(child, viewport, seenViews, out);
 }
 
 void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
@@ -1902,13 +2953,50 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
     dt = 0.016f;
   TickRipples(dt);
 
+  ExternalViewEmbedder *installedEmbedder = Ctx().externalViewEmbedder;
   Ctx().fixedNodes.clear();
   Ctx().stackOrder.clear();
   Ctx().parentMap.clear();
   Ctx().paintCounter = 0;
+  Ctx().externalViewMutators.clear();
+  Ctx().externalViewCount = 0;
+  // UpdateLayout runs before Render in the frame, so the Yoga build count for
+  // this frame is already recorded; don't wipe it with the paint counters.
+  const int yogaBuilt = Ctx().lastStats.yogaNodesBuilt;
   Ctx().lastStats = {};
+  Ctx().lastStats.yogaNodesBuilt = yogaBuilt;
   if (!layoutAlreadyComputed)
     UpdateLayout(root, bounds);
+  const bool hasExternalViews =
+      installedEmbedder && HasRenderableExternalView(root, bounds);
+  if (!hasExternalViews) {
+    Ctx().externalViewEmbedder = nullptr;
+    // Still run an empty embedder frame: the host hides platform views and
+    // overlay surfaces that were composited by the PREVIOUS tree during
+    // begin/end reconciliation. Skipping it entirely leaves stale editors and
+    // overlay layers (with old screen pixels) on top of the new screen after
+    // a navigation away from the last external view.
+    if (installedEmbedder) {
+      installedEmbedder->BeginFrame(Ctx().surfaceId, bounds,
+                                    Ctx().platformDensity);
+      installedEmbedder->EndFrame(Ctx().surfaceId);
+    }
+  }
+  Ctx().externalViewOcclusions.clear();
+  if (Ctx().externalViewEmbedder) {
+    // Work out what actually covers each platform view before painting, so a
+    // view with nothing on top of it costs no overlay surface at all.
+    std::vector<std::pair<int, Rectangle>> seenViews;
+    CollectExternalViewOcclusions(root, bounds, seenViews,
+                                  Ctx().externalViewOcclusions);
+  }
+  if (Ctx().externalViewEmbedder) {
+    ExternalViewMutator densityTransform;
+    densityTransform.kind = ExternalViewMutatorKind::Transform;
+    const float density = std::max(0.0001f, Ctx().platformDensity);
+    densityTransform.transform = {density, 0, 0, 0, density, 0, 0, 0, 1};
+    Ctx().externalViewMutators.push_back(densityTransform);
+  }
   
   BuildParentMap(root, Ctx().parentMap);
 
@@ -1919,26 +3007,49 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   g_cullStack.clear();
   g_cullStack.push_back(bounds);
 
+  if (Ctx().externalViewEmbedder)
+    Ctx().externalViewEmbedder->BeginFrame(Ctx().surfaceId, bounds,
+                                           Ctx().platformDensity);
+
   RenderNode(root, root ? root->zIndex : 0);
 
   // Fixed-position pass: paint overlay nodes (Dialog, BottomSheet, etc.) on
   // top of all normal content, sorted ascending by zIndex (respecting fixed-root ancestry).
   if (!Ctx().fixedNodes.empty()) {
-    std::stable_sort(Ctx().fixedNodes.begin(), Ctx().fixedNodes.end(),
-                     [](const FixedNode &a, const FixedNode &b) {
-                       Node *ra = GetFixedRoot(a.node.get(), Ctx().parentMap);
-                       Node *rb = GetFixedRoot(b.node.get(), Ctx().parentMap);
-                       if (ra != rb) {
-                         return ra->zIndex < rb->zIndex;
-                       }
-                       if (IsDescendant(a.node, b.node, Ctx().parentMap)) {
-                         return false;
-                       }
-                       if (IsDescendant(b.node, a.node, Ctx().parentMap)) {
-                         return true;
-                       }
-                       return a.zIndex < b.zIndex;
-                     });
+    // Sort on a precomputed integer key rather than comparing ancestry inline.
+    // The old comparator mixed "descendant paints after its ancestor" with
+    // zIndex, and those two rules disagree: three fixed nodes can form a cycle
+    // (a < c because c descends from a, c < b and b < a on zIndex), which makes
+    // the predicate not a strict weak ordering — undefined behaviour in
+    // stable_sort, not merely an odd paint order.
+    //
+    // Ancestry is folded into the key instead: a node's effective z is raised to
+    // its fixed ancestor's, so a descendant can never sort below its ancestor
+    // while the comparison stays a plain integer test. fixedNodes is in tree
+    // pre-order (CollectFixedNodes walks pre-order), so ancestors already have
+    // lower indices and stable_sort keeps that order for equal keys.
+    std::vector<std::pair<int, int>> keys(Ctx().fixedNodes.size());
+    for (size_t i = 0; i < Ctx().fixedNodes.size(); ++i) {
+      const FixedNode &fn = Ctx().fixedNodes[i];
+      Node *root = GetFixedRoot(fn.node.get(), Ctx().parentMap);
+      int effectiveZ = fn.zIndex;
+      for (size_t j = 0; j < i; ++j) {
+        if (IsDescendant(fn.node, Ctx().fixedNodes[j].node, Ctx().parentMap))
+          effectiveZ = std::max(effectiveZ, keys[j].second);
+      }
+      keys[i] = {root ? root->zIndex : 0, effectiveZ};
+    }
+
+    // Sort indices, then apply — the key array is positional, so the elements
+    // cannot be permuted out from under it.
+    std::vector<size_t> order(Ctx().fixedNodes.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&keys](size_t a, size_t b) { return keys[a] < keys[b]; });
+    std::vector<FixedNode> sorted;
+    sorted.reserve(order.size());
+    for (size_t i : order) sorted.push_back(Ctx().fixedNodes[i]);
+    Ctx().fixedNodes.swap(sorted);
     for (const FixedNode &fn : Ctx().fixedNodes) {
       BuildParentMap(fn.node, Ctx().parentMap);
       RenderFixedNode(fn, bounds);
@@ -1947,11 +3058,21 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
 
   PaintTextSelectionOverlay(root);
 
+  if (Ctx().externalViewEmbedder)
+    Ctx().externalViewEmbedder->EndFrame(Ctx().surfaceId);
+  Ctx().externalViewEmbedder = installedEmbedder;
+
   // Commit the fully-built stack for input queries. Inline OwnsInput calls made
   // during the next frame's tree walk read this complete snapshot; HitTest runs
   // after Render() so it reads the snapshot just committed for the current frame.
-  Ctx().committedStackOrder = Ctx().stackOrder;
-  Ctx().committedParentMap = Ctx().parentMap;
+  // Swap, do not copy. These are a vector of StackEntry and a map of NodePtr,
+  // both holding shared_ptrs, so copying them cost two large allocations and
+  // 2N atomic refcount operations every frame. The working buffers are cleared
+  // at the top of the next Render, so handing them the old committed storage
+  // also recycles the capacity instead of reallocating it.
+  Ctx().committedStackOrder.swap(Ctx().stackOrder);
+  Ctx().committedParentMap.swap(Ctx().parentMap);
+  PublishRenderStats(Ctx().lastStats);
 }
 
 NodePtr CommittedParentOf(const Node *node) {
@@ -1979,6 +3100,9 @@ void RenderOverlayRepaint(const NodePtr &root, Rectangle bounds) {
   Ctx().committedStackOrder = std::move(savedCommittedStack);
   Ctx().committedParentMap = std::move(savedCommittedParent);
   Ctx().lastStats = savedStats;
+  // The repaint's inner Render published its own (subtree-sized) counters;
+  // put the whole frame's numbers back so diagnostics keep describing the frame.
+  PublishRenderStats(savedStats);
 }
 
 namespace {
@@ -2027,7 +3151,11 @@ static bool NodeNeedsAnotherFrame(const NodePtr &node) {
   }
   if (node->kind == NodeKind::TextInput && GetFocusedId() == IdOf(node))
     return true;
-  if (node->kind == NodeKind::TextInput && !node->textInput.label.empty()) {
+  // Plain fields ignore the label (no float chrome) and disabled fields draw
+  // it frozen — neither advances labelAnim, so don't pump frames for them.
+  if (node->kind == NodeKind::TextInput && !node->textInput.label.empty() &&
+      node->textInput.variant != TextFieldVariant::Plain &&
+      !node->textInput.disabled && !node->disabled) {
     char *buf = node->textInput.buffer
                     ? node->textInput.buffer
                     : (node->inputBuffer.empty() ? nullptr : node->inputBuffer.data());
@@ -2082,8 +3210,12 @@ const std::vector<Rectangle> &GetDirtyRects() { return Ctx().dirtyRects; }
 
 static bool IsClippedByAncestors(const NodePtr &node, Vector2 point, const std::unordered_map<Node *, NodePtr> &parentMap) {
   Node *curr = node.get();
+  Style scratch;
   while (curr) {
-    Style style = EffectiveStyle(*curr);
+    // By reference: this walks to the root for every hit-test candidate, and
+    // every pointer move runs a hit test. Returning Style by value put a heap
+    // allocation on each step of that walk.
+    const Style &style = EffectiveStyleRef(*curr, scratch);
     if (style.overflow == Overflow::Hidden || style.overflow == Overflow::Scroll) {
       if (!CheckCollisionPointRec(point, curr->layout)) {
         return true; // Clipped!
@@ -2107,7 +3239,8 @@ static const StackEntry *HitEntry(Vector2 point) {
   for (const StackEntry &e : Ctx().committedStackOrder) {
     if (!e.node || e.node->style.display == Display::None || !e.occludes)
       continue;
-    if (!NodeReceivesInput(*e.node, EffectiveStyle(*e.node)))
+    Style hitScratch;
+    if (!NodeReceivesInput(*e.node, EffectiveStyleRef(*e.node, hitScratch)))
       continue;
     if (!CheckCollisionPointRec(point, e.bounds))
       continue;
@@ -2179,6 +3312,98 @@ NodePtr InteractiveTargetAt(Vector2 point) {
   return InteractiveTargetFrom(e->node);
 }
 
+// --- Scroll diagnostics (RAYACT_SCROLL_TRACE=1) ----------------------------
+
+namespace {
+
+struct ScrollTraceBucket {
+  int writes = 0;
+  float netDelta = 0.0f; // signed sum of (to - from)
+};
+
+struct ScrollTraceState {
+  // Indexed by ScrollWriteSource. Reset per gesture.
+  ScrollTraceBucket buckets[7];
+  double gestureStartTime = 0.0;
+  bool active = false;
+};
+
+ScrollTraceState g_scrollTrace;
+
+const char *ScrollSourceName(ScrollWriteSource s) {
+  switch (s) {
+  case ScrollWriteSource::Drag:      return "drag";
+  case ScrollWriteSource::Wheel:     return "wheel";
+  case ScrollWriteSource::Fling:     return "fling";
+  case ScrollWriteSource::Clamp:     return "clamp";
+  case ScrollWriteSource::FollowEnd: return "followEnd";
+  case ScrollWriteSource::Js:        return "js";
+  case ScrollWriteSource::Mutation:  return "mutation";
+  }
+  return "?";
+}
+
+} // namespace
+
+bool ScrollTraceEnabled() {
+  // Read once: this sits on the fling hot path.
+  static const bool enabled = [] {
+    const char *v = std::getenv("RAYACT_SCROLL_TRACE");
+    return v && v[0] == '1';
+  }();
+  return enabled;
+}
+
+void ScrollTraceEvent(const char *fmt, ...) {
+  if (!ScrollTraceEnabled())
+    return;
+  if (!g_scrollTrace.active) {
+    g_scrollTrace.active = true;
+    g_scrollTrace.gestureStartTime = GetTime();
+  }
+  fprintf(stderr, "[scroll %+7.3fs] ",
+          GetTime() - g_scrollTrace.gestureStartTime);
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+  fputc('\n', stderr);
+}
+
+void ScrollTraceOffsetWrite(const Node &node, ScrollWriteSource source,
+                            char axis, float from, float to) {
+  if (!ScrollTraceEnabled())
+    return;
+  if (from == to)
+    return;
+  ScrollTraceBucket &b = g_scrollTrace.buckets[static_cast<int>(source)];
+  b.writes++;
+  b.netDelta += (to - from);
+  // Per-write detail is noisy during a fling, so only the histogram is printed
+  // at gesture end; individual writes go out only for the non-fling sources
+  // that are supposed to be rare.
+  if (source != ScrollWriteSource::Fling && source != ScrollWriteSource::Drag)
+    ScrollTraceEvent("  write %-9s %c %8.2f -> %8.2f  (%+.2f) node=%p",
+                     ScrollSourceName(source), axis, from, to, to - from,
+                     static_cast<const void *>(&node));
+}
+
+void ScrollTraceFlushGesture(const char *reason) {
+  if (!ScrollTraceEnabled() || !g_scrollTrace.active)
+    return;
+  fprintf(stderr, "[scroll] --- gesture end (%s) ---\n", reason);
+  for (int i = 0; i < 7; ++i) {
+    const ScrollTraceBucket &b = g_scrollTrace.buckets[i];
+    if (b.writes == 0)
+      continue;
+    fprintf(stderr, "[scroll]   %-9s writes=%-4d net=%+9.2f\n",
+            ScrollSourceName(static_cast<ScrollWriteSource>(i)), b.writes,
+            b.netDelta);
+  }
+  fprintf(stderr, "[scroll] ---------------------------\n");
+  g_scrollTrace = ScrollTraceState{};
+}
+
 // --- Scroll input (Flutter-like gesture competition) -----------------------
 
 namespace {
@@ -2188,6 +3413,10 @@ constexpr float kMinFlingVelocity = 50.0f;
 constexpr float kMaxFlingVelocity = 8000.0f;
 constexpr float kScrollFriction = 0.95f;
 constexpr float kVelocityStopThreshold = 5.0f;
+// How long an interrupted fling's momentum stays available to the next flick.
+// Long enough to cover a press-drag-release flick, short enough that a
+// deliberate grab-and-hold does not inherit it.
+constexpr double kFlingChainWindowSeconds = 0.4;
 
 // Android ClampingScrollSimulation constants (Flutter scroll_simulation.dart).
 const float kFlingDecelerationRate =
@@ -2223,20 +3452,48 @@ static float VelocityTrackerEstimate(double releaseTime) {
   float ys[kVelocitySampleCapacity];
   int count = 0;
   double prevTime = releaseTime;
+
+  // The tracker is fed once per frame, so its time constants only make sense
+  // relative to the frame interval. The defaults assume ~60fps; under a heavy
+  // app running at 7fps the inter-sample gap (~133ms) blows past the 40ms
+  // assume-stopped cutoff and the 100ms horizon, so every release computed
+  // zero velocity and flings simply never fired — a swipe scrolled only its
+  // literal drag distance, and a long list took minutes of hand-dragging.
+  // Scale the cutoffs by the observed sample pacing (capped so a hung app
+  // does not accept arbitrarily stale history). A finger that pauses still
+  // produces a fresh same-position sample every frame, so widening these does
+  // not resurrect the stale-history case they exist for: a pause shows up as
+  // a near-zero slope, not as a stale gap.
+  double frameGap = 0.0;
+  if (Ctx().scroll.velocitySampleCount >= 2) {
+    const int newest = (Ctx().scroll.velocitySampleHead - 1 + kVelocitySampleCapacity) %
+                       kVelocitySampleCapacity;
+    const int prev = (Ctx().scroll.velocitySampleHead - 2 + 2 * kVelocitySampleCapacity) %
+                     kVelocitySampleCapacity;
+    frameGap = std::min(
+        0.25, Ctx().scroll.velocitySamples[newest].time -
+                  Ctx().scroll.velocitySamples[prev].time);
+  }
+  const double assumeStopped =
+      std::max(kVelocityAssumeStoppedSeconds, 2.5 * frameGap);
+  const double horizon = std::max(kVelocityHorizonSeconds, 3.5 * frameGap);
+  const int minSamples =
+      frameGap > kVelocityAssumeStoppedSeconds ? 2 : kVelocityMinSamples;
+
   for (int i = 0; i < Ctx().scroll.velocitySampleCount; ++i) {
     int idx = (Ctx().scroll.velocitySampleHead - 1 - i + 2 * kVelocitySampleCapacity) %
               kVelocitySampleCapacity;
     const ScrollSample &s = Ctx().scroll.velocitySamples[idx];
     double age = releaseTime - s.time;
     double gap = prevTime - s.time;
-    if (age > kVelocityHorizonSeconds || gap > kVelocityAssumeStoppedSeconds)
+    if (age > horizon || gap > assumeStopped)
       break;
     times[count] = -age;
     ys[count] = s.y;
     count++;
     prevTime = s.time;
   }
-  if (count < kVelocityMinSamples)
+  if (count < minSamples)
     return 0.0f;
 
   // Linear least squares: slope = (n*sum(ty) - sum(t)sum(y)) / (n*sum(tt) - sum(t)^2)
@@ -2262,7 +3519,36 @@ static float FlingDurationFor(float velocity) {
   return kFlingDecelerationRate * kFlingInflexion * androidDuration;
 }
 
+// Velocity of an in-flight spline fling right now.
+// x(t) = D * (1 - (1-t)^r)  =>  x'(t) = (D*r/T) * (1-t)^(r-1), and D*r/T is the
+// velocity the fling started with.
+static float CurrentFlingVelocity(const Node &node) {
+  if (!node.flingActive || node.flingDuration <= 0.0f)
+    return 0.0f;
+  const double elapsed = GetTime() - node.flingStartTime;
+  const float t =
+      std::clamp(static_cast<float>(elapsed / node.flingDuration), 0.0f, 1.0f);
+  const float v0 =
+      node.flingDistance * kFlingDecelerationRate / node.flingDuration;
+  return v0 * std::pow(1.0f - t, kFlingDecelerationRate - 1.0f);
+}
+
 static void StartFling(const NodePtr &node, float velocity) {
+  // Flick, flick, flick to scroll a long way is one gesture as far as the user
+  // is concerned. Each press interrupts the previous fling, so without carrying
+  // the interrupted momentum forward the second flick *replaces* the first —
+  // it can even be slower than what was already running, which reads as the
+  // scroll stalling mid-flight rather than speeding up.
+  const double now = GetTime();
+  if (node->flingResidualVelocity != 0.0f &&
+      now - node->flingResidualTime <= kFlingChainWindowSeconds &&
+      (node->flingResidualVelocity > 0.0f) == (velocity > 0.0f)) {
+    ScrollTraceEvent("fling chain  v=%+8.1f + residual=%+8.1f", velocity,
+                     node->flingResidualVelocity);
+    velocity += node->flingResidualVelocity;
+  }
+  node->flingResidualVelocity = 0.0f;
+
   velocity = std::clamp(velocity, -kMaxFlingVelocity, kMaxFlingVelocity);
   float duration = FlingDurationFor(velocity);
   if (duration <= 0.0f)
@@ -2272,9 +3558,22 @@ static void StartFling(const NodePtr &node, float velocity) {
   node->flingStartOffsetY = node->scrollOffsetY;
   node->flingDuration = duration;
   node->flingDistance = velocity * duration / kFlingDecelerationRate;
+  ScrollTraceEvent(
+      "fling start  v=%+8.1f dur=%.3fs dist=%+8.1f from=%8.2f max=%8.2f",
+      velocity, duration, node->flingDistance, node->scrollOffsetY,
+      std::max(0.0f, node->scrollContentHeight - node->layout.height));
 }
 
 static void StopFling(const NodePtr &node) {
+  if (node->flingActive) {
+    const float achieved = node->scrollOffsetY - node->flingStartOffsetY;
+    ScrollTraceEvent(
+        "fling stop   requested=%+8.1f achieved=%+8.1f (%.0f%%) at=%8.2f",
+        node->flingDistance, achieved,
+        node->flingDistance != 0.0f ? 100.0f * achieved / node->flingDistance
+                                    : 0.0f,
+        node->scrollOffsetY);
+  }
   node->flingActive = false;
   node->scrollVelocityY = 0.0f;
 }
@@ -2315,6 +3614,7 @@ static void ClearScrollVelocitiesOutside(const NodePtr &node,
     node->scrollVelocityX = 0.0f;
     node->scrollVelocityY = 0.0f;
     node->flingActive = false;
+    node->flingResidualVelocity = 0.0f;
   }
   for (const NodePtr &child : node->children)
     ClearScrollVelocitiesOutside(child, keepSubtree);
@@ -2379,7 +3679,8 @@ static NodePtr FindScrollableForInput(const NodePtr &root, Vector2 point) {
   return FindScrollableNodeAt(root, point);
 }
 
-static bool ScrollNodeBy(const NodePtr &node, float deltaX, float deltaY) {
+static bool ScrollNodeBy(const NodePtr &node, float deltaX, float deltaY,
+                         ScrollWriteSource source = ScrollWriteSource::Drag) {
   if (!node)
     return false;
   if (std::abs(deltaY) > 0.01f)
@@ -2392,6 +3693,8 @@ static bool ScrollNodeBy(const NodePtr &node, float deltaX, float deltaY) {
   node->scrollOffsetY =
       ClampScrollOffset(node->scrollOffsetY + deltaY, node->scrollContentHeight,
                         node->layout.height);
+  ScrollTraceOffsetWrite(*node, source, 'x', oldX, node->scrollOffsetX);
+  ScrollTraceOffsetWrite(*node, source, 'y', oldY, node->scrollOffsetY);
   bool changed = std::abs(node->scrollOffsetX - oldX) > 0.01f ||
                  std::abs(node->scrollOffsetY - oldY) > 0.01f;
   if (changed && node->onScroll)
@@ -2403,6 +3706,52 @@ static void ClearScrollGesture() {
   Ctx().scroll.candidate = nullptr;
   Ctx().scroll.engaged = false;
   Ctx().scroll.frameVelocityY = 0.0f;
+}
+
+static void ClearPendingPress();
+
+static void ResolveExternalViewGesture(bool accepted) {
+  const int externalViewId = Ctx().input.pendingExternalViewId;
+  if (externalViewId == 0)
+    return;
+  if (Ctx().externalViewEmbedder)
+    Ctx().externalViewEmbedder->OnGestureDecision(externalViewId, accepted);
+  Ctx().input.pendingExternalViewId = 0;
+  if (Ctx().scroll.pendingPressTarget &&
+      Ctx().scroll.pendingPressTarget->externalViewId == externalViewId)
+    ClearPendingPress();
+}
+
+// A node captured purely because it has pan/drag handlers shares the gesture
+// arena with an ancestor scroller instead of owning it outright. Controls,
+// scrims and value-drivers still take the gesture exclusively: their drag IS
+// the interaction, and there is nothing sensible to hand off.
+static bool ActiveIsSharedDragCapture() {
+  NodeId id = GetActiveId();
+  if (id == 0)
+    return false;
+  if (Ctx().activeIsScrim || Ctx().activeIsBottomSheetDrag)
+    return false;
+  auto *n = reinterpret_cast<Node *>(id);
+  if (!n)
+    return false;
+  if (IsControlKind(n->kind) || n->onValueChange)
+    return false;
+  return n->onDragStart || n->onDragMove || n->onDragEnd;
+}
+
+// Called once the scroll gesture engages while such a node holds the pointer.
+// The node is told the drag ended so it can spring back, then released so the
+// rest of the gesture belongs to the scroller.
+static void YieldSharedDragToScroll(Vector2 pt) {
+  NodeId id = GetActiveId();
+  if (id == 0)
+    return;
+  auto *n = reinterpret_cast<Node *>(id);
+  if (n && n->onDragEnd)
+    n->onDragEnd({pt.x - GetDragOrigin().x, pt.y - GetDragOrigin().y});
+  StartRippleFadeOut(id);
+  SetActiveId(0);
 }
 
 static bool NodeSupportsRipple(const Node &node) {
@@ -2477,13 +3826,20 @@ static void TickScrollMomentumRecurse(const NodePtr &node, float dt) {
         std::max(0.0f, node->scrollContentHeight - node->layout.height);
     float clamped = std::clamp(target, 0.0f, maxOffset);
     if (std::abs(clamped - node->scrollOffsetY) > 0.01f) {
+      ScrollTraceOffsetWrite(*node, ScrollWriteSource::Fling, 'y',
+                             node->scrollOffsetY, clamped);
       node->scrollOffsetY = clamped;
       if (node->onScroll)
         node->onScroll();
     }
     // Hit an edge: stop dead (native clamping behavior, no decay-at-wall).
-    if (done || std::abs(clamped - target) > 0.5f)
+    const bool hitEdge = std::abs(clamped - target) > 0.5f;
+    if (done || hitEdge) {
+      ScrollTraceEvent("fling end reason=%s t=%.3f target=%8.2f clamped=%8.2f",
+                       done ? "duration" : "edge", t, target, clamped);
       StopFling(node);
+      ScrollTraceFlushGesture(done ? "fling-complete" : "fling-edge");
+    }
   } else {
     node->scrollVelocityY = 0.0f;
   }
@@ -2491,7 +3847,7 @@ static void TickScrollMomentumRecurse(const NodePtr &node, float dt) {
   float friction = std::pow(kScrollFriction, dt * 60.0f);
   if (std::abs(node->scrollVelocityX) > kVelocityStopThreshold) {
     float delta = node->scrollVelocityX * dt;
-    ScrollNodeBy(node, delta, 0.0f);
+    ScrollNodeBy(node, delta, 0.0f, ScrollWriteSource::Fling);
     node->scrollVelocityX *= friction;
     if (std::abs(node->scrollVelocityX) < kVelocityStopThreshold)
       node->scrollVelocityX = 0.0f;
@@ -2504,6 +3860,10 @@ static void TickScrollMomentumRecurse(const NodePtr &node, float dt) {
 }
 
 } // namespace
+
+void CancelFling(const NodePtr &node) {
+  if (node) StopFling(node);
+}
 
 void TickScrollMomentum(const NodePtr &root) {
   if (!root)
@@ -2530,18 +3890,31 @@ void ResolveScrollInput(const NodePtr &root) {
   const PointerInput &p = GetPointer();
   Vector2 pt = p.pos;
 
+  if (p.cancelled) {
+    ResolveExternalViewGesture(false);
+    ClearScrollGesture();
+    return;
+  }
+
   if (modalOpen && !FindScrollableForInput(root, pt))
     ClearScrollGesture();
 
   // Wheel / trackpad: no slop, scroll directly.
   if (std::abs(p.wheel) > 0.01f) {
     if (NodePtr target = FindScrollableForInput(root, pt))
-      ScrollNodeBy(target, 0.0f, -p.wheel * kWheelScrollScale);
+      ScrollNodeBy(target, 0.0f, -p.wheel * kWheelScrollScale,
+                   ScrollWriteSource::Wheel);
     return;
   }
 
-  // ResolveInput owns the gesture when an interactive node is captured.
-  if (GetActiveId() != 0) {
+  // ResolveInput owns the gesture when an interactive node is captured — with
+  // one exception. A node captured only because it has drag handlers (a
+  // swipe-to-reveal row, say) would otherwise swallow every touch that starts
+  // on it, so a vertical drag over a list of such rows could never scroll.
+  // Those keep tracking a scroll candidate alongside the drag, and the scroll
+  // takes over below if the movement turns out to be along the scroll axis.
+  const bool sharedDrag = ActiveIsSharedDragCapture();
+  if (GetActiveId() != 0 && !sharedDrag) {
     ClearScrollGesture();
     return;
   }
@@ -2552,10 +3925,24 @@ void ResolveScrollInput(const NodePtr &root) {
     if (Ctx().scroll.candidate) {
       Ctx().scroll.pressOrigin = pt;
       Ctx().scroll.lastPointer = pt;
+      // Pin the content to the finger, but remember what it was doing: a
+      // flick that lands mid-momentum should add to it (see StartFling).
+      const float residual = CurrentFlingVelocity(*Ctx().scroll.candidate);
       StopFling(Ctx().scroll.candidate);
+      if (residual != 0.0f) {
+        Ctx().scroll.candidate->flingResidualVelocity = residual;
+        Ctx().scroll.candidate->flingResidualTime = GetTime();
+      }
       Ctx().scroll.candidate->scrollVelocityX = 0.0f;
       VelocityTrackerReset();
       VelocityTrackerAddSample(GetTime(), pt.y);
+      ScrollTraceEvent("press        at=(%.1f,%.1f) offset=%8.2f followEnd=%d",
+                       pt.x, pt.y, Ctx().scroll.candidate->scrollOffsetY,
+                       Ctx().scroll.candidate->scrollFollowEnd ? 1 : 0);
+    } else {
+      // Nothing in Rayact can claim a scroll, so release the original native
+      // event sequence immediately instead of imposing a one-frame/tap delay.
+      ResolveExternalViewGesture(true);
     }
     return;
   }
@@ -2572,6 +3959,16 @@ void ResolveScrollInput(const NodePtr &root) {
       const float cross = horizontal ? totalDy : totalDx;
       if (std::abs(primary) > kTouchSlop && std::abs(primary) > std::abs(cross)) {
         Ctx().scroll.engaged = true;
+        ResolveExternalViewGesture(false);
+        // The drag node, if any, loses the gesture here: the movement is
+        // primarily along the scroll axis, so the user is scrolling.
+        if (sharedDrag)
+          YieldSharedDragToScroll(pt);
+        // Samples collected before this point came from pre-slop travel and
+        // still enter the least-squares fit below, diluting it.
+        ScrollTraceEvent(
+            "engage       travel=%+.1fdp slop=%.1fdp presamples=%d",
+            primary, kTouchSlop, Ctx().scroll.velocitySampleCount);
         ClearPendingPress();
         NodeId focused = GetFocusedId();
         if (focused) {
@@ -2609,9 +4006,21 @@ void ResolveScrollInput(const NodePtr &root) {
       // Pointer velocity → scroll velocity (drag moves content opposite).
       float pointerVy = VelocityTrackerEstimate(GetTime());
       float scrollVy = -pointerVy;
+      ScrollTraceEvent("release      samples=%d pointerVy=%+8.1f scrollVy=%+8.1f"
+                       " min=%.1f -> %s",
+                       Ctx().scroll.velocitySampleCount, pointerVy, scrollVy,
+                       kMinFlingVelocity,
+                       std::abs(scrollVy) > kMinFlingVelocity ? "fling"
+                                                             : "DROPPED");
       if (std::abs(scrollVy) > kMinFlingVelocity)
         StartFling(Ctx().scroll.candidate, scrollVy);
+      else
+        ScrollTraceFlushGesture("no-fling");
+    } else if (Ctx().scroll.engaged) {
+      ScrollTraceFlushGesture("release-no-momentum");
     }
+    if (!Ctx().scroll.engaged)
+      ResolveExternalViewGesture(true);
     ClearScrollGesture();
   }
 }
@@ -2767,10 +4176,220 @@ static void ReleaseActive(Node *an, Vector2 pt, const Node *releaseTarget) {
   }
 }
 
+// Read-only selection on `selectable` Text nodes. Runs after the handle/
+// toolbar overlay but before generic press resolution.
+//
+// Mouse (PointerIsMouse): press on selectable text starts a character drag
+// selection immediately (browser-like); double-click selects the word,
+// triple-click everything. The press is consumed, so it can't also start a
+// drag-scroll — same trade-off browsers make.
+//
+// Touch: the press is NOT consumed — a drag must still scroll. A long-press
+// held within the touch slop (and with no scroll gesture engaged) starts a
+// word-granularity selection with handles + toolbar, matching react-native.
+static NodePtr g_selTextLongPressCandidate;
+
+static bool ResolveTextSelectionInput(const NodePtr &root) {
+  const PointerInput &p = GetPointer();
+  const Node *rootNode = root.get();
+
+  Node *focusedSel = nullptr;
+  if (NodeId fid = GetFocusedId()) {
+    auto *fn = reinterpret_cast<Node *>(fid);
+    if (fn && NodeIsSelectableText(*fn) && NodeWithinSubtree(fn, rootNode))
+      focusedSel = fn;
+  }
+
+  // --- Continue an in-progress selection session -------------------------
+  if (focusedSel) {
+    TextEditState &edit = focusedSel->textEdit;
+
+    // A fresh press edge always starts a new interaction. Hosts that queue
+    // input (web, mobile) can deliver the release of one click and the press
+    // of the next in the same frame; without this the continue-branches below
+    // swallow that press and a double-click never reaches the click-count
+    // logic — it read as a plain click and cleared the selection instead.
+    if (edit.isSelecting && !p.pressed) { // mouse character drag
+      if (p.down) {
+        const int off = TextNodeHitTestCaret(*focusedSel, p.pos);
+        const int anchor = edit.selectionAnchor >= 0 ? edit.selectionAnchor : off;
+        if (edit.clickCount >= 2) {
+          // A double-click selects a word and leaves the button held, so the
+          // drag that follows must extend by WHOLE WORDS — at character
+          // granularity the very next frame shrank the selection back to the
+          // one letter under the cursor.
+          int anchorStart = 0, anchorEnd = 0, wordStart = 0, wordEnd = 0;
+          TextNodeWordBoundaries(*focusedSel, anchor, anchorStart, anchorEnd);
+          TextNodeWordBoundaries(*focusedSel, off, wordStart, wordEnd);
+          TextNodeSetSelection(*focusedSel, std::min(anchorStart, wordStart),
+                               std::max(anchorEnd, wordEnd));
+        } else if (off != anchor) {
+          TextNodeSetSelection(*focusedSel, std::min(anchor, off),
+                               std::max(anchor, off));
+        }
+        return true;
+      }
+      edit.isSelecting = false;
+      return true; // consume the release edge
+    }
+
+    if (edit.longPressSelectionActive && !p.pressed) { // touch word drag
+      if (p.down) {
+        ClearScrollGesture();
+        const int off = TextNodeHitTestCaret(*focusedSel, p.pos);
+        int ws = 0, we = 0, as = 0, ae = 0;
+        TextNodeWordBoundaries(*focusedSel, off, ws, we);
+        TextNodeWordBoundaries(*focusedSel, edit.longPressAnchor, as, ae);
+        TextNodeSetSelection(*focusedSel, std::min(as, ws), std::max(ae, we));
+        edit.handlesVisible = true;
+        return true;
+      }
+      edit.longPressSelectionActive = false;
+      edit.toolbarVisible =
+          edit.selectionStart >= 0 && edit.selectionEnd >= 0 &&
+          edit.selectionStart != edit.selectionEnd;
+      edit.handlesVisible = edit.toolbarVisible;
+      return true; // consume the release edge
+    }
+  }
+
+  // --- Touch long-press arming ------------------------------------------
+  if (g_selTextLongPressCandidate) {
+    Node *cand = g_selTextLongPressCandidate.get();
+    if (!p.down || !NodeWithinSubtree(cand, rootNode)) {
+      g_selTextLongPressCandidate = nullptr;
+    } else {
+      TextEditState &edit = cand->textEdit;
+      if (PointerTravel(edit.longPressOrigin, p.pos) > kTouchSlop ||
+          Ctx().scroll.engaged) {
+        g_selTextLongPressCandidate = nullptr; // it's a scroll/drag
+      } else if (GetTime() - edit.longPressStartTime >= kLongPressDelay) {
+        NodePtr candidate = g_selTextLongPressCandidate;
+        g_selTextLongPressCandidate = nullptr;
+        RequestFocus(candidate);
+        int ws = 0, we = 0;
+        TextNodeWordBoundaries(*cand, edit.longPressAnchor, ws, we);
+        TextNodeSetSelection(*cand, ws, we);
+        edit.longPressSelectionActive = true;
+        edit.handlesVisible = true;
+        edit.toolbarVisible = false;
+        ClearScrollGesture();
+        SetActiveId(0);
+        if (GetTextInputHostHooks().hapticFeedback)
+          GetTextInputHostHooks().hapticFeedback();
+        return true;
+      }
+      // Still waiting — do not consume; a scroll may yet claim the gesture.
+    }
+  }
+
+  // --- New press ---------------------------------------------------------
+  if (p.pressed) {
+    const StackEntry *hitE = HitEntry(p.pos);
+    NodePtr hitPtr =
+        hitE && hitE->node && NodeIsSelectableText(*hitE->node) ? hitE->node
+                                                                : nullptr;
+    Node *hitText = hitPtr.get();
+
+    // Press away from the focused selectable text clears its selection.
+    if (focusedSel && focusedSel != hitText) {
+      TextNodeClearSelection(*focusedSel);
+      if (!hitText && GetFocusedId() == IdOf(focusedSel))
+        Blur();
+      // Fall through: the press still resolves normally elsewhere.
+    }
+
+    if (hitText) {
+      TextEditState &edit = hitText->textEdit;
+      const double now = GetTime();
+      const int off = TextNodeHitTestCaret(*hitText, p.pos);
+
+      if (PointerIsMouse()) {
+        // Prefer the host's click count when it reports one: queued-input hosts
+        // (web) can merge a real double-click into a single press edge, and
+        // timing alone would then read it as two unrelated single clicks.
+        const int hostClicks = TakeHostClickCount();
+        if (hostClicks > 0)
+          edit.clickCount = hostClicks;
+        else if (now - edit.lastClickTime < 0.4 && edit.lastClickPos >= 0 &&
+                 std::abs(off - edit.lastClickPos) <= 2)
+          edit.clickCount++;
+        else
+          edit.clickCount = 1;
+        edit.lastClickTime = now;
+        edit.lastClickPos = off;
+        RequestFocus(hitPtr);
+        edit.handlesVisible = false;
+        edit.toolbarVisible = false;
+        if (edit.clickCount >= 3) {
+          TextNodeSelectAll(*hitText);
+          edit.isSelecting = false;
+        } else if (edit.clickCount == 2) {
+          int ws = 0, we = 0;
+          TextNodeWordBoundaries(*hitText, off, ws, we);
+          TextNodeSetSelection(*hitText, ws, we);
+          edit.selectionAnchor = ws;
+          edit.isSelecting = true;
+        } else {
+          TextNodeSetSelection(*hitText, -1, -1);
+          edit.selectionAnchor = off;
+          edit.isSelecting = true;
+        }
+        return true;
+      }
+
+      // Touch: a tap on already-selected text clears the selection (RN
+      // behavior); the press still arms a long-press for a new selection.
+      if (focusedSel == hitText)
+        TextNodeClearSelection(*hitText);
+      // Arm a long-press candidate; the press itself passes through so
+      // scrolling and taps behave exactly as before.
+      edit.longPressStartTime = now;
+      edit.longPressOrigin = p.pos;
+      edit.longPressAnchor = off;
+      g_selTextLongPressCandidate = hitPtr;
+      return false;
+    }
+  }
+
+  // --- Keyboard: Cmd/Ctrl+A / Cmd/Ctrl+C on the focused selectable text ---
+  if (focusedSel) {
+    const bool cmd = IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER) ||
+                     IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (cmd && IsKeyPressed(KEY_A)) {
+      TextNodeSelectAll(*focusedSel);
+      return true;
+    }
+    if (cmd && IsKeyPressed(KEY_C)) {
+      TextNodeCopy(*focusedSel);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void ResolveInput(const NodePtr &root) {
   const PointerInput &p = GetPointer();
   Vector2 pt = p.pos;
   Ctx().lastStats.hitTestCount++;
+
+  if (p.cancelled) {
+    if (NodeId active = GetActiveId()) {
+      auto* node = reinterpret_cast<Node*>(active);
+      if (node && node->onPressOut) node->onPressOut();
+      if (node) {
+        node->control.dragging = false;
+        node->pressLongFired = false;
+      }
+    }
+    SetActiveId(0);
+    SetPendingPressId(0);
+    Ctx().scroll.pendingPressTarget = nullptr;
+    Ctx().input.dismissTapActive = false;
+    ResolveExternalViewGesture(false);
+    return;
+  }
 
   const Node *rootNode = root.get();
   if (NodeId fid = GetFocusedId()) {
@@ -2780,6 +4399,9 @@ void ResolveInput(const NodePtr &root) {
   }
 
   if (HandleTextSelectionOverlayInput(root))
+    return;
+
+  if (ResolveTextSelectionInput(root))
     return;
 
   const StackEntry *hitE = HitEntry(pt);
@@ -2870,8 +4492,10 @@ void ResolveInput(const NodePtr &root) {
     if (NodeId fid = GetFocusedId()) {
       auto *fn = reinterpret_cast<Node *>(fid);
       if (fn && fn->kind == NodeKind::TextInput) {
-        const bool onTextInput =
-            target && target->kind == NodeKind::TextInput;
+        // Descendants count: the mobile native editor is an external-view
+        // child of the text-input node, and tapping it must not arm the
+        // tap-outside dismissal.
+        const bool onTextInput = target && NodeOrAncestorIsTextInput(target);
         if (!onTextInput) {
           Ctx().input.dismissTapActive = true;
           Ctx().input.dismissTapOrigin = pt;
@@ -2901,6 +4525,12 @@ void ResolveInput(const NodePtr &root) {
       return;
     }
     if (target) {
+      if (owner && owner->externalViewId != 0 &&
+          owner->externalViewHitTestBehavior !=
+              ExternalViewHitTestBehavior::Transparent &&
+          Ctx().externalViewEmbedder) {
+        Ctx().input.pendingExternalViewId = owner->externalViewId;
+      }
       if (NeedsImmediateCapture(*target, ownerIsScrim)) {
         SetActiveId(IdOf(target));
         PressBegin(target, pt, ownerIsScrim);
@@ -2918,6 +4548,9 @@ void ResolveInput(const NodePtr &root) {
   if (p.released && Ctx().scroll.pendingPressTarget && !Ctx().scroll.engaged) {
     NodePtr pending = Ctx().scroll.pendingPressTarget;
     Vector2 pressOrigin = Ctx().scroll.pendingPressOrigin;
+    const bool nativePlatformView =
+        pending->externalViewId != 0 && Ctx().externalViewEmbedder;
+    ResolveExternalViewGesture(true);
     FinishPendingPress();
     if (PointerTravel(pressOrigin, pt) <= kTouchSlop &&
         InteractiveTargetFrom(InputOwnerAt(pt)) == pending) {
@@ -2928,7 +4561,7 @@ void ResolveInput(const NodePtr &root) {
         } else {
           RequestFocus(pending);
         }
-      } else {
+      } else if (!nativePlatformView) {
         if (pending->onPress)
           pending->onPress();
         DismissTextInputIfNeeded(pending, false,
@@ -2949,7 +4582,7 @@ void ResolveInput(const NodePtr &root) {
   }
 }
 
-RenderStats GetLastRenderStats() { return Ctx().lastStats; }
+RenderStats GetLastRenderStats() { return s_publishedStats; }
 
 bool HasModalOverlay() {
   for (const FixedNode &fn : Ctx().fixedNodes) {

@@ -2,6 +2,7 @@
 #include "raym3/fonts/FontManager.h"
 #include "raym3/styles/Theme.h"
 #include "raym3/v2/EmojiFont.h"
+#include <algorithm>   // std::clamp — libc++ leaks it via other headers, MSVC's STL does not
 #include <cmath>
 
 namespace raym3 {
@@ -10,8 +11,12 @@ constexpr int kRoundedRectSegments = 16;
 
 // Uniform border thickness: raylib's DrawRectangleRoundedLinesEx uses 1px line
 // arcs when lineThick <= 1, so corners look thinner than straight edges.
+// notchStart/notchEnd cut a gap out of the top edge (M3 outlined text field
+// label notch); pass notchEnd <= notchStart for an uninterrupted frame.
 static void DrawRoundedBorderFrame(Rectangle bounds, float cornerRadius,
-                                   float lineWidth, Color color) {
+                                   float lineWidth, Color color,
+                                   float notchStart = 0.0f,
+                                   float notchEnd = 0.0f) {
   if (lineWidth <= 0.0f)
     return;
 
@@ -32,7 +37,19 @@ static void DrawRoundedBorderFrame(Rectangle bounds, float cornerRadius,
   // corner arcs (DrawRing) and the fill (DrawRectangleRounded) stay on the float
   // position — the border then misaligns/shimmers against the fill while scrolling.
   if (bounds.width > 2.0f * r) {
-    DrawRectangleRec({bounds.x + r, bounds.y, bounds.width - 2.0f * r, w}, color);
+    const float topLeft = bounds.x + r;
+    const float topRight = bounds.x + bounds.width - r;
+    if (notchEnd > notchStart) {
+      const float leftSpanEnd = std::clamp(notchStart, topLeft, topRight);
+      const float rightSpanStart = std::clamp(notchEnd, topLeft, topRight);
+      if (leftSpanEnd > topLeft)
+        DrawRectangleRec({topLeft, bounds.y, leftSpanEnd - topLeft, w}, color);
+      if (topRight > rightSpanStart)
+        DrawRectangleRec({rightSpanStart, bounds.y, topRight - rightSpanStart, w},
+                         color);
+    } else {
+      DrawRectangleRec({topLeft, bounds.y, topRight - topLeft, w}, color);
+    }
     DrawRectangleRec({bounds.x + r, bounds.y + bounds.height - w,
                       bounds.width - 2.0f * r, w}, color);
   }
@@ -69,6 +86,13 @@ void Renderer::DrawRoundedRectangle(Rectangle bounds, float cornerRadius,
 void Renderer::DrawRoundedRectangleEx(Rectangle bounds, float cornerRadius,
                                       Color color, float lineWidth) {
   DrawRoundedBorderFrame(bounds, cornerRadius, lineWidth, color);
+}
+
+void Renderer::DrawRoundedRectangleNotched(Rectangle bounds, float cornerRadius,
+                                           Color color, float lineWidth,
+                                           float notchStart, float notchEnd) {
+  DrawRoundedBorderFrame(bounds, cornerRadius, lineWidth, color, notchStart,
+                         notchEnd);
 }
 
 void Renderer::DrawElevatedRectangle(Rectangle bounds, float cornerRadius,
@@ -127,16 +151,16 @@ void Renderer::DrawTextCentered(const char *text, Rectangle bounds,
   Font font = Theme::GetFont(fontSize, weight);
   Vector2 textSize = v2::MeasureTextWithEmoji(font, text ? text : "", fontSize, 0);
 
-  // Optical vertical centering. raylib anchors text at the ascender line and the
-  // measured height (textSize.y == fontSize) spans ascent+descent, so centering
-  // the full box leaves the descender's blank space skewing the visible glyphs
-  // off-centre (text looks bottom-heavy in fixed-height chrome like buttons).
-  // Centre the ascent box instead — lift by half the descender — so the cap/x
-  // height band sits on the true centre, matching web/RN button text.
-  // Roboto (and the M3 label fonts): ascent/(ascent-descent) ≈ 0.79, i.e. the
-  // descender is ~0.21·fontSize; shifting up by descent/2 centres the caps.
-  const float kAscentFraction = 0.79f;
-  const float ascent = fontSize * kAscentFraction;
+  // Optical vertical centering. raylib anchors text at the ascender line, so
+  // centering the whole glyph box leaves the descender's blank space skewing the
+  // visible glyphs off-centre (text looks bottom-heavy in fixed-height chrome
+  // like buttons). Centre the ascent box instead — lift by half the descender —
+  // so the cap/x-height band sits on the true centre, matching web/RN.
+  // The ascent is read from the face: fontSize is an em (FontManager bakes it
+  // that way), and ascent is ~0.93 em on Roboto, ~0.97 em on SF, so it is NOT a
+  // fraction of the drawn box that can be hardcoded across faces.
+  const FontVMetrics metrics = FontManager::MetricsFor(weight, FontStyle::Normal);
+  const float ascent = fontSize * metrics.ascent;
   Vector2 position = {bounds.x + (bounds.width - textSize.x) / 2.0f,
                       bounds.y + (bounds.height - ascent) / 2.0f};
 

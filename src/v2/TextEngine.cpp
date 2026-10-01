@@ -172,21 +172,6 @@ MergeKeepAllUnits(std::string_view segText, const std::vector<CjkUnit> &units,
   return merged;
 }
 
-float DefaultMeasure(std::string_view text, const TextLayoutOptions &options) {
-  std::string materialized(text);
-  Vector2 size;
-  if (!options.fontFamily.empty()) {
-    Font font =
-        FontManager::LoadFontByFamily(options.fontFamily, (int)options.fontSize);
-    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
-                                options.letterSpacing);
-  } else {
-    Font font = Theme::GetFont(options.fontSize, options.weight);
-    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
-                                options.letterSpacing);
-  }
-  return size.x;
-}
 
 float AddLetterSpacing(float width, std::string_view text, float letterSpacing,
                        SegmentBreakKind kind) {
@@ -222,7 +207,8 @@ std::vector<float> BuildBreakableFitAdvances(
 void PushMeasuredSegment(PreparedText &prepared, std::string text, float width,
                          float lineEndFitAdvance, float lineEndPaintAdvance,
                          SegmentBreakKind kind, std::size_t byteStart,
-                         std::vector<float> breakableFitAdvances) {
+                         std::vector<float> breakableFitAdvances,
+                         int spanIndex = -1) {
   if (kind != SegmentBreakKind::Text && kind != SegmentBreakKind::Space)
     prepared.simpleLineWalkFastPath = false;
   if (!breakableFitAdvances.empty())
@@ -237,6 +223,7 @@ void PushMeasuredSegment(PreparedText &prepared, std::string text, float width,
   seg.byteStart = byteStart;
   seg.byteEnd = byteStart + seg.text.size();
   seg.breakableFitAdvances = std::move(breakableFitAdvances);
+  seg.spanIndex = spanIndex;
   prepared.segments.push_back(std::move(seg));
 }
 
@@ -244,7 +231,8 @@ void PushMeasuredTextSegment(PreparedText &prepared, std::string text,
                              SegmentBreakKind kind, std::size_t byteStart,
                              bool wordLike, bool allowOverflowBreaks,
                              const MeasureTextCallback &measure,
-                             const TextLayoutOptions &options) {
+                             const TextLayoutOptions &options,
+                             int spanIndex = -1) {
   float width =
       AddLetterSpacing(measure(text, options), text, options.letterSpacing, kind);
 
@@ -263,19 +251,88 @@ void PushMeasuredTextSegment(PreparedText &prepared, std::string text,
     breakable = BuildBreakableFitAdvances(text, measure, options);
 
   PushMeasuredSegment(prepared, std::move(text), width, lineEndFit, lineEndPaint,
-                      kind, byteStart, std::move(breakable));
+                      kind, byteStart, std::move(breakable), spanIndex);
 }
 
 } // namespace
+
+// Public (declared in TextEngine.h): selection hit-testing must measure with
+// exactly the same widths layout used.
+float DefaultMeasure(std::string_view text, const TextLayoutOptions &options) {
+  std::string materialized(text);
+  Vector2 size;
+  if (!options.fontFamily.empty()) {
+    FontManager::EnsureGlyphsForFamily(options.fontFamily,
+                                       (int)options.fontSize, materialized);
+    Font font =
+        FontManager::LoadFontByFamily(options.fontFamily, (int)options.fontSize);
+    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
+                                options.letterSpacing);
+  } else {
+    FontManager::EnsureGlyphsForText(options.weight, options.fontStyle,
+                                     (int)options.fontSize, materialized);
+    Font font =
+        Theme::GetFont(options.fontSize, options.weight, options.fontStyle);
+    size = MeasureTextWithEmoji(font, materialized, options.fontSize,
+                                options.letterSpacing);
+  }
+  return size.x;
+}
 
 std::vector<std::size_t> GraphemeBoundaries(std::string_view text) {
   return EmojiAwareGraphemeBoundaries(text);
 }
 
+namespace {
+// Style a segment measures/paints with: the node's options, overridden by the
+// span it falls inside. Kept here so measurement and painting cannot disagree.
+TextLayoutOptions OptionsForSpan(const TextLayoutOptions &base,
+                                 const std::vector<TextSpan> &spans,
+                                 int spanIndex) {
+  if (spanIndex < 0 || spanIndex >= (int)spans.size()) return base;
+  const TextSpan &sp = spans[(std::size_t)spanIndex];
+  TextLayoutOptions out = base;
+  if (sp.weight) out.weight = *sp.weight;
+  if (sp.fontStyle) out.fontStyle = *sp.fontStyle;
+  if (sp.fontFamily) out.fontFamily = *sp.fontFamily;
+  return out;
+}
+
+// Index of the span covering `byte`, or -1.
+int SpanIndexAt(const std::vector<TextSpan> &spans, std::size_t byte) {
+  for (std::size_t i = 0; i < spans.size(); ++i) {
+    if (byte >= spans[i].byteStart && byte < spans[i].byteEnd) return (int)i;
+    if (spans[i].byteStart > byte) break;  // sorted
+  }
+  return -1;
+}
+
+// Byte offsets where the style changes within [start, end).
+void CollectSpanCuts(const std::vector<TextSpan> &spans, std::size_t start,
+                     std::size_t end, std::vector<std::size_t> &out) {
+  for (const TextSpan &sp : spans) {
+    if (sp.byteEnd <= start) continue;
+    if (sp.byteStart >= end) break;
+    if (sp.byteStart > start && sp.byteStart < end) out.push_back(sp.byteStart);
+    if (sp.byteEnd > start && sp.byteEnd < end) out.push_back(sp.byteEnd);
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+}
+} // namespace
+
 PreparedText PrepareText(std::string text, const TextLayoutOptions &options,
                          MeasureTextCallback measure) {
+  return PrepareTextWithSpans(std::move(text), options, {}, std::move(measure));
+}
+
+PreparedText PrepareTextWithSpans(std::string text,
+                                  const TextLayoutOptions &options,
+                                  std::vector<TextSpan> spans,
+                                  MeasureTextCallback measure) {
   PreparedText prepared;
   prepared.options = options;
+  prepared.spans = std::move(spans);
   prepared.simpleLineWalkFastPath = options.letterSpacing == 0.0f;
 
   MeasureTextCallback measureFn =
@@ -327,28 +384,153 @@ PreparedText PrepareText(std::string text, const TextLayoutOptions &options,
       continue;
     }
 
+    if (!prepared.spans.empty()) {
+      // A segment that straddles a style change has to become several
+      // segments: each must measure with its own font, and the painter draws
+      // one piece per style.
+      std::vector<std::size_t> cuts;
+      CollectSpanCuts(prepared.spans, seg.byteStart,
+                      seg.byteStart + seg.text.size(), cuts);
+      if (!cuts.empty()) {
+        std::size_t from = seg.byteStart;
+        cuts.push_back(seg.byteStart + seg.text.size());
+        for (std::size_t cut : cuts) {
+          if (cut <= from) continue;
+          std::string piece = seg.text.substr(from - seg.byteStart, cut - from);
+          const int spanIndex = SpanIndexAt(prepared.spans, from);
+          PushMeasuredTextSegment(
+              prepared, piece, seg.kind, from, seg.wordLike, true, measureFn,
+              OptionsForSpan(options, prepared.spans, spanIndex), spanIndex);
+          from = cut;
+        }
+        continue;
+      }
+    }
     PushMeasuredTextSegment(prepared, seg.text, seg.kind, seg.byteStart,
-                            seg.wordLike, true, measureFn, options);
+                            seg.wordLike, true, measureFn,
+                            OptionsForSpan(options, prepared.spans,
+                                           SpanIndexAt(prepared.spans, seg.byteStart)),
+                            SpanIndexAt(prepared.spans, seg.byteStart));
   }
 
   return prepared;
 }
 
+namespace {
+
+constexpr const char *kEllipsis = "\xE2\x80\xA6"; // U+2026 HORIZONTAL ELLIPSIS
+
+// Shrink `text` (grapheme by grapheme) until it plus the ellipsis fits.
+std::string EllipsizeToWidth(const std::string &text, float maxWidth,
+                             const TextLayoutOptions &options,
+                             const MeasureTextCallback &measure) {
+  if (maxWidth <= 0.0f) return text + kEllipsis;
+  const auto boundaries = GraphemeBoundaries(text);
+  // boundaries.back() == text.size(); walk backwards over grapheme starts.
+  for (std::size_t count = boundaries.empty() ? 0 : boundaries.size() - 1;
+       count > 0; --count) {
+    std::string candidate = text.substr(0, boundaries[count]);
+    // Trailing spaces before an ellipsis read as a typo.
+    while (!candidate.empty() && candidate.back() == ' ') candidate.pop_back();
+    candidate += kEllipsis;
+    if (measure(candidate, options) <= maxWidth) return candidate;
+  }
+  return std::string(kEllipsis);
+}
+
+std::string EllipsizeHead(const std::string &text, float maxWidth,
+                          const TextLayoutOptions &options,
+                          const MeasureTextCallback &measure) {
+  if (maxWidth <= 0.0f) return std::string(kEllipsis) + text;
+  const auto boundaries = GraphemeBoundaries(text);
+  for (std::size_t start = 0; start + 1 < boundaries.size(); ++start) {
+    std::string candidate = std::string(kEllipsis) + text.substr(boundaries[start]);
+    if (measure(candidate, options) <= maxWidth) return candidate;
+  }
+  return std::string(kEllipsis);
+}
+
+std::string EllipsizeMiddle(const std::string &text, float maxWidth,
+                            const TextLayoutOptions &options,
+                            const MeasureTextCallback &measure) {
+  if (maxWidth <= 0.0f) return text + kEllipsis;
+  const auto boundaries = GraphemeBoundaries(text);
+  if (boundaries.size() < 3) return EllipsizeToWidth(text, maxWidth, options, measure);
+  const std::size_t graphemes = boundaries.size() - 1;
+  for (std::size_t drop = 1; drop < graphemes; ++drop) {
+    const std::size_t keepFront = (graphemes - drop + 1) / 2;
+    const std::size_t keepBack = graphemes - drop - keepFront;
+    std::string candidate = text.substr(0, boundaries[keepFront]);
+    candidate += kEllipsis;
+    candidate += text.substr(boundaries[graphemes - keepBack]);
+    if (measure(candidate, options) <= maxWidth) return candidate;
+  }
+  return std::string(kEllipsis);
+}
+
+// react-native `numberOfLines` / CSS `-webkit-line-clamp`. Both props were
+// declared on the JS side for a long time and read by nothing: a label with no
+// break opportunity wrapped forever instead of ending in an ellipsis.
+void ApplyLineClamp(TextLayoutResult &result, const PreparedText &prepared,
+                    float maxWidth, const MeasureTextCallback &measure) {
+  const int maxLines = prepared.options.maxLines;
+  if (maxLines <= 0) return;
+  const std::size_t limit = static_cast<std::size_t>(maxLines);
+  const bool truncated = result.lines.size() > limit;
+  if (truncated) {
+    result.lines.resize(limit);
+    result.height = prepared.options.lineHeight * static_cast<float>(limit);
+    result.width = 0.0f;
+    for (const TextLine &line : result.lines)
+      result.width = std::max(result.width, line.width);
+  }
+  if (result.lines.empty()) return;
+
+  const bool overflows = truncated || (maxWidth > 0.0f && result.width > maxWidth);
+  if (!overflows || prepared.options.overflow == TextOverflow::Clip) return;
+
+  TextLine &last = result.lines.back();
+  const std::string original = last.text;
+  switch (prepared.options.overflow) {
+  case TextOverflow::Head:
+    last.text = EllipsizeHead(original, maxWidth, prepared.options, measure);
+    break;
+  case TextOverflow::Middle:
+    last.text = EllipsizeMiddle(original, maxWidth, prepared.options, measure);
+    break;
+  default:
+    last.text = EllipsizeToWidth(original, maxWidth, prepared.options, measure);
+    break;
+  }
+  last.width = measure(last.text, prepared.options);
+  result.width = 0.0f;
+  for (const TextLine &line : result.lines)
+    result.width = std::max(result.width, line.width);
+}
+
+} // namespace
+
 TextLayoutResult LayoutText(const PreparedText &prepared, float maxWidth,
                             MeasureTextCallback measure) {
   MeasureTextCallback measureFn =
       measure ? std::move(measure) : MeasureTextCallback(DefaultMeasure);
-  return LayoutPreparedText(prepared, maxWidth, measureFn, kDefaultLineFitEpsilon);
+  TextLayoutResult result =
+      LayoutPreparedText(prepared, maxWidth, measureFn, kDefaultLineFitEpsilon);
+  ApplyLineClamp(result, prepared, maxWidth, measureFn);
+  return result;
 }
 
 std::string TextCacheKey(const std::string &text, float fontSize,
                          FontWeight weight, const std::string &fontFamily,
                          WhiteSpace whiteSpace, WordBreak wordBreak,
-                         float letterSpacing) {
-  char buf[96];
-  std::snprintf(buf, sizeof(buf), "%.1f:%d:%d:%d:%.2f:", fontSize,
-                static_cast<int>(weight), static_cast<int>(whiteSpace),
-                static_cast<int>(wordBreak), letterSpacing);
+                         float letterSpacing, FontStyle fontStyle,
+                         std::uint64_t fontGeneration) {
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "%.1f:%d:%d:%d:%d:%.2f:%llu:", fontSize,
+                static_cast<int>(weight), static_cast<int>(fontStyle),
+                static_cast<int>(whiteSpace), static_cast<int>(wordBreak),
+                letterSpacing,
+                static_cast<unsigned long long>(fontGeneration));
   std::string key(buf);
   if (!fontFamily.empty()) {
     key += fontFamily;

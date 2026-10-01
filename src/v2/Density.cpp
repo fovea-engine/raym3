@@ -2,6 +2,7 @@
 #include "raym3/v2/RenderContext.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 namespace raym3::v2 {
@@ -26,6 +27,27 @@ void Density::SetLayoutDensity(float density) {
 
 float Density::GetLayoutDensity() {
   return Ctx().layoutDensity;
+}
+
+// Deliberately NOT on RenderContext, unlike the densities above: rendering runs
+// under a per-surface context that the host swaps in on the render thread, so a
+// value written from the JS thread would never be seen. The OS text-size setting
+// is one process-wide user preference either way, and it is read from both
+// threads (Yoga measure and paint), hence the atomic.
+static std::atomic<float> g_fontScale{1.0f};
+
+void Density::SetFontScale(float scale) {
+  if (!std::isfinite(scale) || scale <= 0.0f) {
+    g_fontScale.store(1.0f, std::memory_order_relaxed);
+    return;
+  }
+  // Android tops out at 2.0 in Settings (and non-linear beyond 1.3 since 14);
+  // iOS accessibility sizes reach ~3.1x. Clamp only against nonsense values.
+  g_fontScale.store(std::clamp(scale, 0.5f, 4.0f), std::memory_order_relaxed);
+}
+
+float Density::GetFontScale() {
+  return g_fontScale.load(std::memory_order_relaxed);
 }
 
 float Density::DpToPx(float dp) {

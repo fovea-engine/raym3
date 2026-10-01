@@ -27,12 +27,13 @@ struct PointerInput {
   bool down = false;
   bool pressed = false;  // down edge this frame
   bool released = false; // up edge this frame
+  bool cancelled = false;
   float wheel = 0.0f;
 };
 
 // Latch the raw pointer for this frame. Coordinates must already be in dp.
 void BeginInputFrame(Vector2 posDp, bool down, bool pressed, bool released,
-                     float wheel);
+                     float wheel, bool cancelled = false);
 
 // Resolve hover/active/focus + fire interaction callbacks. Call AFTER Render()
 // so the committed stack (with effective z) is current.
@@ -77,12 +78,31 @@ double FrameTimeMs();
 void MarkTextSelectionOverlayPointerConsumed();
 bool WasTextSelectionOverlayPointerConsumed();
 
+// Whether the pointer is a hover-capable mouse (desktop/web) rather than a
+// touch screen. Gates click-drag text selection: with a mouse, pressing on
+// selectable text starts a selection; on touch the same drag must scroll, so
+// selection waits for a long-press. Default true (standalone desktop apps);
+// touch-first hosts set false once at startup.
+void SetPointerIsMouse(bool isMouse);
+bool PointerIsMouse();
+
+// Hosts whose input arrives as discrete events (web pointerdown, native
+// mouse-down) can report the platform's own click count for the press about to
+// be delivered. Multi-click detection then does not depend on the engine
+// observing every press edge — a rapid double-click can coalesce into one
+// queued touch and still select a word. 0 = no host value; fall back to timing.
+void SetHostClickCount(int count);
+int TakeHostClickCount();
+
 // Programmatic focus control.
 void SetFocusedNode(const NodePtr &node);
 void RequestFocus(const NodePtr &node);
 void Blur();
 
 // TextField keyboard policy: keep focus unless the user taps outside (not scroll/drag).
+// True when the node or any committed-tree ancestor is a TextInput (the
+// mobile native editor is an external-view child of the text-input node).
+bool NodeOrAncestorIsTextInput(const NodePtr &node);
 bool ShouldKeepTextInputFocused(const NodePtr &tapTarget, bool scrollEngaged,
                                 float pointerTravel);
 void DismissTextInputIfNeeded(const NodePtr &tapTarget, bool scrollEngaged,

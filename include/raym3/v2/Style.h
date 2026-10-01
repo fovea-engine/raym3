@@ -1,7 +1,9 @@
 #pragma once
 
 #include "raym3/types.h"
+#include "raym3/v2/Density.h"
 #include "raym3/v2/TextEngine.h"
+#include <algorithm>
 #include <optional>
 #include <vector>
 #include <raylib.h>
@@ -60,24 +62,75 @@ struct EdgeValues {
 struct TextStyle {
   std::optional<float> fontSize;
   std::optional<float> lineHeight;
+  // Unitless CSS `line-height: 1.5` — a multiple of the resolved font size.
+  // Kept unresolved so a ratio declared in one rule still applies to a font
+  // size declared in another (or set later from JS).
+  std::optional<float> lineHeightRatio;
+  // CSS `-webkit-line-clamp` / react-native `numberOfLines`: 0 = unlimited.
+  std::optional<int> maxLines;
+  // What to do with the overflow when maxLines clips: tail ellipsis or a hard cut.
+  std::optional<TextOverflow> overflow;
   std::optional<float> letterSpacing;
   std::optional<FontWeight> weight;
   std::optional<FontStyle> fontStyle;
+  std::optional<bool> underline;
+  std::optional<bool> lineThrough;
   std::optional<TextAlignment> alignment;
   std::optional<Color> color;
   std::optional<std::string> fontFamily; // named font registered via registerFont()
   std::optional<WhiteSpace> whiteSpace;
   std::optional<WordBreak> wordBreak;
+  // react-native Text `selectable`: read-only selection (long-press / mouse
+  // drag / copy). Only meaningful on NodeKind::Text.
+  std::optional<bool> selectable;
+  // react-native `allowFontScaling` — whether the OS text-size setting applies
+  // to this run. Unset means yes, matching RN, where opting out is the explicit
+  // act. Fixed-size chrome that must not reflow sets it to false.
+  std::optional<bool> allowFontScaling;
+  // react-native `maxFontSizeMultiplier`: ceiling on the OS multiplier for this
+  // run. Unset means uncapped.
+  std::optional<float> maxFontSizeMultiplier;
 };
 
 struct LinearGradientStop {
   Color color;
   float position = 0.0f;
+  // An author-written position (`red 40%`) pins the stop; an unpositioned stop is
+  // spread evenly between its pinned neighbours, per css-images-3.
+  bool hasPosition = false;
 };
 
+enum class GradientKind : uint8_t { Linear, Conic };
+
+// One CSS <gradient>. `angleDegrees` is the axis for linear-gradient and the
+// `from` angle for conic-gradient; `centerX/centerY` is conic's `at <position>`
+// as a fraction of the painting area.
 struct LinearGradient {
+  GradientKind kind = GradientKind::Linear;
   float angleDegrees = 180.0f;
+  float centerX = 0.5f;
+  float centerY = 0.5f;
   std::vector<LinearGradientStop> stops;
+};
+
+// CSS box areas, used by background-clip / background-origin.
+//
+// `BorderArea` is css-backgrounds-4's `background-clip: border-area`: the layer is
+// confined to the border ring itself. It exists because the older idiom (a
+// gradient in border-box covered by a padding-box layer) only hides the
+// gradient's interior when the covering fill is OPAQUE — over a translucent
+// surface the gradient washes through, in browsers too. Only `border-area`, or a
+// `mask-composite: exclude` pair, gives a gradient stroke over a see-through fill.
+// `border-image` cannot: per spec it ignores border-radius.
+enum class BoxArea : uint8_t { BorderBox, PaddingBox, ContentBox, BorderArea };
+
+// One `background` layer. Layers paint back-to-front: the LAST layer in the list
+// is painted first, matching CSS, where the first layer is topmost.
+struct BackgroundLayer {
+  std::optional<Color> color;
+  std::optional<LinearGradient> gradient;
+  BoxArea clip = BoxArea::BorderBox;
+  BoxArea origin = BoxArea::PaddingBox;
 };
 
 struct BoxShadow {
@@ -152,7 +205,12 @@ struct ActiveAnimation {
   AnimationDirection direction = AnimationDirection::Normal;
   AnimationFill fill = AnimationFill::None;
   float x1 = 0.25f, y1 = 0.1f, x2 = 0.25f, y2 = 1.0f;
-  float elapsedMs = 0.0f;
+  // double, not float: this accumulates one frame delta per frame forever for
+  // an infinite animation. In float, the ULP catches up with a ~16ms delta at
+  // around 10^7 ms — a few hours in — and the animation first stutters, then
+  // freezes outright as `+= dt` stops changing the value. Kiosks and other
+  // always-on screens hit that.
+  double elapsedMs = 0.0;
   bool finished = false;
   std::vector<Keyframe> keyframes;                 // resolved, sorted by offset
   std::vector<TransitionProperty> animatedProps;    // union of props across stops
@@ -178,6 +236,17 @@ struct Style {
   std::optional<float> flexGrow;
   std::optional<float> flexShrink;
   std::optional<float> flexBasis;
+  // Percentage dimensions (0..100), resolved by Yoga against the parent.
+  // Kept separate from the absolute values above so a style can express
+  // `width: 50%` without overloading the px field; the percent form wins when
+  // both are set.
+  std::optional<float> widthPercent;
+  std::optional<float> heightPercent;
+  std::optional<float> minWidthPercent;
+  std::optional<float> minHeightPercent;
+  std::optional<float> maxWidthPercent;
+  std::optional<float> maxHeightPercent;
+  std::optional<float> flexBasisPercent;
   std::optional<float> gap;
   std::optional<float> rowGap;
   std::optional<float> columnGap;
@@ -188,6 +257,11 @@ struct Style {
 
   std::optional<Color> backgroundColor;
   std::optional<LinearGradient> backgroundGradient;
+  // Multi-layer `background`. When non-empty this REPLACES the single
+  // backgroundColor/backgroundGradient pair for painting; those two stay for the
+  // many call sites (material components, TextInput, transitions, the binary
+  // style keys) that only ever need one flat fill.
+  std::vector<BackgroundLayer> backgroundLayers;
   // Hover/press overlay tint (RGB), alpha = press intensity. On plain
   // interactive Views this drives the hover/press dim; unset = a sensible
   // default derived from the content color.
@@ -195,8 +269,28 @@ struct Style {
   // Ink-ripple color for interactive Views (CSS `ripple-color`). Presence also
   // opts a plain View+onPress into ripples.
   std::optional<Color> rippleColor;
+  // Text-field editing colors, settable from CSS (`placeholder-color`,
+  // `caret-color`, `selection-color`) or the style prop. They live on Style —
+  // not just TextInputProps — so a stylesheet class can dress a field the same
+  // way it dresses everything else, and so the engine can forward the resolved
+  // values to a platform editor.
+  std::optional<Color> placeholderColor;
+  std::optional<Color> caretColor;
+  std::optional<Color> selectionColor;
   std::optional<Color> borderColor;
   std::optional<float> borderWidth;
+  // Per-edge overrides. Unset edges fall back to borderColor/borderWidth, so a
+  // uniform border still needs only the two shared fields. Cards that light one
+  // edge (`border-bottom: 1px solid …`, `border-left-color: …`) were previously
+  // inexpressible: the shared fields painted all four sides.
+  std::optional<Color> borderTopColor;
+  std::optional<Color> borderRightColor;
+  std::optional<Color> borderBottomColor;
+  std::optional<Color> borderLeftColor;
+  std::optional<float> borderTopWidth;
+  std::optional<float> borderRightWidth;
+  std::optional<float> borderBottomWidth;
+  std::optional<float> borderLeftWidth;
   std::optional<float> borderRadius;
   std::vector<BoxShadow> boxShadows;
   std::optional<float> backdropBlur;
@@ -221,6 +315,74 @@ struct Style {
 
   TextStyle text;
 };
+
+// The OS text-size multiplier that applies to this run: the global scale, unless
+// the run opted out or capped it (react-native's allowFontScaling /
+// maxFontSizeMultiplier).
+inline float ResolveFontScale(const TextStyle &text) {
+  if (text.allowFontScaling && !*text.allowFontScaling) return 1.0f;
+  float scale = Density::GetFontScale();
+  if (text.maxFontSizeMultiplier && *text.maxFontSizeMultiplier >= 1.0f)
+    scale = std::min(scale, *text.maxFontSizeMultiplier);
+  return scale;
+}
+
+// The font size a run is actually laid out and drawn at: the declared size (or
+// the caller's fallback) times the OS text-size multiplier. Every path that
+// needs a font size — Yoga measure, paint, caret math — must go through here,
+// or measurement and painting disagree the moment a user bumps their text size.
+inline float ResolveFontSize(const TextStyle &text, float fallback) {
+  return text.fontSize.value_or(fallback) * ResolveFontScale(text);
+}
+
+// CSS `line-height` resolution: an explicit length wins, then a unitless ratio
+// of the font size, then the engine default (~1.43em, CSS `normal`).
+// `fontSize` is expected to be already scaled (ResolveFontSize), so the ratio
+// and default track it; an explicit length is scaled here for the same reason
+// react-native scales lineHeight — a fixed line box would clip grown text.
+inline float ResolveLineHeight(const TextStyle &text, float fontSize) {
+  if (text.lineHeight) return *text.lineHeight * ResolveFontScale(text);
+  if (text.lineHeightRatio) return *text.lineHeightRatio * fontSize;
+  return std::max(fontSize + 4.0f, fontSize * 1.43f);
+}
+
+enum class BoxEdge { Top, Right, Bottom, Left };
+
+// Per-edge border resolution: explicit edge value → shared value → fallback.
+inline float ResolveBorderWidth(const Style &style, BoxEdge edge,
+                                float fallback = 0.0f) {
+  const std::optional<float> *perEdge = nullptr;
+  switch (edge) {
+  case BoxEdge::Top:    perEdge = &style.borderTopWidth; break;
+  case BoxEdge::Right:  perEdge = &style.borderRightWidth; break;
+  case BoxEdge::Bottom: perEdge = &style.borderBottomWidth; break;
+  case BoxEdge::Left:   perEdge = &style.borderLeftWidth; break;
+  }
+  if (perEdge && *perEdge) return **perEdge;
+  return style.borderWidth.value_or(fallback);
+}
+
+inline Color ResolveBorderColor(const Style &style, BoxEdge edge,
+                                Color fallback) {
+  const std::optional<Color> *perEdge = nullptr;
+  switch (edge) {
+  case BoxEdge::Top:    perEdge = &style.borderTopColor; break;
+  case BoxEdge::Right:  perEdge = &style.borderRightColor; break;
+  case BoxEdge::Bottom: perEdge = &style.borderBottomColor; break;
+  case BoxEdge::Left:   perEdge = &style.borderLeftColor; break;
+  }
+  if (perEdge && *perEdge) return **perEdge;
+  return style.borderColor.value_or(fallback);
+}
+
+// True when the four edges are not identical — the renderer then has to paint
+// them one at a time instead of using the single rounded-rect stroke.
+inline bool HasPerEdgeBorders(const Style &style) {
+  return style.borderTopWidth || style.borderRightWidth ||
+         style.borderBottomWidth || style.borderLeftWidth ||
+         style.borderTopColor || style.borderRightColor ||
+         style.borderBottomColor || style.borderLeftColor;
+}
 
 struct StateStyles {
   std::optional<Style> hovered;
