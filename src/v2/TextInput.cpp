@@ -728,7 +728,9 @@ static void HandlePointer(Node &node, const PointerInput &p) {
         edit.selectionEnd = len;
         edit.selectionAnchor = 0;
         edit.cursor = len;
-        edit.isSelecting = false;
+        // Stays selecting: a triple-click followed by a drag extends the
+        // selection instead of freezing it (matches selectable Text).
+        edit.isSelecting = true;
       } else if (edit.clickCount == 2) {
         int ws = pos, we = pos;
         FindWordBoundaries(buffer, pos, ws, we);
@@ -736,7 +738,9 @@ static void HandlePointer(Node &node, const PointerInput &p) {
         edit.selectionEnd = we;
         edit.selectionAnchor = ws;
         edit.cursor = we;
-        edit.isSelecting = false;
+        // Stays selecting: a double-click followed by a drag extends by
+        // whole words (matches selectable Text).
+        edit.isSelecting = true;
       } else {
         edit.cursor = pos;
         edit.selectionStart = edit.selectionEnd = -1;
@@ -792,8 +796,18 @@ static void HandlePointer(Node &node, const PointerInput &p) {
         edit.longPressHapticSent = true;
       }
     } else if (pos != edit.selectionAnchor || edit.selectionStart != -1) {
-      edit.selectionStart = edit.selectionAnchor;
-      edit.selectionEnd = pos;
+      int a = edit.selectionAnchor, b = pos;
+      if (edit.clickCount >= 2) {
+        // Multi-click+drag extends by whole words: the anchor side keeps
+        // its word, the moving side snaps to the word under the cursor
+        // (matches selectable Text).
+        int aws = 0, awe = 0, bws = 0, bwe = 0;
+        FindWordBoundaries(buffer, a, aws, awe);
+        FindWordBoundaries(buffer, b, bws, bwe);
+        if (b >= a) { a = aws; b = bwe; } else { a = awe; b = bws; }
+      }
+      edit.selectionStart = a;
+      edit.selectionEnd = b;
     }
     if (pos != edit.cursor) {
       edit.cursor = pos;
