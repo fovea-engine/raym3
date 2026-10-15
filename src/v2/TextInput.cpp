@@ -720,12 +720,15 @@ static void HandlePointer(Node &node, const PointerInput &p) {
       edit.clickCount = 1;
     } else {
       const double clickInterval = now - edit.lastClickTime;
-      if (clickInterval >= kMultiClickMinInterval &&
+      if (edit.lastClickCompleted &&
+          clickInterval >= kMultiClickMinInterval &&
           clickInterval < kMultiClickWindow &&
           std::abs(pos - edit.lastClickPos) <= 1)
         edit.clickCount++;
       else
         edit.clickCount = 1;
+      edit.lastClickCompleted = false;
+      edit.clickWasDragged = false;
       edit.lastClickPos = pos;
 
       if (edit.clickCount >= 3) {
@@ -768,6 +771,14 @@ static void HandlePointer(Node &node, const PointerInput &p) {
   }
 
   if (p.down && edit.isSelecting) {
+    const float dragDx = p.pos.x - edit.longPressOrigin.x;
+    const float dragDy = p.pos.y - edit.longPressOrigin.y;
+    if (!edit.clickWasDragged &&
+        std::sqrt(dragDx * dragDx + dragDy * dragDy) > kTouchSlop) {
+      edit.clickWasDragged = true;
+      edit.lastClickCompleted = false;
+      edit.clickCount = 1;
+    }
     float dt = GetFrameTime();
     if (dt <= 0.0f || dt > 0.1f)
       dt = 0.016f;
@@ -813,6 +824,7 @@ static void HandlePointer(Node &node, const PointerInput &p) {
 
   if (p.released) {
     const bool keepToolbar = edit.longPressSelectionActive;
+    edit.lastClickCompleted = !edit.clickWasDragged && !keepToolbar;
     edit.isSelecting = false;
     edit.longPressActive = false;
     edit.longPressSelectionActive = false;

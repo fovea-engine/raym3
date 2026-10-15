@@ -199,6 +199,10 @@ struct TextEditState {
   int clickCount = 0;
   double lastClickTime = 0.0;
   int lastClickPos = -1;
+  // Multi-clicks only chain completed stationary presses; a drag cancels
+  // the sequence even if another press edge is delivered immediately after.
+  bool lastClickCompleted = false;
+  bool clickWasDragged = false;
   bool handlesVisible = false;
   bool toolbarVisible = false;
   int activeHandle = -1;
