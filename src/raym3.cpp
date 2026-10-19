@@ -1,6 +1,9 @@
 #include "raym3/raym3.h"
+#include "raym3/rendering/Renderer.h"
 #include "raym3/v2/EmojiFont.h"
 #include <rlgl.h>
+#include <algorithm>
+#include <array>
 
 // Raw OpenGL for stencil operations (not wrapped by rlgl)
 #if defined(RAYLIB_USE_RLMT) || defined(RAYLIB_USE_RLWG) || defined(RAYLIB_USE_RLVK)
@@ -90,6 +93,57 @@
 
 namespace raym3 {
 
+static std::array<Texture2D, 4> cssSuitTextures{};
+static std::array<bool, 4> cssSuitTexturesReady{};
+
+static Image MakeSuitImage(int suit) {
+  constexpr int size = 64;
+  const Color white = WHITE;
+  const int cx = size / 2;
+  Image image = GenImageColor(size, size, BLANK);
+  auto circle = [&](float x, float y, float radius) {
+    ImageDrawCircle(&image, static_cast<int>(std::round(x)),
+                    static_cast<int>(std::round(y)),
+                    static_cast<int>(std::round(radius)), white);
+  };
+  auto triangle = [&](Vector2 a, Vector2 b, Vector2 d) {
+    ImageDrawTriangle(&image, a, b, d, white);
+  };
+  switch (suit) {
+  case 0: // spade
+    triangle({(float)cx - 27, 34}, {(float)cx + 27, 34}, {(float)cx, 60});
+    circle(cx - 13, 28, 14); circle(cx + 13, 28, 14);
+    ImageDrawRectangle(&image, cx - 6, 38, 12, 21, white);
+    break;
+  case 1: // heart
+    circle(cx - 13, 20, 15); circle(cx + 13, 20, 15);
+    triangle({(float)cx - 27, 23}, {(float)cx + 27, 23}, {(float)cx, 58});
+    break;
+  case 2: // diamond
+    triangle({(float)cx, 8}, {(float)cx + 23, 32}, {(float)cx, 56});
+    triangle({(float)cx, 8}, {(float)cx - 23, 32}, {(float)cx, 56});
+    break;
+  default: // club
+    circle(cx, 18, 14); circle(cx - 17, 33, 14); circle(cx + 17, 33, 14);
+    ImageDrawRectangle(&image, cx - 6, 36, 12, 22, white);
+    break;
+  }
+  return image;
+}
+
+static void InitializeCssSuitTextures() {
+  for (size_t i = 0; i < cssSuitTextures.size(); ++i) {
+    if (cssSuitTexturesReady[i]) continue;
+    Image image = MakeSuitImage(static_cast<int>(i));
+    cssSuitTextures[i] = LoadTextureFromImage(image);
+    UnloadImage(image);
+    if (cssSuitTextures[i].id != 0) {
+      SetTextureFilter(cssSuitTextures[i], TEXTURE_FILTER_BILINEAR);
+      cssSuitTexturesReady[i] = true;
+    }
+  }
+}
+
 static int s_requestedCursor = MOUSE_CURSOR_DEFAULT;
 static bool initialized = false;
 static std::vector<Rectangle> s_scissorStack;
@@ -154,6 +208,17 @@ void PopScissor() {
 }
 
 void PushRoundedStencil(Rectangle bounds, float radius) {
+  PushRoundedStencilWithScissor(bounds, radius, bounds);
+}
+
+void PushRoundedStencilWithScissor(Rectangle bounds, float radius,
+                                   Rectangle scissorBounds) {
+  // A rounded stencil is the curved part of CSS overflow clipping, but keep a
+  // rectangular scissor around it as well. Besides avoiding rasterization
+  // fringe outside the clip box, this makes the API safe for callers that do
+  // not separately push a scissor (the retained renderer does not). Nested
+  // callers simply get another intersected scissor, which is intentional.
+  PushScissor(scissorBounds);
 #if defined(RAYLIB_USE_RLWG) || defined(RAYM3_WEBGPU)
   // rlwg stubs the stencil wrappers as no-ops, so a true rounded clip is not
   // possible there yet. Fall back to the rectangular scissor instead of
@@ -169,7 +234,6 @@ void PushRoundedStencil(Rectangle bounds, float radius) {
   // the frame" on rlvk was a pipeline-cache key collision — raw GL enums
   // overflowing their bitfields — fixed in rlvk_gl33.inc).
   (void)radius;
-  PushScissor(bounds);
   return;
 #endif
   rlDrawRenderBatchActive(); // flush pending draws before touching GL state
@@ -206,10 +270,13 @@ void PushRoundedStencil(Rectangle bounds, float radius) {
 
 void PopRoundedStencil() {
 #if defined(RAYLIB_USE_RLWG) || defined(RAYM3_WEBGPU)
-  PopScissor(); // mirrors the scissor fallback in PushRoundedStencil
+  PopScissor(); // the rectangular fallback also serves as the full clip
   return;
 #endif
-  if (s_stencilStack.empty()) return;
+  if (s_stencilStack.empty()) {
+    PopScissor();
+    return;
+  }
   StencilEntry entry = s_stencilStack.back();
   s_stencilStack.pop_back();
 
@@ -241,6 +308,7 @@ void PopRoundedStencil() {
     glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
     glStencilMask(0x00);
   }
+  PopScissor();
 }
 
 Rectangle GetCurrentScissorBounds() {
@@ -308,6 +376,7 @@ void Initialize() {
 
   Theme::Initialize();
   SvgRenderer::Initialize(nullptr); // Auto-detect resource path
+  InitializeCssSuitTextures();
 
 #if defined(__APPLE__) || defined(_WIN32)
   // Apple: CoreText (Apple Color Emoji). Windows: DirectWrite/D2D (Segoe UI Emoji).
@@ -325,6 +394,13 @@ void Initialize() {
 void Shutdown() {
   if (!initialized)
     return;
+
+  for (size_t i = 0; i < cssSuitTextures.size(); ++i) {
+    if (cssSuitTexturesReady[i]) {
+      UnloadTexture(cssSuitTextures[i]);
+      cssSuitTexturesReady[i] = false;
+    }
+  }
 
   SvgRenderer::Shutdown();
   Theme::Shutdown();
@@ -390,6 +466,126 @@ void EndFrame() {
   RenderQueue::ExecuteRenderQueue();
   InputLayerManager::EndFrame();
 #endif
+}
+
+void DrawCssSlider(Rectangle bounds, float progress, Color accent, Color track,
+                   float trackThickness, float thumbRadius) {
+  const float cy = bounds.y + bounds.height * 0.5f;
+  const float left = bounds.x;
+  const float right = bounds.x + bounds.width;
+  const float x = left + std::clamp(progress, 0.0f, 1.0f) *
+                            std::max(0.0f, right - left);
+  DrawLineEx({left, cy}, {right, cy}, trackThickness, track);
+  DrawLineEx({left, cy}, {x, cy}, trackThickness, accent);
+  DrawCircleV({x, cy}, thumbRadius, accent);
+}
+
+void DrawCssGradientRow(float x, float y, float width, float height,
+                        Color left, Color right) {
+  if (width <= 0.0f || height <= 0.0f) return;
+  const int ix = static_cast<int>(std::floor(x));
+  const int iy = static_cast<int>(std::floor(y));
+  const int iw = std::max(1, static_cast<int>(std::ceil(width)));
+  const int ih = std::max(1, static_cast<int>(std::ceil(height)));
+  DrawRectangleGradientH(ix, iy, iw, ih, left, right);
+}
+
+void DrawCssEllipseBorder(Rectangle bounds, Color color, float thickness,
+                          bool dashed) {
+  const float cx = bounds.x + bounds.width * 0.5f;
+  const float cy = bounds.y + bounds.height * 0.5f;
+  const float rx = std::max(0.0f, bounds.width * 0.5f - thickness * 0.5f);
+  const float ry = std::max(0.0f, bounds.height * 0.5f - thickness * 0.5f);
+  if (rx <= 0.0f || ry <= 0.0f) return;
+  if (!dashed) {
+    const int layers = std::max(1, static_cast<int>(std::ceil(thickness)));
+    for (int i = 0; i < layers; ++i)
+      DrawEllipseLines(static_cast<int>(std::round(cx)),
+                       static_cast<int>(std::round(cy)),
+                       std::max(1, static_cast<int>(std::round(rx - i))),
+                       std::max(1, static_cast<int>(std::round(ry - i))), color);
+    return;
+  }
+  const float perimeter = PI * (3.0f * (rx + ry) -
+      std::sqrt(std::max(0.0f, (3.0f * rx + ry) * (rx + 3.0f * ry))));
+  const int dashes = std::max(8, static_cast<int>(perimeter / 7.0f));
+  const int samples = std::max(2, static_cast<int>(std::ceil(perimeter / 2.0f)));
+  for (int i = 0; i < samples; ++i) {
+    const float phase = static_cast<float>(i) / samples * dashes;
+    if (phase - std::floor(phase) >= 0.62f) continue;
+    const float a0 = 2.0f * PI * static_cast<float>(i) / samples;
+    const float a1 = 2.0f * PI * static_cast<float>(i + 1) / samples;
+    DrawLineEx({cx + rx * std::cos(a0), cy + ry * std::sin(a0)},
+               {cx + rx * std::cos(a1), cy + ry * std::sin(a1)},
+               thickness, color);
+  }
+}
+
+void DrawCssInsetEllipse(Rectangle bounds, Color color, float offsetY,
+                         float thickness) {
+  const float cx = bounds.x + bounds.width * 0.5f;
+  const float cy = bounds.y + bounds.height * 0.5f + offsetY;
+  const float rx = std::max(0.0f, bounds.width * 0.5f - thickness * 0.5f);
+  const float ry = std::max(0.0f, bounds.height * 0.5f - thickness * 0.5f);
+  if (rx > 0.0f && ry > 0.0f) {
+    const int layers = std::max(1, static_cast<int>(std::ceil(thickness)));
+    for (int i = 0; i < layers; ++i)
+      DrawEllipseLines(static_cast<int>(std::round(cx)),
+                       static_cast<int>(std::round(cy)),
+                       std::max(1, static_cast<int>(std::round(rx - i))),
+                       std::max(1, static_cast<int>(std::round(ry - i))), color);
+  }
+}
+
+void DrawCssSuitMark(Rectangle bounds, int suit, Color color) {
+  if (suit < 0 || suit >= static_cast<int>(cssSuitTextures.size()) ||
+      bounds.width <= 0.0f || bounds.height <= 0.0f)
+    return;
+  const size_t index = static_cast<size_t>(suit);
+  if (!cssSuitTexturesReady[index]) return;
+  const Texture2D texture = cssSuitTextures[index];
+  DrawTexturePro(texture, {0, 0, static_cast<float>(texture.width),
+                           static_cast<float>(texture.height)},
+                 bounds, {0, 0}, 0.0f, color);
+}
+
+// Vector replacement for U+26F6 (SQUARE FOUR CORNERS) — the full-screen glyph.
+// Browsers draw this codepoint with a solid white outline and corner squares;
+// the thin anti-aliased fallback face renders it as faint grey specks, so the
+// runtime paints a crisp vector icon instead of trusting glyph fallbacks.
+void DrawCssFullscreenIcon(Rectangle bounds, Color color) {
+  const float side = std::min(bounds.width, bounds.height);
+  if (side <= 2.0f) return;
+  const float cx = bounds.x + bounds.width * 0.5f;
+  const float cy = bounds.y + bounds.height * 0.5f;
+  const float k = std::max(1.5f, side * 0.15f);
+  const float stroke = std::max(1.0f, side * 0.085f);
+  const float box = std::max(2.0f, side - (k * 2.0f + stroke));
+  const float bx = cx - box * 0.5f;
+  const float by = cy - box * 0.5f;
+  const Rectangle outline = {bx, by, box, box};
+  DrawRectangleRoundedLinesEx(outline, 0.18f, 10, stroke, color);
+  const float off = stroke * 0.75f;
+  const Rectangle corners[4] = {
+      {bx - off - k, by - off - k, k, k},
+      {bx + box + off, by - off - k, k, k},
+      {bx - off - k, by + box + off, k, k},
+      {bx + box + off, by + box + off, k, k}};
+  for (const Rectangle &corner : corners) DrawRectangleRec(corner, color);
+}
+
+void DrawCssBoxFill(Rectangle bounds, float cornerRadius, Color color) {
+  if (bounds.width <= 0.0f || bounds.height <= 0.0f || color.a == 0) return;
+  Renderer::DrawRoundedRectangle(bounds, std::max(0.0f, cornerRadius), color);
+}
+
+void DrawCssBoxBorder(Rectangle bounds, float cornerRadius, float thickness,
+                      Color color) {
+  if (bounds.width <= 0.0f || bounds.height <= 0.0f || thickness <= 0.0f ||
+      color.a == 0)
+    return;
+  Renderer::DrawRoundedRectangleEx(bounds, std::max(0.0f, cornerRadius), color,
+                                   thickness);
 }
 
 #if RAYM3_USE_INPUT_LAYERS

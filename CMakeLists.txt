@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(RAYM3_ENABLE_RTL "Enable RTL/bidi via HarfBuzz+SheenBidi (increases binary size)" OFF)
+option(RAYM3_BUILD_SHARED "Build RayM3 as a shared library" OFF)
 option(RAYM3_FETCH_DEPS "Fetch raym3 third-party dependencies when targets are not provided" ON)
 option(RAYM3_BUILD_EXAMPLES "Build raym3 example applications" ON)
 option(RAYM3_BUILD_TESTS "Build raym3 tests" OFF)
@@ -41,7 +42,13 @@ file(GLOB_RECURSE RAYM3_HEADERS CONFIGURE_DEPENDS
     "include/raym3/*.h"
 )
 
-add_library(raym3 STATIC
+if(RAYM3_BUILD_SHARED)
+    set(RAYM3_LIBRARY_TYPE SHARED)
+else()
+    set(RAYM3_LIBRARY_TYPE STATIC)
+endif()
+
+add_library(raym3 ${RAYM3_LIBRARY_TYPE}
     ${RAYM3_SOURCES}
     ${RAYM3_HEADERS}
 )
@@ -70,6 +77,19 @@ if(TARGET raylib)
     target_link_libraries(raym3 PUBLIC raylib)
 else()
     message(FATAL_ERROR "raylib target not found. raym3 requires raylib.")
+endif()
+
+if(APPLE AND RAYM3_BUILD_SHARED)
+    # Shared hosts need these dependencies recorded on libraym3 itself; the
+    # executable's framework flags are not visible while GHC evaluates TH.
+    target_link_libraries(raym3 PUBLIC
+        "-framework OpenGL"
+        "-framework Cocoa"
+        "-framework IOKit"
+        "-framework CoreVideo"
+        "-framework AppKit"
+        "-framework CoreText"
+        "-framework CoreGraphics")
 endif()
 
 if(RAYM3_BUILD_EXAMPLES AND NOT ANDROID)
@@ -116,6 +136,19 @@ if(RAYM3_BUILD_TESTS)
         RAYM3_GOLDEN_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/text_layout_goldens.json")
     target_link_libraries(text_layout_test PRIVATE raym3)
     add_test(NAME text_layout_test COMMAND text_layout_test)
+
+    add_executable(svg_rgba_test
+        tests/svg_rgba_test.cpp
+    )
+    target_include_directories(svg_rgba_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include")
+    add_test(NAME svg_rgba_test COMMAND svg_rgba_test)
+
+    add_executable(overflow_transform_test
+        tests/overflow_transform_test.cpp
+    )
+    target_link_libraries(overflow_transform_test PRIVATE raym3)
+    add_test(NAME overflow_transform_test COMMAND overflow_transform_test)
 endif()
 
 if(RAYM3_USE_YOGA)

@@ -3,6 +3,7 @@
 #include "raym3/components/Icon.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/EmojiFont.h"
 #include <algorithm>
 
 #if RAYM3_USE_INPUT_LAYERS
@@ -60,7 +61,8 @@ bool NavigationComponent::Bar(Rectangle bounds, const NavigationItem *items,
                             bounds.height};
     const bool selected = *selectedIndex == i;
     ComponentState state = NavigationItemState(itemBounds, items[i].disabled);
-    Rectangle indicator = {itemBounds.x + (itemBounds.width - indicatorW) / 2.0f,
+    Rectangle indicator = {itemBounds.x +
+                               (itemBounds.width - indicatorW) / 2.0f,
                            itemBounds.y + 12.0f, indicatorW, indicatorH};
 
     Color iconColor =
@@ -84,8 +86,9 @@ bool NavigationComponent::Bar(Rectangle bounds, const NavigationItem *items,
     Rectangle iconRect = {itemBounds.x + (itemBounds.width - iconSize) / 2.0f,
                           indicator.y + (indicator.height - iconSize) / 2.0f,
                           iconSize, iconSize};
-    const char *iconName =
-        selected && items[i].selectedIcon ? items[i].selectedIcon : items[i].icon;
+    const char *iconName = selected && items[i].selectedIcon
+                               ? items[i].selectedIcon
+                               : items[i].icon;
     if (iconName) {
       IconComponent::Render(iconName, iconRect, IconVariation::Filled,
                             iconColor);
@@ -98,16 +101,16 @@ bool NavigationComponent::Bar(Rectangle bounds, const NavigationItem *items,
     }
 
     if (options.showLabels && items[i].label) {
-      Font font = Theme::GetFont(Theme::GetTypographyScale().labelMedium,
-                                 selected ? FontWeight::Bold
-                                          : FontWeight::Medium);
-      Vector2 textSize = MeasureTextEx(font, items[i].label,
-                                       Theme::GetTypographyScale().labelMedium,
-                                       0.0f);
-      DrawTextEx(font, items[i].label,
-                 {itemBounds.x + (itemBounds.width - textSize.x) / 2.0f,
-                  itemBounds.y + 52.0f},
-                 Theme::GetTypographyScale().labelMedium, 0.0f, labelColor);
+      Font font =
+          Theme::GetFont(Theme::GetTypographyScale().labelMedium,
+                         selected ? FontWeight::Bold : FontWeight::Medium);
+      Vector2 textSize = v2::MeasureTextWithEmoji(
+          font, items[i].label, Theme::GetTypographyScale().labelMedium, 0.0f);
+      v2::DrawTextWithEmoji(
+          font, items[i].label,
+          {itemBounds.x + (itemBounds.width - textSize.x) / 2.0f,
+           itemBounds.y + 52.0f},
+          Theme::GetTypographyScale().labelMedium, 0.0f, labelColor);
     }
 
     if (NavigationItemClicked(itemBounds, items[i].disabled)) {
@@ -117,7 +120,8 @@ bool NavigationComponent::Bar(Rectangle bounds, const NavigationItem *items,
       InputLayerManager::ConsumeInput();
 #endif
     }
-    if (!items[i].disabled && CheckCollisionPointRec(GetMousePosition(), itemBounds))
+    if (!items[i].disabled &&
+        CheckCollisionPointRec(GetMousePosition(), itemBounds))
       RequestCursor(MOUSE_CURSOR_POINTING_HAND);
   }
 
@@ -178,8 +182,9 @@ bool NavigationComponent::Rail(Rectangle bounds, const NavigationItem *items,
     Rectangle iconRect = {bounds.x + (bounds.width - iconSize) / 2.0f,
                           indicator.y + (indicator.height - iconSize) / 2.0f,
                           iconSize, iconSize};
-    const char *iconName =
-        selected && items[i].selectedIcon ? items[i].selectedIcon : items[i].icon;
+    const char *iconName = selected && items[i].selectedIcon
+                               ? items[i].selectedIcon
+                               : items[i].icon;
     if (iconName) {
       IconComponent::Render(iconName, iconRect, IconVariation::Filled,
                             iconColor);
@@ -194,13 +199,13 @@ bool NavigationComponent::Rail(Rectangle bounds, const NavigationItem *items,
     if (options.showLabels && items[i].label) {
       Font font = Theme::GetFont(Theme::GetTypographyScale().labelMedium,
                                  FontWeight::Medium);
-      Vector2 textSize = MeasureTextEx(font, items[i].label,
-                                       Theme::GetTypographyScale().labelMedium,
-                                       0.0f);
-      DrawTextEx(font, items[i].label,
-                 {itemBounds.x + (itemBounds.width - textSize.x) / 2.0f,
-                  itemBounds.y + 40.0f},
-                 Theme::GetTypographyScale().labelMedium, 0.0f, labelColor);
+      Vector2 textSize = v2::MeasureTextWithEmoji(
+          font, items[i].label, Theme::GetTypographyScale().labelMedium, 0.0f);
+      v2::DrawTextWithEmoji(
+          font, items[i].label,
+          {itemBounds.x + (itemBounds.width - textSize.x) / 2.0f,
+           itemBounds.y + 40.0f},
+          Theme::GetTypographyScale().labelMedium, 0.0f, labelColor);
     }
 
     if (NavigationItemClicked(itemBounds, items[i].disabled)) {
@@ -210,7 +215,8 @@ bool NavigationComponent::Rail(Rectangle bounds, const NavigationItem *items,
       InputLayerManager::ConsumeInput();
 #endif
     }
-    if (!items[i].disabled && CheckCollisionPointRec(GetMousePosition(), itemBounds))
+    if (!items[i].disabled &&
+        CheckCollisionPointRec(GetMousePosition(), itemBounds))
       RequestCursor(MOUSE_CURSOR_POINTING_HAND);
 
     y += itemHeight + (options.expressiveRail ? 4.0f : 0.0f);

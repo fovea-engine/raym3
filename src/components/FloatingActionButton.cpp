@@ -5,6 +5,7 @@
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/EmojiFont.h"
 #include <algorithm>
 
 #if RAYM3_USE_INPUT_LAYERS
@@ -108,7 +109,8 @@ static ComponentState GetFabState(Rectangle bounds, bool disabled) {
 
 void FloatingActionButtonComponent::ResetIds() { currentFabId_ = 0; }
 
-bool FloatingActionButtonComponent::Render(const char *iconName, Rectangle bounds,
+bool FloatingActionButtonComponent::Render(const char *iconName,
+                                           Rectangle bounds,
                                            const FabOptions &options) {
   const FabMetrics metrics = MetricsFor(options.size);
   Rectangle container = VisualBounds(bounds, metrics.height, false);
@@ -124,9 +126,8 @@ bool FloatingActionButtonComponent::Render(const char *iconName, Rectangle bound
 
   const bool inputBlocked =
       DialogComponent::IsActive() && !DialogComponent::IsRendering();
-  ComponentState state =
-      inputBlocked ? ComponentState::Default
-                   : GetFabState(bounds, options.disabled);
+  ComponentState state = inputBlocked ? ComponentState::Default
+                                      : GetFabState(bounds, options.disabled);
   int elevation = options.lowered ? 1 : 3;
   if (state == ComponentState::Hovered)
     elevation = options.lowered ? 2 : 4;
@@ -140,9 +141,10 @@ bool FloatingActionButtonComponent::Render(const char *iconName, Rectangle bound
   Renderer::DrawStateLayer(container, metrics.radius, contentColor, state);
 
   if (iconName) {
-    Rectangle iconRect = {container.x + (container.width - metrics.iconSize) / 2.0f,
-                          container.y + (container.height - metrics.iconSize) / 2.0f,
-                          metrics.iconSize, metrics.iconSize};
+    Rectangle iconRect = {
+        container.x + (container.width - metrics.iconSize) / 2.0f,
+        container.y + (container.height - metrics.iconSize) / 2.0f,
+        metrics.iconSize, metrics.iconSize};
     IconComponent::Render(iconName, iconRect, IconVariation::Filled,
                           contentColor);
   }
@@ -192,9 +194,10 @@ bool FloatingActionButtonComponent::Render(const char *iconName, Rectangle bound
   return wasClicked;
 }
 
-bool FloatingActionButtonComponent::RenderExtended(
-    const char *label, const char *iconName, Rectangle bounds,
-    const FabOptions &options) {
+bool FloatingActionButtonComponent::RenderExtended(const char *label,
+                                                   const char *iconName,
+                                                   Rectangle bounds,
+                                                   const FabOptions &options) {
   const FabMetrics metrics = MetricsFor(options.size);
   Rectangle container = VisualBounds(bounds, metrics.height, true);
 
@@ -209,9 +212,8 @@ bool FloatingActionButtonComponent::RenderExtended(
 
   const bool inputBlocked =
       DialogComponent::IsActive() && !DialogComponent::IsRendering();
-  ComponentState state =
-      inputBlocked ? ComponentState::Default
-                   : GetFabState(bounds, options.disabled);
+  ComponentState state = inputBlocked ? ComponentState::Default
+                                      : GetFabState(bounds, options.disabled);
   int elevation = options.lowered ? 1 : 3;
   if (state == ComponentState::Hovered)
     elevation = options.lowered ? 2 : 4;
@@ -225,11 +227,11 @@ bool FloatingActionButtonComponent::RenderExtended(
   Renderer::DrawStateLayer(container, metrics.radius, contentColor, state);
 
   Font font = Theme::GetFont(metrics.labelSize, FontWeight::Medium);
-  Vector2 labelSize = MeasureTextEx(font, label ? label : "", metrics.labelSize,
-                                    0.0f);
+  Vector2 labelSize = v2::MeasureTextWithEmoji(font, label ? label : "",
+                                               metrics.labelSize, 0.0f);
   const float iconGap = iconName ? 12.0f : 0.0f;
-  const float totalWidth = (iconName ? metrics.iconSize : 0.0f) + iconGap +
-                           labelSize.x;
+  const float totalWidth =
+      (iconName ? metrics.iconSize : 0.0f) + iconGap + labelSize.x;
   float x = container.x + (container.width - totalWidth) / 2.0f;
   float centerY = container.y + container.height / 2.0f;
 
@@ -240,8 +242,9 @@ bool FloatingActionButtonComponent::RenderExtended(
                           contentColor);
     x += metrics.iconSize + iconGap;
   }
-  DrawTextEx(font, label ? label : "", {x, centerY - labelSize.y / 2.0f},
-             metrics.labelSize, 0.0f, contentColor);
+  v2::DrawTextWithEmoji(font, label ? label : "",
+                        {x, centerY - labelSize.y / 2.0f}, metrics.labelSize,
+                        0.0f, contentColor);
 
   int thisId = currentFabId_++;
   bool isFocused = focusedFabId_ == thisId;

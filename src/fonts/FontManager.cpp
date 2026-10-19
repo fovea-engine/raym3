@@ -1,6 +1,6 @@
 #include "raym3/fonts/FontManager.h"
-#include "raym3/fonts/SystemUiFont.h"
 #include "raym3/config.h"
+#include "raym3/fonts/SystemUiFont.h"
 #include "raym3/v2/Density.h"
 
 #include <rlgl.h>
@@ -19,6 +19,9 @@ namespace raym3 {
 
 std::unordered_map<FontKey, FontManager::CachedFont, FontKeyHash>
     FontManager::fontCache_;
+std::unordered_map<int, FontManager::CachedFont>
+    FontManager::fallbackFontCache_;
+std::unordered_map<int, std::string> FontManager::fallbackPathCache_;
 std::unordered_map<std::string, FontManager::FontSource>
     FontManager::fontRegistry_;
 std::unordered_map<std::string, FontManager::CachedFont>
@@ -31,7 +34,8 @@ std::uint64_t FontManager::fontGeneration_ = 1;
 std::vector<int> FontManager::AsciiSeed() {
   std::vector<int> cps;
   cps.reserve(95);
-  for (int i = 32; i <= 126; ++i) cps.push_back(i);
+  for (int i = 32; i <= 126; ++i)
+    cps.push_back(i);
   return cps;
 }
 
@@ -68,8 +72,10 @@ bool FontManager::UnionCodepointsFromUtf8(std::unordered_set<int> &set,
     ++i;
     for (std::size_t k = 0; k < extra && i < utf8.size(); ++k, ++i)
       cp = (cp << 6) | (static_cast<unsigned char>(utf8[i]) & 0x3F);
-    if (cp == 0 || cp > 0x10FFFF) continue;
-    if (set.insert(static_cast<int>(cp)).second) grew = true;
+    if (cp == 0 || cp > 0x10FFFF)
+      continue;
+    if (set.insert(static_cast<int>(cp)).second)
+      grew = true;
   }
   return grew;
 }
@@ -93,19 +99,27 @@ std::uint64_t FontManager::FontGeneration() { return fontGeneration_; }
 int FontManager::SnapSize(int size) { return std::max(1, size); }
 
 void FontManager::Initialize() {
-  if (initialized_) return;
+  if (initialized_)
+    return;
   defaultFont_ = LoadFont(FontWeight::Regular, FontStyle::Normal, 16);
   initialized_ = true;
 }
 
 void FontManager::Shutdown() {
   for (auto &[key, entry] : fontCache_)
-    if (entry.font.texture.id != 0) UnloadFont(entry.font);
+    if (entry.font.texture.id != 0)
+      UnloadFont(entry.font);
   fontCache_.clear();
+  for (auto &[key, entry] : fallbackFontCache_)
+    if (entry.font.texture.id != 0)
+      UnloadFont(entry.font);
+  fallbackFontCache_.clear();
+  fallbackPathCache_.clear();
   defaultFont_ = {0};
 
   for (auto &[key, entry] : customFontCache_)
-    if (entry.font.texture.id != 0) UnloadFont(entry.font);
+    if (entry.font.texture.id != 0)
+      UnloadFont(entry.font);
   customFontCache_.clear();
   fontRegistry_.clear();
 
@@ -114,6 +128,8 @@ void FontManager::Shutdown() {
 
 void FontManager::ResetDeviceCache() {
   fontCache_.clear();
+  fallbackFontCache_.clear();
+  fallbackPathCache_.clear();
   customFontCache_.clear();
   defaultFont_ = {0};
   initialized_ = false;
@@ -126,9 +142,15 @@ void FontManager::InvalidateLiveDeviceCache() {
     if (font.texture.id != 0 && unloaded.insert(font.texture.id).second)
       UnloadFont(font);
   };
-  for (auto &[key, entry] : fontCache_) unloadOnce(entry.font);
-  for (auto &[key, entry] : customFontCache_) unloadOnce(entry.font);
+  for (auto &[key, entry] : fontCache_)
+    unloadOnce(entry.font);
+  for (auto &[key, entry] : fallbackFontCache_)
+    unloadOnce(entry.font);
+  for (auto &[key, entry] : customFontCache_)
+    unloadOnce(entry.font);
   fontCache_.clear();
+  fallbackFontCache_.clear();
+  fallbackPathCache_.clear();
   customFontCache_.clear();
   defaultFont_ = {0};
   initialized_ = false;
@@ -157,8 +179,10 @@ int EmBakePixels(int cssSize, const FontVMetrics &metrics) {
 }
 
 void RebaseToEm(Font &font, int cssSize) {
-  if (font.texture.id == 0) return;
-  font.baseSize = std::max(1, v2::Density::RasterPixels(static_cast<float>(cssSize)));
+  if (font.texture.id == 0)
+    return;
+  font.baseSize =
+      std::max(1, v2::Density::RasterPixels(static_cast<float>(cssSize)));
 }
 
 // Free a font atlas that is being replaced mid-frame.
@@ -236,12 +260,14 @@ FontVMetrics FontManager::MetricsFor(FontWeight weight, FontStyle style) {
   const unsigned char *data =
       bold ? Roboto_v3_012_hinted_static_Roboto_Bold_ttf
            : Roboto_v3_012_hinted_static_Roboto_Regular_ttf;
-  const unsigned int len = bold ? Roboto_v3_012_hinted_static_Roboto_Bold_ttf_len
-                                : Roboto_v3_012_hinted_static_Roboto_Regular_ttf_len;
+  const unsigned int len =
+      bold ? Roboto_v3_012_hinted_static_Roboto_Bold_ttf_len
+           : Roboto_v3_012_hinted_static_Roboto_Regular_ttf_len;
   return ReadFontVMetrics(data, len);
 #else
   std::string path;
-  if (!ResolveSystemUiFontPath(weight, style, path)) return {};
+  if (!ResolveSystemUiFontPath(weight, style, path))
+    return {};
   return ReadFontVMetricsFromFile(path);
 #endif
 }
@@ -257,14 +283,18 @@ FontVMetrics FontManager::MetricsForFamily(const std::string &name) {
 
 Font FontManager::BakeFont(FontWeight weight, FontStyle style, int size,
                            const std::vector<int> &codepoints) {
-  return LoadDefaultUiFont(weight, style, size, codepoints);
+  Font font = LoadDefaultUiFont(weight, style, size, codepoints);
+  if (font.texture.id != 0)
+    SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
+  return font;
 }
 
 Font FontManager::LoadFont(FontWeight weight, FontStyle style, int size) {
   size = SnapSize(size);
   FontKey key{weight, style, size};
   auto it = fontCache_.find(key);
-  if (it != fontCache_.end()) return it->second.font;
+  if (it != fontCache_.end())
+    return it->second.font;
 
   CachedFont entry;
   const auto seed = AsciiSeed();
@@ -277,6 +307,44 @@ Font FontManager::LoadFont(FontWeight weight, FontStyle style, int size) {
   return {0};
 }
 
+Font FontManager::LoadSystemFallbackFont(int size,
+                                         const std::vector<int> &codepoints) {
+  size = SnapSize(size);
+  CachedFont &entry = fallbackFontCache_[size];
+  bool grew = false;
+  for (int cp : codepoints)
+    if (cp > 0 && entry.codepoints.insert(cp).second)
+      grew = true;
+  if (entry.font.texture.id != 0 && !grew)
+    return entry.font;
+
+  std::vector<int> cps = AsciiSeed();
+  cps.insert(cps.end(), entry.codepoints.begin(), entry.codepoints.end());
+  std::sort(cps.begin(), cps.end());
+  cps.erase(std::unique(cps.begin(), cps.end()), cps.end());
+
+  std::string path;
+  if (!ResolveSystemFallbackFontPath(cps, path))
+    return entry.font;
+  const std::string previousPath = fallbackPathCache_[size];
+  if (entry.font.texture.id != 0 && !grew && previousPath == path)
+    return entry.font;
+  const FontVMetrics metrics = ReadFontVMetricsFromFile(path);
+  const int pxSize = EmBakePixels(size, metrics);
+  Font rebuilt = LoadFontEx(path.c_str(), pxSize, cps.data(),
+                            static_cast<int>(cps.size()));
+  if (rebuilt.texture.id == 0)
+    return entry.font;
+  SetTextureFilter(rebuilt.texture, TEXTURE_FILTER_BILINEAR);
+  RebaseToEm(rebuilt, size);
+  if (entry.font.texture.id != 0)
+    RetireFont(entry.font);
+  entry.font = rebuilt;
+  fallbackPathCache_[size] = std::move(path);
+  ++fontGeneration_;
+  return entry.font;
+}
+
 void FontManager::EnsureGlyphsForText(FontWeight weight, FontStyle style,
                                       int size, std::string_view utf8) {
   size = SnapSize(size);
@@ -285,31 +353,34 @@ void FontManager::EnsureGlyphsForText(FontWeight weight, FontStyle style,
   if (it == fontCache_.end()) {
     LoadFont(weight, style, size);
     it = fontCache_.find(key);
-    if (it == fontCache_.end()) return;
+    if (it == fontCache_.end())
+      return;
   }
-  if (!UnionCodepointsFromUtf8(it->second.codepoints, utf8)) return;
+  if (!UnionCodepointsFromUtf8(it->second.codepoints, utf8))
+    return;
 
   const auto cps = SortedCodepoints(it->second.codepoints);
   Font rebuilt = BakeFont(weight, style, size, cps);
-  if (rebuilt.texture.id == 0) return;
-  if (it->second.font.texture.id != 0) RetireFont(it->second.font);
+  if (rebuilt.texture.id == 0)
+    return;
+  if (it->second.font.texture.id != 0)
+    RetireFont(it->second.font);
   it->second.font = rebuilt;
   ++fontGeneration_;
-  if (size == 16 && weight == FontWeight::Regular &&
-      style == FontStyle::Normal)
+  if (size == 16 && weight == FontWeight::Regular && style == FontStyle::Normal)
     defaultFont_ = rebuilt;
 }
 
 std::string FontManager::ResolveCustomFontPath(const std::string &path) {
-  if (path.empty() || std::filesystem::path(path).is_absolute()) return path;
+  if (path.empty() || std::filesystem::path(path).is_absolute())
+    return path;
   const std::vector<std::string> searchPaths = {
       std::string(RAYM3_RESOURCE_DIR) + "/fonts/" + path,
-      std::string(RAYM3_RESOURCE_DIR) + "/" + path,
-      "./resources/fonts/" + path,
-      "./raym3/resources/fonts/" + path,
-      path};
+      std::string(RAYM3_RESOURCE_DIR) + "/" + path, "./resources/fonts/" + path,
+      "./raym3/resources/fonts/" + path, path};
   for (const auto &testPath : searchPaths)
-    if (std::filesystem::exists(testPath)) return testPath;
+    if (std::filesystem::exists(testPath))
+      return testPath;
   return path;
 }
 
@@ -317,13 +388,15 @@ Font FontManager::LoadCustomFont(const std::string &path, int size,
                                  const std::vector<int> &codepoints) {
   const std::string resolvedPath = ResolveCustomFontPath(path);
 
-  if (!std::filesystem::exists(resolvedPath)) return {0};
+  if (!std::filesystem::exists(resolvedPath))
+    return {0};
   const int pxSize = EmBakePixels(size, ReadFontVMetricsFromFile(resolvedPath));
-  const std::vector<int> &cps =
-      codepoints.empty() ? AsciiSeed() : codepoints;
-  Font font = LoadFontEx(resolvedPath.c_str(), pxSize,
-                         const_cast<int *>(cps.data()),
-                         static_cast<int>(cps.size()));
+  const std::vector<int> &cps = codepoints.empty() ? AsciiSeed() : codepoints;
+  Font font =
+      LoadFontEx(resolvedPath.c_str(), pxSize, const_cast<int *>(cps.data()),
+                 static_cast<int>(cps.size()));
+  if (font.texture.id != 0)
+    SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
   RebaseToEm(font, size);
   return font;
 }
@@ -331,7 +404,8 @@ Font FontManager::LoadCustomFont(const std::string &path, int size,
 void FontManager::InvalidateCustomFontCache(const std::string &name) {
   for (auto it = customFontCache_.begin(); it != customFontCache_.end();) {
     if (it->first.rfind(name + ":", 0) == 0) {
-      if (it->second.font.texture.id != 0) UnloadFont(it->second.font);
+      if (it->second.font.texture.id != 0)
+        UnloadFont(it->second.font);
       it = customFontCache_.erase(it);
     } else {
       ++it;
@@ -368,22 +442,24 @@ bool FontManager::HasFont(const std::string &name) {
 std::vector<std::string> FontManager::ListRegisteredFonts() {
   std::vector<std::string> names;
   names.reserve(fontRegistry_.size());
-  for (const auto &[name, src] : fontRegistry_) names.push_back(name);
+  for (const auto &[name, src] : fontRegistry_)
+    names.push_back(name);
   return names;
 }
 
 Font FontManager::LoadCustomFontFromMemory(
     const std::vector<unsigned char> &bytes, int size,
     const std::vector<int> &codepoints) {
-  if (bytes.empty()) return {0};
+  if (bytes.empty())
+    return {0};
   const int pxSize =
       EmBakePixels(size, ReadFontVMetrics(bytes.data(), bytes.size()));
-  const std::vector<int> &cps =
-      codepoints.empty() ? AsciiSeed() : codepoints;
-  Font font =
-      LoadFontFromMemory(".ttf", bytes.data(), static_cast<int>(bytes.size()),
-                         pxSize, const_cast<int *>(cps.data()),
-                         static_cast<int>(cps.size()));
+  const std::vector<int> &cps = codepoints.empty() ? AsciiSeed() : codepoints;
+  Font font = LoadFontFromMemory(
+      ".ttf", bytes.data(), static_cast<int>(bytes.size()), pxSize,
+      const_cast<int *>(cps.data()), static_cast<int>(cps.size()));
+  if (font.texture.id != 0)
+    SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
   RebaseToEm(font, size);
   return font;
 }
@@ -392,7 +468,8 @@ Font FontManager::LoadFontByFamily(const std::string &name, int size) {
   size = SnapSize(size);
   std::string cacheKey = name + ":" + std::to_string(size);
   auto it = customFontCache_.find(cacheKey);
-  if (it != customFontCache_.end()) return it->second.font;
+  if (it != customFontCache_.end())
+    return it->second.font;
 
   auto reg = fontRegistry_.find(name);
   if (reg == fontRegistry_.end()) {
@@ -400,15 +477,15 @@ Font FontManager::LoadFontByFamily(const std::string &name, int size) {
   }
 
   CachedFont entry;
-  std::vector<int> seed = reg->second.codepoints.empty()
-                              ? AsciiSeed()
-                              : reg->second.codepoints;
+  std::vector<int> seed =
+      reg->second.codepoints.empty() ? AsciiSeed() : reg->second.codepoints;
   entry.codepoints.insert(seed.begin(), seed.end());
   entry.font = reg->second.isMemory
                    ? LoadCustomFontFromMemory(reg->second.bytes, size, seed)
                    : LoadCustomFont(reg->second.path, size, seed);
   if (entry.font.texture.id == 0) {
-    fprintf(stderr, "FontManager: failed to load font '%s' (%s)\n", name.c_str(),
+    fprintf(stderr, "FontManager: failed to load font '%s' (%s)\n",
+            name.c_str(),
             reg->second.isMemory ? "from memory" : reg->second.path.c_str());
     return LoadFont(FontWeight::Regular, FontStyle::Normal, size);
   }
@@ -424,27 +501,32 @@ void FontManager::EnsureGlyphsForFamily(std::string_view name, int size,
   if (it == customFontCache_.end()) {
     LoadFontByFamily(std::string(name), size);
     it = customFontCache_.find(cacheKey);
-    if (it == customFontCache_.end()) return;
+    if (it == customFontCache_.end())
+      return;
   }
-  if (!UnionCodepointsFromUtf8(it->second.codepoints, utf8)) return;
+  if (!UnionCodepointsFromUtf8(it->second.codepoints, utf8))
+    return;
 
   auto reg = fontRegistry_.find(std::string(name));
-  if (reg == fontRegistry_.end()) return;
+  if (reg == fontRegistry_.end())
+    return;
 
   const auto cps = SortedCodepoints(it->second.codepoints);
-  Font rebuilt =
-      reg->second.isMemory
-          ? LoadCustomFontFromMemory(reg->second.bytes, size, cps)
-          : LoadCustomFont(reg->second.path, size, cps);
-  if (rebuilt.texture.id == 0) return;
+  Font rebuilt = reg->second.isMemory
+                     ? LoadCustomFontFromMemory(reg->second.bytes, size, cps)
+                     : LoadCustomFont(reg->second.path, size, cps);
+  if (rebuilt.texture.id == 0)
+    return;
   // Same mid-frame hazard as EnsureGlyphsForText; see RetireFont.
-  if (it->second.font.texture.id != 0) RetireFont(it->second.font);
+  if (it->second.font.texture.id != 0)
+    RetireFont(it->second.font);
   it->second.font = rebuilt;
   ++fontGeneration_;
 }
 
 void FontManager::UnloadFont(Font font) {
-  if (font.texture.id != 0) ::UnloadFont(font);
+  if (font.texture.id != 0)
+    ::UnloadFont(font);
 }
 
 } // namespace raym3
