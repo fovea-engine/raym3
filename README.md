@@ -209,12 +209,12 @@ target_link_libraries(your_target raym3)
 
 raym3 uses Roboto v3.015 from [roboto-3-classic](https://github.com/googlefonts/roboto-3-classic). The setup works for any project using raym3 (submodule or standalone) on macOS, Windows, Linux, Android, and Web/WASM:
 
-- **Default**: Fonts are downloaded at configure time to the build directory and loaded from disk at runtime.
-- **Embedded** (recommended for packaged apps): Set `RAYM3_EMBED_FONTS=ON` to embed Roboto into the binary—no font files needed at runtime.
-- **Offline/Override**: Set `ROBOTO_FONTS_DIR` to a path with `Roboto-Regular.ttf` and `Roboto-Bold.ttf` to use pre-downloaded fonts.
+- **Native default with embedding off** (`RAYM3_EMBED_RESOURCES=OFF`): UI text uses the platform system UI face.
+- **Embedded resources** (`RAYM3_EMBED_RESOURCES=ON`): icon resources and Roboto are bundled. Roboto becomes the default UI face on every target; Emscripten enables this option by default, other targets disable it by default.
+- **Font files**: Roboto v3.015 is included in the source tree. Embedded builds need no runtime font files; native non-embedded builds continue to use the platform UI face.
 
 ```cmake
-set(RAYM3_EMBED_FONTS ON CACHE BOOL "" FORCE)  # For portable deployment
+set(RAYM3_EMBED_RESOURCES ON CACHE BOOL "" FORCE)  # Bundle icons and use Roboto as the UI default
 add_subdirectory(raym3)
 ```
 
@@ -381,7 +381,7 @@ raym3 is built using the following excellent open-source projects:
 - **[Roboto Font Family](https://github.com/googlefonts/roboto-3-classic)** (v3.015) - Material Design typeface
   - License: Apache License 2.0
   - Copyright (c) Google LLC
-  - Downloaded at configure time or embedded via `RAYM3_EMBED_FONTS`
+  - Used as the default UI face when `RAYM3_EMBED_RESOURCES=ON`; otherwise the native system UI face remains the default
 
 ### Design System
 
@@ -417,7 +417,7 @@ If you find raym3 useful and would like to support its development, you can:
 
 ## Project Status
 
-raym3 is an independent, self-contained project. Icons come from the material-design-icons submodule. Fonts (Roboto) are auto-downloaded at configure time or can be embedded—no manual setup required for any platform.
+raym3 is an independent, self-contained project. Icons come from the material-design-icons submodule. Roboto font assets are included with the source; the default UI face is the system UI font when resources are not embedded and bundled Roboto when `RAYM3_EMBED_RESOURCES=ON`.
 
 **Current Status:** Partial implementation of Material Design 3 components. The library is functional and ready to use, but many components from the full Material Design 3 specification are not yet implemented.
 
@@ -443,7 +443,7 @@ This brings in the work done for [Rayact](https://github.com/raythings/rayact): 
 - **Gradient angles follow CSS.** `0` points up and angles run clockwise, so `180` is top to bottom and `90` is left to right. Before, angles snapped to four blends and `90` painted top to bottom. Multi-stop gradients now honour every stop. Rewrite `90` as `180` for a vertical gradient.
 - **Alpha is honoured** for `backgroundColor` and `borderColor`. Semi-transparent colours used to paint opaque.
 - **`font-size` is the em size.** Text draws roughly 10-15% larger than before (a 24 px label measured about 11% wider) and wraps sooner, so layouts shift.
-- **The default font on native platforms is the system UI font** (SF, Segoe UI, fontconfig), not Roboto. Roboto is only embedded for Emscripten.
+- **With `RAYM3_EMBED_RESOURCES=ON`, the default UI font is bundled Roboto on all platforms.** This replaces the native system UI face and can change text measurements, wrapping, and visual layout. `RAYM3_EMBED_RESOURCES=OFF` keeps the system UI face on native platforms. The embedded build uses Roboto Regular/Bold faces; `FontStyle` does not select separate italic faces.
 - **Long unbreakable words wrap at the line width.** They used to produce one letter per line.
 - **OS text scale** applies to text and text fields once the host calls `Density::SetFontScale`. The default is 1.0, so nothing changes until then. Opt out per run with `allowFontScaling = false`.
 - **Node ids are never reused.** `DisposeNode` now removes the node from its parent, and clears `root` if the root is disposed. It used to stay alive and keep painting.

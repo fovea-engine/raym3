@@ -342,8 +342,9 @@ else()
     target_compile_definitions(raym3 PRIVATE RAYM3_EMBED_RESOURCES=0)
 endif()
 
-# Material / emoji fonts only — Roboto ships embedded for web and is not
-# packaged for native hosts (those use the platform UI face).
+# Install font assets for applications that need explicit font files. When
+# RAYM3_EMBED_RESOURCES is enabled, the bundled EmbeddedFonts.h faces also
+# become the default UI font.
 install(DIRECTORY resources/fonts
     DESTINATION share/raym3/resources
     FILES_MATCHING PATTERN "*.ttf"

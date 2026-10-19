@@ -5,7 +5,7 @@
 
 #include <rlgl.h>
 
-#if defined(__EMSCRIPTEN__)
+#if defined(RAYM3_EMBED_RESOURCES) && RAYM3_EMBED_RESOURCES
 #include "EmbeddedFonts.h"
 #endif
 
@@ -214,18 +214,18 @@ Font FontManager::LoadDefaultUiFont(FontWeight weight, FontStyle style,
   const FontVMetrics metrics = MetricsFor(weight, style);
   const int pxSize = EmBakePixels(size, metrics);
 
-#if defined(__EMSCRIPTEN__)
-  // Web has no system UI font file API — ship embedded Roboto only here.
+#if defined(RAYM3_EMBED_RESOURCES) && RAYM3_EMBED_RESOURCES
+  // Use the bundled Roboto faces as RayM3's cross-platform default. This
+  // keeps native Miso/Raylib text consistent with the web build instead of
+  // falling back to either the OS face or Raylib's bitmap default font.
   (void)style;
-  unsigned char *fontData = nullptr;
-  unsigned int fontDataLen = 0;
-  if (weight == FontWeight::Bold || weight == FontWeight::Black) {
-    fontData = Roboto_v3_012_hinted_static_Roboto_Bold_ttf;
-    fontDataLen = Roboto_v3_012_hinted_static_Roboto_Bold_ttf_len;
-  } else {
-    fontData = Roboto_v3_012_hinted_static_Roboto_Regular_ttf;
-    fontDataLen = Roboto_v3_012_hinted_static_Roboto_Regular_ttf_len;
-  }
+  const bool bold = weight == FontWeight::Bold || weight == FontWeight::Black;
+  const unsigned char *fontData = bold
+      ? Roboto_v3_012_hinted_static_Roboto_Bold_ttf
+      : Roboto_v3_012_hinted_static_Roboto_Regular_ttf;
+  const unsigned int fontDataLen = bold
+      ? Roboto_v3_012_hinted_static_Roboto_Bold_ttf_len
+      : Roboto_v3_012_hinted_static_Roboto_Regular_ttf_len;
   Font font =
       LoadFontFromMemory(".ttf", fontData, static_cast<int>(fontDataLen),
                          pxSize, const_cast<int *>(codepoints.data()),
@@ -254,7 +254,7 @@ Font FontManager::LoadDefaultUiFont(FontWeight weight, FontStyle style,
 }
 
 FontVMetrics FontManager::MetricsFor(FontWeight weight, FontStyle style) {
-#if defined(__EMSCRIPTEN__)
+#if defined(RAYM3_EMBED_RESOURCES) && RAYM3_EMBED_RESOURCES
   (void)style;
   const bool bold = weight == FontWeight::Bold || weight == FontWeight::Black;
   const unsigned char *data =
