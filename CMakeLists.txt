@@ -342,9 +342,8 @@ else()
     target_compile_definitions(raym3 PRIVATE RAYM3_EMBED_RESOURCES=0)
 endif()
 
-# Install font assets for applications that need explicit font files. When
-# RAYM3_EMBED_RESOURCES is enabled, the bundled EmbeddedFonts.h faces also
-# become the default UI font.
+# Native hosts use the platform UI face by default; Roboto is embedded for web.
+# These font assets are installed for applications that need explicit files.
 install(DIRECTORY resources/fonts
     DESTINATION share/raym3/resources
     FILES_MATCHING PATTERN "*.ttf"

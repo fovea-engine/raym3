@@ -5,7 +5,7 @@
 
 #include <rlgl.h>
 
-#if defined(RAYM3_EMBED_RESOURCES) && RAYM3_EMBED_RESOURCES
+#if defined(__EMSCRIPTEN__)
 #include "EmbeddedFonts.h"
 #endif
 
@@ -214,10 +214,8 @@ Font FontManager::LoadDefaultUiFont(FontWeight weight, FontStyle style,
   const FontVMetrics metrics = MetricsFor(weight, style);
   const int pxSize = EmBakePixels(size, metrics);
 
-#if defined(RAYM3_EMBED_RESOURCES) && RAYM3_EMBED_RESOURCES
-  // Use the bundled Roboto faces as RayM3's cross-platform default. This
-  // keeps native Miso/Raylib text consistent with the web build instead of
-  // falling back to either the OS face or Raylib's bitmap default font.
+#if defined(__EMSCRIPTEN__)
+  // Web has no system UI font file API — use the bundled Roboto faces.
   (void)style;
   const bool bold = weight == FontWeight::Bold || weight == FontWeight::Black;
   const unsigned char *fontData = bold
@@ -254,7 +252,7 @@ Font FontManager::LoadDefaultUiFont(FontWeight weight, FontStyle style,
 }
 
 FontVMetrics FontManager::MetricsFor(FontWeight weight, FontStyle style) {
-#if defined(RAYM3_EMBED_RESOURCES) && RAYM3_EMBED_RESOURCES
+#if defined(__EMSCRIPTEN__)
   (void)style;
   const bool bold = weight == FontWeight::Bold || weight == FontWeight::Black;
   const unsigned char *data =
