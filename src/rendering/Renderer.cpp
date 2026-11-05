@@ -428,6 +428,17 @@ void Renderer::DrawShadow(Rectangle bounds, float cornerRadius, int elevation) {
   }
 }
 
+void Renderer::DrawCheckmark(Rectangle bounds, Color color, float thickness) {
+  const Vector2 c = {bounds.x + bounds.width * 0.5f, bounds.y + bounds.height * 0.5f};
+  const float s = std::min(bounds.width, bounds.height) * 0.5f;
+  const Vector2 p1 = {c.x - s * 0.5f, c.y};
+  const Vector2 p2 = {c.x - s * 0.1f, c.y + s * 0.45f};
+  const Vector2 p3 = {c.x + s * 0.55f, c.y - s * 0.45f};
+  DrawLineEx(p1, p2, thickness, color);
+  DrawLineEx(p2, p3, thickness, color);
+  DrawCircleV(p2, thickness * 0.5f, color); // round the elbow joint
+}
+
 void Renderer::DrawStateLayer(Rectangle bounds, float cornerRadius,
                               Color baseColor, ComponentState state) {
   Color layerColor = Theme::GetStateLayerColor(baseColor, state);

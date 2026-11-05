@@ -14,6 +14,8 @@ option(RAYM3_BUILD_SHARED "Build RayM3 as a shared library" OFF)
 option(RAYM3_FETCH_DEPS "Fetch raym3 third-party dependencies when targets are not provided" ON)
 option(RAYM3_BUILD_EXAMPLES "Build raym3 example applications" ON)
 option(RAYM3_BUILD_TESTS "Build raym3 tests" OFF)
+option(RAYM3_ANTIALIASING "Request 4x MSAA for the raylib window by default. OFF draws without it" ON)
+option(RAYM3_USE_YOGA "Use Yoga flexbox layout (web-compatible). OFF uses a basic stacking fallback" ON)
 set(RAYM3_RAYLIB_TAG "6.0" CACHE STRING "raylib git tag/branch/commit to fetch when raylib target is not provided")
 set(RAYM3_YOGA_TAG "v3.2.1" CACHE STRING "Yoga git tag/branch/commit to fetch when yogacore target is not provided")
 set(RAYM3_ICON_MANIFEST "" CACHE FILEPATH "Optional newline-delimited icon manifest to embed/install when not embedding all icons")
@@ -116,8 +118,13 @@ if(RAYM3_BUILD_EXAMPLES AND NOT ANDROID)
     )
     target_link_libraries(example_v2_demo PRIVATE raym3)
 
+    add_executable(example_v1_demo
+        examples/v1_demo.cpp
+    )
+    target_link_libraries(example_v1_demo PRIVATE raym3)
+
     add_custom_target(examples
-        DEPENDS example_test example_layout example_input_layers example_v2_demo
+        DEPENDS example_test example_layout example_input_layers example_v2_demo example_v1_demo
     )
 endif()
 
@@ -213,6 +220,12 @@ if(RAYM3_USE_INPUT_LAYERS)
     message(STATUS "Input layers support enabled")
 else()
     target_compile_definitions(raym3 PUBLIC RAYM3_USE_INPUT_LAYERS=0)
+endif()
+
+if(RAYM3_ANTIALIASING)
+    target_compile_definitions(raym3 PRIVATE RAYM3_ANTIALIASING=1)
+else()
+    target_compile_definitions(raym3 PRIVATE RAYM3_ANTIALIASING=0)
 endif()
 
 if(RAYM3_ENABLE_RTL)

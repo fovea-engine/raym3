@@ -17,6 +17,9 @@ public:
     static void DrawRoundedRectangleNotched(Rectangle bounds, float cornerRadius, Color color, float lineWidth, float notchStart, float notchEnd);
     static void DrawElevatedRectangle(Rectangle bounds, float cornerRadius, int elevation, Color color);
     static void DrawStateLayer(Rectangle bounds, float cornerRadius, Color baseColor, ComponentState state);
+    // Vector checkmark centered in bounds. Shared by v1 and v2 selection
+    // controls so they never depend on an icon font being installed.
+    static void DrawCheckmark(Rectangle bounds, Color color, float thickness = 2.0f);
     // Paint one resolved CSS box-shadow layer (outer or inset). The host owns
     // CSS parsing; RayM3 owns the rounded, alpha-composited shadow geometry.
     static void DrawCssBoxShadow(Rectangle bounds, float cornerRadius,

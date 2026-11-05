@@ -4,7 +4,6 @@
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
-#include "raym3/v2/IconRenderer.h"
 #include <raylib.h>
 #include <algorithm>
 #include <map>
@@ -75,12 +74,13 @@ bool CheckboxComponent::Render(const char *label, Rectangle bounds,
                       fillSize};
     Renderer::DrawRoundedRectangle(fill, cornerRadius * t, scheme.primary);
 
-    raym3::v2::DrawMaterialIcon(0xe5ca, checkboxBounds,
-                                ColorAlpha(scheme.onPrimary, t), 18, true);
+    Renderer::DrawCheckmark(checkboxBounds, ColorAlpha(scheme.onPrimary, t));
   }
 
   if (label) {
-    Vector2 labelPos = {bounds.x + checkboxBounds.width + 12.0f,
+    // Label starts after the 48dp touch slot that centers the box.
+    const float slotEnd = checkboxBounds.x * 2.0f - bounds.x + size;
+    Vector2 labelPos = {slotEnd + 4.0f,
                         bounds.y + (bounds.height - 14.0f) / 2.0f};
     Renderer::DrawText(label, labelPos, 14.0f, scheme.onSurface,
                        FontWeight::Regular);

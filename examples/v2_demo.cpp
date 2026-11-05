@@ -9,6 +9,8 @@
 
 namespace {
 
+using raym3::v2::PointerInput;
+
 constexpr int kMotionCount = 6;
 constexpr float kAnimationSeconds = 0.9f;
 
@@ -37,10 +39,11 @@ float LoadingProgressFor(double startTime, double now) {
   return Clamp01(static_cast<float>(elapsed / 4.0));
 }
 
-void TriggerAll(std::array<double, kMotionCount> &starts, double now) {
-  for (double &start : starts) {
-    start = now;
-  }
+void TriggerAll(std::array<double, kMotionCount> &starts,
+                std::array<int, kMotionCount> &clicks, double now) {
+  starts.fill(now);
+  for (int &count : clicks)
+    ++count;
 }
 
 Color WithAlpha(Color color, float alpha) { return ColorAlpha(color, alpha); }
@@ -62,24 +65,9 @@ struct BlobKeyframe {
   float radiusScale;
 };
 
-BlobKeyframe MixBlob(const BlobKeyframe &from, const BlobKeyframe &to,
-                     float t) {
-  return {
-      from.lobes + (to.lobes - from.lobes) * t,
-      from.amplitude + (to.amplitude - from.amplitude) * t,
-      from.secondaryLobes + (to.secondaryLobes - from.secondaryLobes) * t,
-      from.secondaryAmplitude +
-          (to.secondaryAmplitude - from.secondaryAmplitude) * t,
-      from.wobbleAmplitude + (to.wobbleAmplitude - from.wobbleAmplitude) * t,
-      from.phase + (to.phase - from.phase) * t,
-      from.rotation + (to.rotation - from.rotation) * t,
-      from.aspectX + (to.aspectX - from.aspectX) * t,
-      from.aspectY + (to.aspectY - from.aspectY) * t,
-      from.radiusScale + (to.radiusScale - from.radiusScale) * t,
-  };
-}
-
-BlobKeyframe LoadingBlobFrame(float progress) {
+// Returns the two keyframes to blend and the blend amount.
+void LoadingBlobFrames(float progress, BlobKeyframe &from, BlobKeyframe &to,
+                       float &t) {
   static const BlobKeyframe frames[] = {
       // Soft wavy circle.
       {11.0f, 0.145f, 3.0f, 0.025f, 0.015f, 0.20f, -0.12f, 1.02f,
@@ -112,44 +100,51 @@ BlobKeyframe LoadingBlobFrame(float progress) {
       static_cast<int>(sizeof(frames) / sizeof(frames[0])) - 1;
   float scaled = progress * static_cast<float>(segmentCount);
   int index = std::min(segmentCount - 1, static_cast<int>(std::floor(scaled)));
-  float local = Smooth(scaled - static_cast<float>(index));
-  return MixBlob(frames[index], frames[index + 1], local);
+  from = frames[index];
+  to = frames[index + 1];
+  t = Smooth(scaled - static_cast<float>(index));
+}
+
+// Point on one keyframe's outline. Every frequency is a whole number, so the
+// outline closes at theta = 2*pi without a seam.
+Vector2 BlobPoint(const BlobKeyframe &f, float theta, float outerRadius) {
+  float rotatedTheta = theta - f.rotation;
+  float organicLobes = std::round(f.lobes * 0.52f + 1.7f);
+  float radius = (outerRadius * f.radiusScale) *
+                 (1.0f + f.amplitude * std::cos(f.lobes * rotatedTheta + f.phase) +
+                  f.secondaryAmplitude *
+                      std::sin(f.secondaryLobes * rotatedTheta + f.phase * 1.7f) +
+                  f.wobbleAmplitude *
+                      std::sin(organicLobes * rotatedTheta + f.phase * 2.4f));
+  return {std::cos(theta) * radius * f.aspectX, std::sin(theta) * radius * f.aspectY};
 }
 
 void DrawLoadingBlob(Vector2 center, float progress, float outerRadius,
                      bool contained) {
-  const BlobKeyframe frame = LoadingBlobFrame(progress);
+  BlobKeyframe from, to;
+  float t = 0.0f;
+  LoadingBlobFrames(progress, from, to, t);
   constexpr int perimeterCount = 120;
   std::vector<Vector2> points;
   points.reserve(perimeterCount);
 
+  // Blend outlines, not lobe counts: a fractional lobe count tears a notch
+  // into the shape where the angle wraps around.
+  const float scale = contained ? 0.98f : 1.0f;
   for (int i = 0; i < perimeterCount; ++i) {
     float theta = static_cast<float>(i) / static_cast<float>(perimeterCount) *
                   2.0f * PI;
-    float rotatedTheta = theta - frame.rotation;
-    float primary = std::cos(frame.lobes * rotatedTheta + frame.phase);
-    float secondary =
-        std::sin(frame.secondaryLobes * rotatedTheta + frame.phase * 1.7f);
-    float organic = std::sin((frame.lobes * 0.52f + 1.7f) * rotatedTheta +
-                             frame.phase * 2.4f);
-    float radius = (outerRadius * frame.radiusScale) *
-                   (1.0f + frame.amplitude * primary +
-                    frame.secondaryAmplitude * secondary +
-                    frame.wobbleAmplitude * organic);
-
-    if (contained) {
-      radius *= 0.98f;
-    }
-
-    points.push_back({center.x + std::cos(theta) * radius * frame.aspectX,
-                      center.y + std::sin(theta) * radius * frame.aspectY});
+    Vector2 a = BlobPoint(from, theta, outerRadius);
+    Vector2 b = BlobPoint(to, theta, outerRadius);
+    points.push_back({center.x + (a.x + (b.x - a.x) * t) * scale,
+                      center.y + (a.y + (b.y - a.y) * t) * scale});
   }
 
   const Color color = PlumShape();
   for (int i = 0; i < perimeterCount; ++i) {
     const Vector2 &a = points[i];
     const Vector2 &b = points[(i + 1) % perimeterCount];
-    DrawTriangle(center, a, b, color);
+    DrawTriangle(center, b, a, color); // CCW on screen, or raylib culls it
   }
 }
 
@@ -213,36 +208,49 @@ void DrawActiveIndicator(Rectangle bounds, float progress) {
   }
 }
 
-void DrawShapeMorph(Rectangle bounds, float progress) {
+void DrawShapeMorph(Rectangle bounds, float progress, bool morphed) {
   const auto &scheme = raym3::Theme::GetColorScheme();
-  DrawPanel(bounds, "Shape morph", "click to replay", progress > 0.0f && progress < 1.0f);
-  float t = std::sin(Smooth(progress) * PI);
-  float radius = 28.0f + (10.0f - 28.0f) * t;
-  float scale = 1.0f + 0.08f * std::sin(t * PI);
-  Rectangle button = {bounds.x + bounds.width * 0.5f - 62.0f * scale,
-                      bounds.y + 80.0f - 24.0f * scale, 124.0f * scale,
-                      48.0f * scale};
-  raym3::Renderer::DrawRoundedRectangle(button, radius,
+  DrawPanel(bounds, "Shape morph", "click to toggle", progress > 0.0f && progress < 1.0f);
+  // Each click flips the target shape; progress eases from the old one.
+  float e = Smooth(progress);
+  float t = morphed ? e : 1.0f - e;
+  float pop = std::sin(e * PI) * 0.06f;
+  // Pill button -> wider square-cornered button.
+  float w = 124.0f + 56.0f * t, h = 48.0f + 8.0f * t;
+  Rectangle button = {bounds.x + bounds.width * 0.5f - w * 0.5f * (1.0f + pop),
+                      bounds.y + 96.0f - h * 0.5f * (1.0f + pop),
+                      w * (1.0f + pop), h * (1.0f + pop)};
+  raym3::Renderer::DrawRoundedRectangle(button, 24.0f + (8.0f - 24.0f) * t,
                                         scheme.primaryContainer);
-  raym3::Renderer::DrawTextCentered("Action", button, 14.0f,
+  raym3::Renderer::DrawTextCentered(t > 0.5f ? "Selected" : "Action", button, 14.0f,
                                     scheme.onPrimaryContainer,
                                     raym3::FontWeight::Medium);
-  DrawCircle(bounds.x + bounds.width - 54.0f, bounds.y + 112.0f,
-             20.0f + 8.0f * t, scheme.tertiaryContainer);
-  DrawText("+", static_cast<int>(bounds.x + bounds.width - 60.0f),
-           static_cast<int>(bounds.y + 100.0f), 24, scheme.onTertiaryContainer);
+  // FAB: rounded square -> circle while the plus turns into a close mark.
+  const float size = 56.0f * (1.0f + pop);
+  const Vector2 c = {bounds.x + bounds.width - 60.0f, bounds.y + 96.0f};
+  Rectangle fab = {c.x - size * 0.5f, c.y - size * 0.5f, size, size};
+  raym3::Renderer::DrawRoundedRectangle(fab, 16.0f + (size * 0.5f - 16.0f) * t,
+                                        scheme.tertiaryContainer);
+  const float angle = 45.0f * t;
+  for (float bar : {0.0f, 90.0f}) {
+    DrawRectanglePro({c.x, c.y, 20.0f, 2.5f}, {10.0f, 1.25f}, angle + bar,
+                     scheme.onTertiaryContainer);
+  }
 }
 
 void DrawSheetEnter(Rectangle bounds, float progress) {
   const auto &scheme = raym3::Theme::GetColorScheme();
   DrawPanel(bounds, "Sheet enter", "click to replay", progress > 0.0f && progress < 1.0f);
   Rectangle stage = {bounds.x + 18.0f, bounds.y + 62.0f, bounds.width - 36.0f,
-                     104.0f};
+                     bounds.height - 70.0f};
   raym3::Renderer::DrawRoundedRectangle(stage, 8.0f,
                                         scheme.surfaceContainer);
   float enter = Smooth(progress);
-  float y = stage.y + stage.height - 68.0f * enter;
-  Rectangle sheet = {stage.x + 22.0f, y, stage.width - 44.0f, 78.0f};
+  constexpr float sheetHeight = 66.0f;
+  float y = stage.y + stage.height - sheetHeight * enter;
+  Rectangle sheet = {stage.x + 22.0f, y, stage.width - 44.0f, sheetHeight};
+  BeginScissorMode(static_cast<int>(stage.x), static_cast<int>(stage.y),
+                   static_cast<int>(stage.width), static_cast<int>(stage.height));
   raym3::Renderer::DrawRoundedRectangle(sheet, 24.0f,
                                         scheme.surfaceContainerHigh);
   raym3::Renderer::DrawRoundedRectangle({sheet.x + sheet.width * 0.5f - 18.0f,
@@ -251,165 +259,221 @@ void DrawSheetEnter(Rectangle bounds, float progress) {
   raym3::Renderer::DrawText("Bottom sheet", {sheet.x + 18.0f, sheet.y + 28.0f},
                             13.0f, scheme.onSurface,
                             raym3::FontWeight::Medium);
+  EndScissorMode();
 }
 
-void DrawCarousel(Rectangle bounds, float progress) {
+void DrawCarousel(Rectangle bounds, float position) {
   const auto &scheme = raym3::Theme::GetColorScheme();
-  DrawPanel(bounds, "Carousel", "click to replay", progress > 0.0f && progress < 1.0f);
-  Rectangle clip = {bounds.x + 14.0f, bounds.y + 68.0f, bounds.width - 28.0f,
-                    88.0f};
+  DrawPanel(bounds, "Carousel", "click to scroll", false);
+  Rectangle clip = {bounds.x + 14.0f, bounds.y + 64.0f, bounds.width - 28.0f, 74.0f};
   BeginScissorMode(static_cast<int>(clip.x), static_cast<int>(clip.y),
                    static_cast<int>(clip.width), static_cast<int>(clip.height));
-  float offset = Smooth(progress) * 170.0f;
-  for (int i = 0; i < 5; ++i) {
-    float w = i % 2 == 0 ? 118.0f : 76.0f;
-    float x = clip.x + i * 98.0f - offset;
-    while (x + w < clip.x)
-      x += 490.0f;
-    Rectangle card = {x, clip.y + 4.0f, w, 80.0f};
-    Color fill = i % 2 == 0 ? scheme.primaryContainer : scheme.tertiaryContainer;
-    raym3::Renderer::DrawRoundedRectangle(card, 18.0f, fill);
-    raym3::Renderer::DrawTextCentered(i % 2 == 0 ? "Large" : "Small", card,
-                                      13.0f,
-                                      i % 2 == 0 ? scheme.onPrimaryContainer
-                                                 : scheme.onTertiaryContainer,
-                                      raym3::FontWeight::Medium);
+  // M3 multi-browse keylines: slot -1 is off the left edge, 4 off the right.
+  constexpr float gap = 8.0f, small = 40.0f;
+  const float large = (clip.width - small - gap * 3.0f) / 2.5f;
+  const float widths[6] = {small, large, large, large * 0.5f, small, small};
+  float lefts[6];
+  lefts[0] = -small - gap;
+  for (int k = 1; k < 6; ++k)
+    lefts[k] = k == 1 ? 0.0f : lefts[k - 1] + widths[k - 1] + gap;
+  constexpr int count = 8;
+  for (int i = 0; i < count; ++i) {
+    float slot = std::fmod(i - position + count * 64.0f, count) - 1.0f; // [-1, 7)
+    if (slot >= 4.0f)
+      continue;
+    int k = static_cast<int>(std::floor(slot)) + 1;
+    float f = slot + 1.0f - static_cast<float>(k);
+    float w = widths[k] + (widths[k + 1] - widths[k]) * f;
+    float x = lefts[k] + (lefts[k + 1] - lefts[k]) * f;
+    Rectangle card = {clip.x + x, clip.y + 2.0f, w, 70.0f};
+    bool primary = i % 2 == 0;
+    raym3::Renderer::DrawRoundedRectangle(card, std::min(18.0f, w * 0.5f),
+                                          primary ? scheme.primaryContainer
+                                                  : scheme.tertiaryContainer);
+    if (w > 72.0f) {
+      raym3::Renderer::DrawTextCentered(TextFormat("Item %d", i + 1), card, 13.0f,
+                                        primary ? scheme.onPrimaryContainer
+                                                : scheme.onTertiaryContainer,
+                                        raym3::FontWeight::Medium);
+    }
   }
   EndScissorMode();
 }
 
 void DrawCheckboxMotion(Rectangle bounds, float progress) {
   const auto &scheme = raym3::Theme::GetColorScheme();
-  DrawPanel(bounds, "Checkbox", "click to replay", progress > 0.0f && progress < 1.0f);
+  DrawPanel(bounds, "Checkbox selection", "click to replay", progress > 0.0f && progress < 1.0f);
   float t = Smooth(progress);
   Vector2 center = {bounds.x + bounds.width * 0.5f, bounds.y + 108.0f};
   DrawCircleV(center, 34.0f * t, WithAlpha(scheme.primary, 0.12f * (1.0f - t)));
-  Rectangle box = {center.x - 12.0f, center.y - 12.0f, 24.0f, 24.0f};
-  raym3::Renderer::DrawRoundedRectangle(box, 3.0f, scheme.primary);
-  Vector2 a = {box.x + 5.0f, box.y + 12.0f};
-  Vector2 b = {box.x + 10.0f, box.y + 17.0f};
-  Vector2 c = {box.x + 19.0f, box.y + 7.0f};
-  DrawLineEx(a, b, 3.0f, scheme.onPrimary);
+  Rectangle box = {center.x - 16.0f, center.y - 16.0f, 32.0f, 32.0f};
   if (t > 0.45f) {
-    DrawLineEx(b, c, 3.0f, WithAlpha(scheme.onPrimary, Smooth((t - 0.45f) / 0.55f)));
+    raym3::Renderer::DrawRoundedRectangle(box, 4.0f, scheme.primary);
+    Vector2 a = {box.x + 7.0f, box.y + 16.0f};
+    Vector2 b = {box.x + 13.0f, box.y + 22.0f};
+    Vector2 c = {box.x + 26.0f, box.y + 9.0f};
+    float checkAlpha = Smooth((t - 0.45f) / 0.55f);
+    DrawLineEx(a, b, 4.0f, WithAlpha(scheme.onPrimary, checkAlpha));
+    DrawLineEx(b, c, 4.0f, WithAlpha(scheme.onPrimary, checkAlpha));
+  } else {
+    raym3::Renderer::DrawRoundedRectangleEx(box, 4.0f, scheme.outline, 2.0f);
   }
+}
+
+// Scripted pointer for `--autoplay` (README recording): double-click "word",
+// drag to extend by words, then click to collapse. Same path as a real mouse.
+PointerInput ScriptedPointer(int frame) {
+  frame -= 120; // leave time for a screen recorder to attach
+  PointerInput p;
+  p.pos = {470.0f, 134.0f};
+  p.pressed = frame == 60 || frame == 66 || frame == 200;
+  p.released = frame == 61 || frame == 120 || frame == 201;
+  p.down = p.pressed || (frame > 66 && frame < 120);
+  if (frame > 70 && frame <= 120)
+    p.pos.x += std::min(frame - 70, 30) * 4.0f;
+  if (frame >= 200)
+    p.pos.x = 440.0f;
+  return p;
 }
 
 } // namespace
 
-int main() {
-  InitWindow(920, 680, "raym3 v2 motion demo");
+int main(int argc, char **argv) {
+  const bool autoplay = argc > 1 && std::string(argv[1]) == "--autoplay";
+  if (autoplay)
+    SetConfigFlags(FLAG_WINDOW_UNFOCUSED | FLAG_WINDOW_TOPMOST); // visible, but never steals the keyboard
+  InitWindow(1200, 900, "raym3 v2 component and motion demo");
   SetTargetFPS(60);
 
   raym3::Initialize();
 
-  std::string value = "Editable text";
-  std::array<double, kMotionCount> animationStarts;
-  animationStarts.fill(-1.0);
+  using namespace raym3::v2;
 
-  while (!WindowShouldClose()) {
+  std::string value = "Double-click a word to select it";
+  std::array<double, kMotionCount> animationStarts;
+  animationStarts.fill(0.0);
+  std::array<int, kMotionCount> clicks;
+  clicks.fill(1); // launch plays every motion once
+
+  Style rootStyle;
+  rootStyle.padding.all = 24.0f;
+  rootStyle.gap = 14.0f;
+  rootStyle.backgroundColor = raym3::Theme::GetColorScheme().surface;
+
+  Style titleStyle;
+  titleStyle.text.fontSize = 24.0f;
+  titleStyle.text.lineHeight = 32.0f;
+  titleStyle.text.weight = raym3::FontWeight::Bold;
+
+  Style captionStyle;
+  captionStyle.text.fontSize = 13.0f;
+  captionStyle.text.lineHeight = 18.0f;
+  captionStyle.text.color = raym3::Theme::GetColorScheme().onSurfaceVariant;
+
+  Style controlsStyle;
+  controlsStyle.flexDirection = FlexDirection::Row;
+  controlsStyle.alignItems = Align::Center;
+  controlsStyle.gap = 12.0f;
+  controlsStyle.height = 64.0f;
+
+  Style actionStyle;
+  actionStyle.width = 160.0f;
+  actionStyle.height = 40.0f;
+  actionStyle.borderRadius = 20.0f;
+  actionStyle.backgroundColor = raym3::Theme::GetColorScheme().primary;
+  actionStyle.text.color = raym3::Theme::GetColorScheme().onPrimary;
+
+  Style inputStyle;
+  inputStyle.width = 390.0f;
+  inputStyle.height = 56.0f;
+
+  // Retained tree: built once, like a DOM. Focus, selection and click counts
+  // live on the nodes, so rebuilding every frame would forget them.
+  auto root = View({.id = "root", .style = rootStyle},
+                   {
+                       Text("raym3 v2  |  Components, text, and motion", {.style = titleStyle}),
+                       Text("Badge · selected chip · TextInput: double-click a word, then drag · click panels to replay",
+                            {.style = captionStyle}),
+                       View({.id = "controls", .style = controlsStyle},
+                            {
+                                Button({.label = "Action",
+                                        .style = actionStyle,
+                                        .onPress = [&animationStarts, &clicks]() {
+                                          TriggerAll(animationStarts, clicks, GetTime());
+                                        }}),
+                                MaterialComponent(M3Component::Badge, {.label = "2"}),
+                                MaterialComponent(M3Component::Chip,
+                                                  {.label = "Selected chip",
+                                                   .selected = true}),
+                                TextInput({.id = "showcase-text-input",
+                                           .style = inputStyle,
+                                           .value = &value,
+                                           .placeholder = "Text input",
+                                           .selectTextOnFocus = true,
+                                           .autoFocus = true}),
+                            }),
+                       Custom({.id = "motion-gallery",
+                               .style = {.height = 480.0f}},
+                              [&animationStarts, &clicks](Rectangle bounds) {
+                                const float gap = 14.0f;
+                                const float panelW = (bounds.width - gap) * 0.5f;
+                                const float panelH = (bounds.height - gap * 2.0f) / 3.0f;
+                                const double time = GetTime();
+                                Rectangle p[6];
+                                for (int i = 0; i < 6; ++i) {
+                                  p[i] = {bounds.x + (i % 2) * (panelW + gap),
+                                          bounds.y + (i / 2) * (panelH + gap),
+                                          panelW, panelH};
+                                }
+                                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                                  Vector2 mouse = GetMousePosition();
+                                  for (int i = 0; i < kMotionCount; ++i) {
+                                    if (CheckCollisionPointRec(mouse, p[i])) {
+                                      animationStarts[i] = time;
+                                      ++clicks[i];
+                                    }
+                                  }
+                                }
+                                DrawLoading(p[0], LoadingProgressFor(animationStarts[0], time));
+                                DrawActiveIndicator(p[1], ProgressFor(animationStarts[1], time));
+                                DrawShapeMorph(p[2], ProgressFor(animationStarts[2], time),
+                                               clicks[2] % 2 == 1);
+                                DrawSheetEnter(p[3], ProgressFor(animationStarts[3], time));
+                                DrawCarousel(p[4], clicks[4] - 1 +
+                                                       Smooth(ProgressFor(animationStarts[4], time)));
+                                DrawCheckboxMotion(p[5], ProgressFor(animationStarts[5], time));
+                              }),
+                   });
+
+  for (int frame = 0; !WindowShouldClose(); ++frame) {
+    const Rectangle screen = {0, 0, static_cast<float>(GetScreenWidth()),
+                              static_cast<float>(GetScreenHeight())};
+    if (autoplay) {
+      const PointerInput p = ScriptedPointer(frame);
+      BeginInputFrame(p.pos, p.down, p.pressed, p.released, 0.0f);
+      // After the text demo, play one panel every 1.5 s.
+      if (frame >= 360 && (frame - 360) % 90 == 0) {
+        const int panel = ((frame - 360) / 90) % kMotionCount;
+        animationStarts[panel] = GetTime();
+        ++clicks[panel];
+      }
+    } else {
+      BeginInputFrame(GetMousePosition(), IsMouseButtonDown(MOUSE_BUTTON_LEFT),
+                      IsMouseButtonPressed(MOUSE_BUTTON_LEFT),
+                      IsMouseButtonReleased(MOUSE_BUTTON_LEFT), GetMouseWheelMove());
+    }
+
     BeginDrawing();
     ClearBackground(raym3::Theme::GetColorScheme().surface);
     raym3::BeginFrame();
-
-    using namespace raym3::v2;
-
-    Style rootStyle;
-    rootStyle.padding.all = 24.0f;
-    rootStyle.gap = 14.0f;
-    rootStyle.backgroundColor = raym3::Theme::GetColorScheme().surface;
-
-    Style titleStyle;
-    titleStyle.text.fontSize = 24.0f;
-    titleStyle.text.lineHeight = 32.0f;
-    titleStyle.text.weight = raym3::FontWeight::Bold;
-
-    Style captionStyle;
-    captionStyle.text.fontSize = 13.0f;
-    captionStyle.text.lineHeight = 18.0f;
-    captionStyle.text.color = raym3::Theme::GetColorScheme().onSurfaceVariant;
-
-    Style controlsStyle;
-    controlsStyle.flexDirection = FlexDirection::Row;
-    controlsStyle.alignItems = Align::Center;
-    controlsStyle.gap = 12.0f;
-    controlsStyle.height = 64.0f;
-
-    Style inputStyle;
-    inputStyle.width = 320.0f;
-    inputStyle.height = 56.0f;
-
-    Style badgeStyle;
-    badgeStyle.margin.left = 4.0f;
-
-    double now = GetTime();
-
-    auto root = View({.id = "root", .style = rootStyle},
-                     {
-                         Text("raym3 v2 M3 motion demo", {.style = titleStyle}),
-                         Text("Click a panel to replay one animation, or click Action to replay all of them.",
-                              {.style = captionStyle}),
-                         View({.id = "controls", .style = controlsStyle},
-                              {
-                                  Button({.label = "Action",
-                                          .style = {.width = 160.0f,
-                                                    .height = 40.0f},
-                                          .onPress = [&animationStarts, now]() {
-                                            TriggerAll(animationStarts, now);
-                                          }}),
-                                  MaterialComponent(M3Component::Badge,
-                                                    {.label = "9",
-                                                     .style = badgeStyle}),
-                                  TextInput({.style = inputStyle,
-                                             .value = &value,
-                                             .label = "Editable",
-                                             .placeholder = "Type here"}),
-                              }),
-                         Custom({.id = "motion-gallery",
-                                 .style = {.height = 480.0f}},
-                                [&animationStarts](Rectangle bounds) {
-                                  const float gap = 14.0f;
-                                  const float panelW =
-                                      (bounds.width - gap) * 0.5f;
-                                  const float panelH =
-                                      (bounds.height - gap * 2.0f) / 3.0f;
-                                  const double time = GetTime();
-                                  Rectangle p[6];
-                                  for (int i = 0; i < 6; ++i) {
-                                    p[i] = {bounds.x + (i % 2) * (panelW + gap),
-                                            bounds.y +
-                                                (i / 2) * (panelH + gap),
-                                            panelW, panelH};
-                                  }
-                                  if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                                    Vector2 mouse = GetMousePosition();
-                                    for (int i = 0; i < kMotionCount; ++i) {
-                                      if (CheckCollisionPointRec(mouse, p[i])) {
-                                        animationStarts[i] = time;
-                                      }
-                                    }
-                                  }
-                                  DrawLoading(
-                                      p[0], LoadingProgressFor(animationStarts[0],
-                                                               time));
-                                  DrawActiveIndicator(
-                                      p[1], ProgressFor(animationStarts[1], time));
-                                  DrawShapeMorph(
-                                      p[2], ProgressFor(animationStarts[2], time));
-                                  DrawSheetEnter(
-                                      p[3], ProgressFor(animationStarts[3], time));
-                                  DrawCarousel(
-                                      p[4], ProgressFor(animationStarts[4], time));
-                                  DrawCheckboxMotion(
-                                      p[5], ProgressFor(animationStarts[5], time));
-                                }),
-                     });
-
-    Render(root, {0, 0, static_cast<float>(GetScreenWidth()),
-                  static_cast<float>(GetScreenHeight())});
-
+    Render(root, screen);
     raym3::EndFrame();
     EndDrawing();
+
+    // Same order a browser uses: hit-test the painted frame, then dispatch.
+    ResolveInput(root);
+    ResolveTextInput(root);
+    ResolveScrollInput(root);
   }
 
   raym3::Shutdown();

@@ -4,7 +4,6 @@
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
-#include "raym3/v2/IconRenderer.h"
 #include "raymath.h"
 #include <map>
 
@@ -128,13 +127,13 @@ bool RadioButtonComponent::Render(const char *label, Rectangle bounds,
 
   Rectangle iconBounds = {center.x - iconSize / 2.0f,
                           center.y - iconSize / 2.0f, iconSize, iconSize};
-  if (t < 0.99f) {
-    raym3::v2::DrawMaterialIcon(0xe836, iconBounds,
-                                ColorAlpha(outerColor, 1.0f - t), 20, true);
-  }
+  // Vector ring + dot (M3: 20dp ring, 2dp stroke, 10dp dot that scales in).
+  Renderer::DrawRoundedRectangleEx(iconBounds, iconSize * 0.5f, outerColor, 2.0f);
   if (t > 0.01f) {
-    raym3::v2::DrawMaterialIcon(0xe837, iconBounds,
-                                ColorAlpha(innerColor, t), 20, true);
+    const float dot = 10.0f * t;
+    Renderer::DrawRoundedRectangle({center.x - dot * 0.5f, center.y - dot * 0.5f,
+                                    dot, dot},
+                                   dot * 0.5f, innerColor);
   }
 
   // Draw Label

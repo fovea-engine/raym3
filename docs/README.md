@@ -7,6 +7,8 @@ This directory contains documentation for advanced raym3 features and systems.
 - **[Layout System](layout-system.md)** - Flexbox-based layout with Yoga, scroll containers, and ClipScope usage
 - **[Input Layer System](input-layer-system.md)** - Z-ordering and input blocking
 - **[Scissor System](scissor-system.md)** - Stack-based clipping regions
+- **[v1 Immediate Mode](v1.md)** - What v1 shares with v2 (layout, anti-aliasing, input fixes), with a demo GIF
+- **[v2 Best Practices](v2-best-practices.md)** - Build options, retained trees, the input loop, flex alignment, text fields, and custom drawing pitfalls
 - **[v2 Native UI Upgrade](v2-upgrade.md)** - Retained/composable v2 API, same-frame layout, dependency, icon, and text-engine foundation
 - **[M3 Component Browser Audit](m3-component-browser-audit.md)** - Browser-reviewed Material 3 component and motion checklist
 - **[October Rendering and Text Updates](october-rendering-text.md)** - SVG documents, platform font selection, multi-click text selection, and transformed overflow clipping
