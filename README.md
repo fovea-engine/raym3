@@ -469,6 +469,14 @@ This brings in the work done for [Rayact](https://github.com/raythings/rayact): 
 - **Emoji:** Windows uses DirectWrite and macOS/iOS use CoreText. A custom emoji font now overrides the OS rasteriser.
 - `overflow: hidden` still clips to the outer edge of the border, not the padding box. This is unchanged, but note it if you put images in bordered, rounded nodes.
 
+### v2.1.0 - Text, fonts, SVG, and clipping
+
+- TextField double-click selects a word, triple-click selects all, and dragging after multi-click extends selection.
+- Native UI uses platform system fonts with CSS-family resolution and missing-glyph fallback; WebAssembly continues to use bundled Roboto.
+- Added cached inline SVG document rendering with RGBA fill and opacity support.
+- Fixed transformed rounded overflow clipping and descendant hit testing, along with renderer resource lifetime and frame-stat handling.
+- Improved emoji font selection and rendering across supported platforms.
+
 #### Added
 - Selectable `Text` (`TextStyle::selectable`) with shared selection geometry, and styled spans inside one `Text` node.
 - CSS gradients: linear and conic, evaluated per pixel with dithering, multiple background layers, `border-area` clipping.
