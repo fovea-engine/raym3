@@ -4,7 +4,6 @@
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
-#include "raym3/v2/IconRenderer.h"
 #include <algorithm>
 #include <map>
 #include <raylib.h>
@@ -127,8 +126,16 @@ bool SwitchComponent::Render(const char *label, Rectangle bounds,
                     thumbRect.y + thumbRect.height / 2.0f};
   float iconSize = 16.0f * scale;
 
-  raym3::v2::DrawMaterialIcon(isChecked ? 0xe5ca : 0xe5cd, thumbRect,
-                              iconColor, (int)iconSize, true);
+  // Vector icons: check when on, a small x when off.
+  Rectangle iconRect = {center.x - iconSize * 0.5f, center.y - iconSize * 0.5f,
+                        iconSize, iconSize};
+  if (isChecked) {
+    Renderer::DrawCheckmark(iconRect, iconColor);
+  } else {
+    const float k = iconSize * 0.25f;
+    DrawLineEx({center.x - k, center.y - k}, {center.x + k, center.y + k}, 2.0f, iconColor);
+    DrawLineEx({center.x - k, center.y + k}, {center.x + k, center.y - k}, 2.0f, iconColor);
+  }
 
   // Draw State Layer
   if (state != ComponentState::Default && state != ComponentState::Disabled) {

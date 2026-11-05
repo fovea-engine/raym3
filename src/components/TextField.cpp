@@ -39,6 +39,8 @@ struct TextFieldState {
   float lastClickTime = 0.0f;
   int lastClickPosition = -1;
   int clickCount = 0;
+  int wordAnchorStart = -1; // word picked by the last double-click
+  int wordAnchorEnd = -1;
 
   std::vector<std::string> undoHistory;
   int undoIndex = -1;
@@ -461,6 +463,8 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
       fieldState.selectionStart = wordStart;
       fieldState.selectionEnd = wordEnd;
       fieldState.cursorPosition = wordEnd;
+      fieldState.wordAnchorStart = wordStart;
+      fieldState.wordAnchorEnd = wordEnd;
       fieldState.clickCount = 2;
     } else {
       fieldState.selectionStart = -1;
@@ -518,11 +522,25 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
       }
     }
 
-    if (fieldState.selectionStart == -1) {
-      fieldState.selectionStart = fieldState.cursorPosition;
+    if (fieldState.clickCount >= 3) {
+      // Triple-click drag keeps everything selected.
+    } else if (fieldState.clickCount == 2) {
+      // Double-click drag extends by whole words, like a browser. Writing the
+      // raw character here used to collapse the word on the press frame.
+      int ws = 0, we = 0;
+      FindWordBoundaries(buffer, dragPosition, ws, we);
+      const bool forward = dragPosition >= fieldState.wordAnchorStart;
+      fieldState.selectionStart =
+          forward ? fieldState.wordAnchorStart : fieldState.wordAnchorEnd;
+      fieldState.selectionEnd = forward ? std::max(we, fieldState.wordAnchorEnd) : ws;
+      fieldState.cursorPosition = fieldState.selectionEnd;
+    } else {
+      if (fieldState.selectionStart == -1) {
+        fieldState.selectionStart = fieldState.cursorPosition;
+      }
+      fieldState.selectionEnd = dragPosition;
+      fieldState.cursorPosition = dragPosition;
     }
-    fieldState.selectionEnd = dragPosition;
-    fieldState.cursorPosition = dragPosition;
   }
 
   if (isReleased) {
@@ -531,7 +549,10 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
 
   ComponentState state = GetTextFieldState(bounds, fieldId, options.disabled);
 
-  if ((state == ComponentState::Hovered || isFocused) && !options.disabled && !options.readOnly) {
+  // I-beam only under the pointer (or mid drag-select). Requesting it whenever
+  // the field had focus left the cursor stuck as an I-beam everywhere.
+  if ((state == ComponentState::Hovered || (isFocused && isDown && fieldState.isSelecting)) &&
+      !options.disabled && !options.readOnly) {
     RequestCursor(MOUSE_CURSOR_IBEAM);
   }
 

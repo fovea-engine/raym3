@@ -144,7 +144,16 @@ static void InitializeCssSuitTextures() {
   }
 }
 
+#if RAYM3_ANTIALIASING
+// Smooth edges by default. MSAA is a window hint, so it must be requested
+// before the app calls InitWindow; a static initializer runs before main().
+// raylib only stores the flag here. Build with -DRAYM3_ANTIALIASING=OFF to opt out.
+[[maybe_unused]] static const bool s_msaaRequested =
+    (SetConfigFlags(FLAG_MSAA_4X_HINT), true);
+#endif
+
 static int s_requestedCursor = MOUSE_CURSOR_DEFAULT;
+static int s_appliedCursor = MOUSE_CURSOR_DEFAULT;
 static bool initialized = false;
 static std::vector<Rectangle> s_scissorStack;
 static bool s_scissorDebugEnabled = false;
@@ -453,7 +462,12 @@ void DrawScissorDebug() {
 }
 
 void EndFrame() {
-  SetMouseCursor(s_requestedCursor);
+  // Only touch the OS cursor when the request changes. Re-applying DEFAULT every
+  // frame stomped the v2 TextInput I-beam, so the cursor flickered over fields.
+  if (s_requestedCursor != s_appliedCursor) {
+    SetMouseCursor(s_requestedCursor);
+    s_appliedCursor = s_requestedCursor;
+  }
 
   TooltipManager::Update();
 

@@ -3732,8 +3732,12 @@ static void ClearScrollVelocitiesOutside(const NodePtr &node,
 static bool NeedsImmediateCapture(const Node &node, bool isScrim) {
   if (isScrim)
     return true;
-  // TextInput uses deferred press so vertical scroll can win the gesture arena
-  // without blurring or dismissing the keyboard.
+  // TextInput uses deferred press on touch so vertical scroll can win the
+  // gesture arena without blurring or dismissing the keyboard. A mouse has no
+  // such arena: like an HTML <input>, mousedown focuses and places the caret,
+  // so the first click of a double-click counts and click-drag selects.
+  if (node.kind == NodeKind::TextInput && PointerIsMouse())
+    return true;
   if (IsControlKind(node.kind))
     return true;
   if (node.onValueChange)

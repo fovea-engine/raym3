@@ -777,7 +777,6 @@ static void HandlePointer(Node &node, const PointerInput &p) {
         std::sqrt(dragDx * dragDx + dragDy * dragDy) > kTouchSlop) {
       edit.clickWasDragged = true;
       edit.lastClickCompleted = false;
-      edit.clickCount = 1;
     }
     float dt = GetFrameTime();
     if (dt <= 0.0f || dt > 0.1f)
@@ -795,7 +794,10 @@ static void HandlePointer(Node &node, const PointerInput &p) {
           maxScroll, edit.scrollOffsetX + kSelectionAutoScrollSpeed * dt);
     }
     int pos = caretAt(std::clamp(p.pos.x, textStartX, textEndX), p.pos.y);
-    if (edit.longPressActive && GetTime() - edit.longPressStartTime > 0.45) {
+    // Long-press word selection is a touch gesture; a mouse held still just
+    // keeps its caret, like a browser.
+    if (edit.longPressActive && !PointerIsMouse() &&
+        GetTime() - edit.longPressStartTime > 0.45) {
       int start = 0;
       int end = 0;
       FindWordBoundaries(buffer, edit.longPressAnchor, start, end);
@@ -810,6 +812,17 @@ static void HandlePointer(Node &node, const PointerInput &p) {
         HostHooks().hapticFeedback();
         edit.longPressHapticSent = true;
       }
+    } else if (edit.clickCount >= 3) {
+      // Triple-click drag keeps the whole text selected.
+    } else if (edit.clickCount == 2) {
+      // Double-click drag extends by whole words, anchored on the first word.
+      int anchorStart = 0, anchorEnd = 0, ws = 0, we = 0;
+      FindWordBoundaries(buffer, edit.selectionAnchor, anchorStart, anchorEnd);
+      FindWordBoundaries(buffer, pos, ws, we);
+      const bool forward = pos >= anchorStart;
+      edit.selectionStart = forward ? anchorStart : anchorEnd;
+      edit.selectionEnd = forward ? std::max(we, anchorEnd) : ws;
+      pos = edit.selectionEnd;
     } else if (pos != edit.selectionAnchor || edit.selectionStart != -1) {
       edit.selectionStart = edit.selectionAnchor;
       edit.selectionEnd = pos;
@@ -829,7 +842,8 @@ static void HandlePointer(Node &node, const PointerInput &p) {
     edit.longPressActive = false;
     edit.longPressSelectionActive = false;
     edit.longPressHapticSent = false;
-    if (edit.selectionStart != -1 && edit.selectionEnd != -1)
+    // Drag handles are for touch; a mouse selection shows none (HTML).
+    if (edit.selectionStart != -1 && edit.selectionEnd != -1 && !PointerIsMouse())
       edit.handlesVisible = true;
     if (keepToolbar)
       edit.toolbarVisible = true;

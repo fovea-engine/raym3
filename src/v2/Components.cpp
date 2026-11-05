@@ -222,13 +222,7 @@ static void PaintLinearProgress(Rectangle r, float progress, bool indeterminate,
 }
 
 static void PaintCheckmark(Rectangle r, Color color) {
-  Vector2 c = {r.x + r.width * 0.5f, r.y + r.height * 0.5f};
-  float s = std::min(r.width, r.height) * 0.5f;
-  Vector2 p1 = {c.x - s * 0.5f, c.y};
-  Vector2 p2 = {c.x - s * 0.1f, c.y + s * 0.45f};
-  Vector2 p3 = {c.x + s * 0.55f, c.y - s * 0.45f};
-  DrawLineEx(p1, p2, 2.0f, color);
-  DrawLineEx(p2, p3, 2.0f, color);
+  raym3::Renderer::DrawCheckmark(r, color);
 }
 
 static void PaintCheckboxControl(Rectangle layout, bool selected,
@@ -1719,22 +1713,12 @@ NodePtr MaterialComponent(M3Component component, const ComponentProps &props,
     TextProps textProps;
     textProps.style.text = style.text;
     children.push_back(Text(props.label, textProps));
-  } else if (component == M3Component::Badge && !props.label.empty() && children.empty()) {
-    TextProps textProps;
-    textProps.style.text = style.text;
-    children.push_back(Text(props.label, textProps));
-  } else if ((component == M3Component::SegmentedButton ||
-              component == M3Component::ButtonGroup) &&
-             !props.label.empty() && children.empty()) {
-    // Item text: no explicit height so the parent's justifyContent:Center
-    // vertically centers the auto-sized text node within the 40dp item cell.
-    TextProps textProps;
-    textProps.style.text = style.text;
-    children.push_back(Text(props.label, textProps));
   } else if (!props.label.empty() && children.empty()) {
+    // Label text is content-sized, like an HTML text node: the container's
+    // alignItems/justifyContent place it. Copying the container's width and
+    // height onto the text made it overflow siblings (chip checkmark) and pinned
+    // glyphs to the top of the box instead of centering them.
     TextProps textProps;
-    textProps.style.width = style.width;
-    textProps.style.height = style.height;
     textProps.style.text = style.text;
     children.push_back(Text(props.label, textProps));
   }

@@ -8,6 +8,8 @@ raym3 is a Material Design 3 inspired immediate-mode GUI library built on raylib
 
 ![raym3 demo](media/demo.gif)
 
+The clip is a fresh capture of the v2 demo: same-frame layout, an editable text field, notification badge, selected chip, navigation indicator, bottom-sheet motion, carousel, checkbox motion, and shape morphs. The GIF is a visual sampler; the v2 component catalog and text/font/rendering features are listed below.
+
 ## Features
 
 - **Material Design 3 Inspired** - Implements Material Design 3 design principles and components
@@ -31,7 +33,7 @@ raym3 currently implements the following Material Design 3 components:
 ### Input Components
 - **Button** - Text, Filled, Outlined, Tonal, Elevated variants with keyboard activation and optional tooltips
 - **IconButton** - Buttons with Material Design icons, keyboard activation, and optional tooltips
-- **TextField** - Single-line text input with word/line navigation, drag selection, triple-click select all, Escape to revert, and I-beam cursor
+- **TextField** - Single-line text input with word/line navigation, double-click word selection, triple-click select all, word/character drag extension, Escape to revert, and I-beam cursor
 - **SearchBar** - M3 contained search input with leading/trailing icon slots
 - **Checkbox** - Standard checkbox with label, keyboard activation (Space/Enter), pointer cursor, and optional tooltips
 - **Switch** - Toggle switch with keyboard activation (Space/Enter), pointer cursor, and optional tooltips
@@ -65,7 +67,20 @@ raym3 currently implements the following Material Design 3 components:
 - **Snackbar** - Temporary notification messages
 - **TabBar** - Browser-style tab bar with closeable tabs, drag reorder, icons, and tooltips
 
-**Note:** This is a partial implementation of Material Design 3. Some components from the full specification (such as NavigationDrawer, DataTables, BottomSheet, SideSheet, Carousel, Date/Time Pickers, etc.) are not yet implemented as first-class immediate-mode components.
+**Note:** This is a partial implementation of Material Design 3. The immediate-mode list above names the established `raym3::` components. The `raym3::v2` catalog is broader, but catalog presence does not guarantee a complete spec implementation: some entries use generic token-driven rendering. See [the v2 guide](docs/v2-upgrade.md) and [component audit](docs/m3-component-browser-audit.md) for coverage and limitations.
+
+### Composable v2 API
+
+The v2 API builds a persistent `View` tree and lays it out in the current frame. Alongside `View`, `Text`, `TextInput`, `Button`, and custom render nodes, its `M3Component` catalog names: AppBar, Badge, Banner, BottomAppBar, BottomSheet, DataTable, DockedToolbar, FloatingToolbar, ButtonGroup, Button, Card, Carousel, Checkbox, Chip, DatePicker, Dialog, Divider, ExtendedFab, Fab, FabMenu, IconButton, List, LoadingIndicator, Menu, MenuItem, NavigationBar, NavigationBarItem, NavigationDrawer, NavigationRail, ProgressIndicator, RadioButton, RangeSlider, Search, SegmentedButton, SideSheet, Slider, Snackbar, SplitButton, Switch, Tabs, TextField, TimePicker, Toolbar, Tooltip, and Popover.
+
+Core v2 capabilities include:
+
+- Same-frame layout, retained node identity, transforms, rounded overflow clipping, and clipped hit testing.
+- CSS-like styles, multi-layer and linear/conic gradients, transitions, density and OS font scaling, text spans, selection geometry, and selectable text.
+- Text input with caret/selection, word navigation, multi-click selection and drag extension, plus host hooks for clipboard, haptics, and native editor integration.
+- Native system UI font selection, CSS family/weight/style resolution, missing-glyph fallback, SVG view rendering, and platform emoji font support.
+
+Component details and implementation caveats are tracked in the [v2 guide](docs/v2-upgrade.md). Start with [v2 best practices](docs/v2-best-practices.md) when wiring up an app: it covers the build options, retained trees, and the per-frame input loop.
 
 ## Quick Start
 
@@ -212,13 +227,24 @@ add_subdirectory(raym3)
 target_link_libraries(your_target raym3)
 ```
 
-### With Yoga Layout Support
+### Yoga Layout (on by default)
+
+v2 layout uses Yoga flexbox, so `alignItems`, `justifyContent` and the rest behave like CSS. It is fetched automatically, or found as a sibling `yoga` directory. To use your own copy:
 
 ```cmake
 add_subdirectory(yoga)
-set(RAYM3_USE_YOGA ON CACHE BOOL "" FORCE)
 add_subdirectory(raym3)
 target_link_libraries(your_target raym3)
+```
+
+`RAYM3_USE_YOGA=OFF` swaps in a basic stacking layout that ignores flex alignment.
+
+### Anti-aliasing (on by default)
+
+raym3 requests 4x MSAA for the raylib window, so shapes have smooth edges. The request happens before `main()`, so no code is needed. To turn it off:
+
+```cmake
+set(RAYM3_ANTIALIASING OFF CACHE BOOL "" FORCE)
 ```
 
 ### Font Configuration (Project-Agnostic)
@@ -476,6 +502,11 @@ This brings in the work done for [Rayact](https://github.com/raythings/rayact): 
 - Added cached inline SVG document rendering with RGBA fill and opacity support.
 - Fixed transformed rounded overflow clipping and descendant hit testing, along with renderer resource lifetime and frame-stat handling.
 - Improved emoji font selection and rendering across supported platforms.
+- Yoga flexbox layout and 4x MSAA anti-aliasing are on by default (`RAYM3_USE_YOGA`, `RAYM3_ANTIALIASING`). v1 `Layout` was a no-op without Yoga.
+- v2 TextInput follows HTML input rules with a mouse: mousedown focuses, double-click selects a word, drag extends by words, `autoFocus` works.
+- Cursor no longer flickers or sticks as an I-beam; `EndFrame` only changes the OS cursor when the request changes.
+- v1 checkbox, radio, and switch draw vector marks instead of an icon font raym3 does not ship.
+- New `example_v1_demo`, rebuilt v2 demo, and docs: [v2 best practices](docs/v2-best-practices.md) and [v1 immediate mode](docs/v1.md).
 
 #### Added
 - Selectable `Text` (`TextStyle::selectable`) with shared selection geometry, and styled spans inside one `Text` node.

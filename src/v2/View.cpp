@@ -1,4 +1,5 @@
 #include "raym3/v2/View.h"
+#include "raym3/v2/Input.h"
 
 #include "raym3/styles/Theme.h"
 
@@ -94,6 +95,9 @@ NodePtr TextInput(const TextInputProps &props) {
   } else if (props.buffer) {
     node->inputScratch = props.buffer;
   }
+  // HTML/react-native autofocus: focus the field when it is created.
+  if (props.autoFocus)
+    SetFocusedId(IdOf(node));
   return node;
 }
 
