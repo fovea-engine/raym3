@@ -18,6 +18,9 @@ raym3 is a Material Design 3 inspired immediate-mode GUI library built on raylib
 - **Roboto Font Support** - Roboto v3 (from roboto-3-classic); can be loaded from disk or embedded for portable deployment
 - **Light and Dark Themes** - Full theme support with Material Design 3 color system
 - **SVG Icon Support** - Material Design icons with multiple variations (filled, outlined, round, sharp, two-tone)
+- **Inline SVG Rendering** - Rasterize and cache arbitrary SVG documents, including RGBA fills and opacity
+- **Platform Font Fallback** - Native system UI fonts by default, CSS-family resolution, and glyph coverage fallback
+- **Transformed Overflow Clipping** - Rounded clipping and hit testing follow nested rotation and scale transforms
 - **Zero External Dependencies** - Can be built as a standalone library (raylib is fetched automatically)
 - **Scissor Stack API** - Stack-based clipping with `PushScissor`/`PopScissor`, debug visualization
 
@@ -149,6 +152,19 @@ The TextField component supports several advanced features:
 - **Undo/Redo**: Built-in support with configurable history depth via `maxUndoHistory`
 - **Icons**: Add `leadingIcon` and `trailingIcon` with click callbacks
 - **Read-Only**: Set `readOnly = true` to prevent editing
+- **Multi-click Selection**: Completed stationary double/triple clicks select words or all text; dragging after a multi-click extends the selection by word or character
+
+### SVG Rendering
+
+`raym3::SvgRenderer::DrawDocument(source, bounds, opacity)` renders an inline SVG document into a cached texture. Repeated source documents reuse the bounded cache. This supports native `v2::View` SVG rendering as well as direct `raym3` drawing. SVG fill RGBA and composed fill opacity are preserved.
+
+### Native Font Selection
+
+On native platforms the default body face follows the system UI font. CSS family stacks can resolve platform fonts by family, weight, and style, with system fallback faces selected for missing glyphs. Emscripten continues to use bundled Roboto. Embedded resources do not change the native default.
+
+### Rendering and Clipping
+
+Nested overflow clips account for rotation, scale, rounded corners, and hit testing. The renderer also fixes clipping balance, texture and atlas releases during a frame, and frame statistics when multiple rendering contexts are used.
 
 ### Menu Component Features
 
@@ -207,14 +223,14 @@ target_link_libraries(your_target raym3)
 
 ### Font Configuration (Project-Agnostic)
 
-raym3 uses Roboto v3.015 from [roboto-3-classic](https://github.com/googlefonts/roboto-3-classic). The setup works for any project using raym3 (submodule or standalone) on macOS, Windows, Linux, Android, and Web/WASM:
+RayM3 supports Roboto v3.015 from [roboto-3-classic](https://github.com/googlefonts/roboto-3-classic). Native UI text defaults to the platform system UI face; Emscripten uses the bundled Roboto faces. This applies to projects using RayM3 as a submodule or standalone on macOS, Windows, Linux, Android, and Web/WASM.
 
-- **Default**: Fonts are downloaded at configure time to the build directory and loaded from disk at runtime.
-- **Embedded** (recommended for packaged apps): Set `RAYM3_EMBED_FONTS=ON` to embed Roboto into the binary—no font files needed at runtime.
-- **Offline/Override**: Set `ROBOTO_FONTS_DIR` to a path with `Roboto-Regular.ttf` and `Roboto-Bold.ttf` to use pre-downloaded fonts.
+- **Native UI default**: SF, Segoe UI, or the platform fontconfig-selected face. It remains the default whether resources are embedded or not.
+- **Web UI default**: bundled Roboto regular/bold faces; no system font file lookup is required.
+- **Resource embedding** (`RAYM3_EMBED_RESOURCES`): controls icon/resource embedding and does not switch the native system UI font to Roboto.
 
 ```cmake
-set(RAYM3_EMBED_FONTS ON CACHE BOOL "" FORCE)  # For portable deployment
+set(RAYM3_EMBED_RESOURCES ON CACHE BOOL "" FORCE)  # Bundle icon/resources
 add_subdirectory(raym3)
 ```
 
@@ -381,7 +397,7 @@ raym3 is built using the following excellent open-source projects:
 - **[Roboto Font Family](https://github.com/googlefonts/roboto-3-classic)** (v3.015) - Material Design typeface
   - License: Apache License 2.0
   - Copyright (c) Google LLC
-  - Downloaded at configure time or embedded via `RAYM3_EMBED_FONTS`
+  - Native builds default to the system UI face; Emscripten defaults to bundled Roboto
 
 ### Design System
 
@@ -417,7 +433,7 @@ If you find raym3 useful and would like to support its development, you can:
 
 ## Project Status
 
-raym3 is an independent, self-contained project. Icons come from the material-design-icons submodule. Fonts (Roboto) are auto-downloaded at configure time or can be embedded—no manual setup required for any platform.
+raym3 is an independent, self-contained project. Icons come from the material-design-icons submodule. Native UI text uses the platform system font by default, while Emscripten uses bundled Roboto. Resource embedding does not change the native font default.
 
 **Current Status:** Partial implementation of Material Design 3 components. The library is functional and ready to use, but many components from the full Material Design 3 specification are not yet implemented.
 
@@ -443,7 +459,7 @@ This brings in the work done for [Rayact](https://github.com/raythings/rayact): 
 - **Gradient angles follow CSS.** `0` points up and angles run clockwise, so `180` is top to bottom and `90` is left to right. Before, angles snapped to four blends and `90` painted top to bottom. Multi-stop gradients now honour every stop. Rewrite `90` as `180` for a vertical gradient.
 - **Alpha is honoured** for `backgroundColor` and `borderColor`. Semi-transparent colours used to paint opaque.
 - **`font-size` is the em size.** Text draws roughly 10-15% larger than before (a 24 px label measured about 11% wider) and wraps sooner, so layouts shift.
-- **The default font on native platforms is the system UI font** (SF, Segoe UI, fontconfig), not Roboto. Roboto is only embedded for Emscripten.
+- **The default font on native platforms is the system UI font** (SF, Segoe UI, fontconfig), not Roboto. Roboto is the default only on Emscripten.
 - **Long unbreakable words wrap at the line width.** They used to produce one letter per line.
 - **OS text scale** applies to text and text fields once the host calls `Density::SetFontScale`. The default is 1.0, so nothing changes until then. Opt out per run with `allowFontScaling = false`.
 - **Node ids are never reused.** `DisposeNode` now removes the node from its parent, and clears `root` if the root is disposed. It used to stay alive and keep painting.

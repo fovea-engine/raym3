@@ -57,6 +57,10 @@ public:
 
   static Font LoadFont(FontWeight weight = FontWeight::Regular,
                        FontStyle style = FontStyle::Normal, int size = 16);
+  // Lazily load a system fallback face for glyphs absent from the selected
+  // CSS font. The fallback atlas is cached by size and grows as needed.
+  static Font LoadSystemFallbackFont(int size,
+                                     const std::vector<int> &codepoints);
   static Font LoadCustomFont(const std::string &path, int size,
                              const std::vector<int> &codepoints = {});
 
@@ -131,6 +135,8 @@ private:
   static std::vector<int> SortedCodepoints(const std::unordered_set<int> &set);
 
   static std::unordered_map<FontKey, CachedFont, FontKeyHash> fontCache_;
+  static std::unordered_map<int, CachedFont> fallbackFontCache_;
+  static std::unordered_map<int, std::string> fallbackPathCache_;
   static Font defaultFont_;
   static bool initialized_;
   static float dpiScale_;

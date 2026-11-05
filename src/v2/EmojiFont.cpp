@@ -16,7 +16,9 @@ namespace {
 inline std::uint16_t RdU16(const std::uint8_t *p) {
   return (std::uint16_t)((p[0] << 8) | p[1]);
 }
-inline std::int16_t RdS16(const std::uint8_t *p) { return (std::int16_t)RdU16(p); }
+inline std::int16_t RdS16(const std::uint8_t *p) {
+  return (std::int16_t)RdU16(p);
+}
 inline std::uint32_t RdU32(const std::uint8_t *p) {
   return ((std::uint32_t)p[0] << 24) | ((std::uint32_t)p[1] << 16) |
          ((std::uint32_t)p[2] << 8) | p[3];
@@ -32,26 +34,19 @@ inline bool IsRegionalIndicator(std::uint32_t cp) {
   return cp >= 0x1F1E6 && cp <= 0x1F1FF;
 }
 inline bool IsEmojiExtend(std::uint32_t cp) {
-  return cp == 0x200D ||
-         (cp >= 0xFE00 && cp <= 0xFE0F) ||
-         (cp >= 0x1F3FB && cp <= 0x1F3FF) ||
-         cp == 0x20E3 ||
+  return cp == 0x200D || (cp >= 0xFE00 && cp <= 0xFE0F) ||
+         (cp >= 0x1F3FB && cp <= 0x1F3FF) || cp == 0x20E3 ||
          (cp >= 0xE0020 && cp <= 0xE007F);
 }
 inline bool IsEmojiStart(std::uint32_t cp) {
-  return (cp >= 0x1F000 && cp <= 0x1FAFF) ||
-         (cp >= 0x2600  && cp <= 0x27BF)  ||
-         (cp >= 0x2B00  && cp <= 0x2BFF)  ||
-         (cp >= 0x2300  && cp <= 0x23FF)  ||
+  return (cp >= 0x1F000 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF) ||
+         (cp >= 0x2B00 && cp <= 0x2BFF) || (cp >= 0x2300 && cp <= 0x23FF) ||
          cp == 0x203C || cp == 0x2049 ||
          (cp == 0x2194 || cp == 0x2195 || cp == 0x2196 || cp == 0x2197 ||
           cp == 0x2198 || cp == 0x2199 || cp == 0x21A9 || cp == 0x21AA) ||
-         cp == 0x2122 || cp == 0x2139 ||
-         (cp >= 0x25AA && cp <= 0x25FF) ||
-         (cp >= 0x2934 && cp <= 0x2935) ||
-         cp == 0x3030 || cp == 0x303D ||
-         cp == 0x3297 || cp == 0x3299 ||
-         IsRegionalIndicator(cp);
+         cp == 0x2122 || cp == 0x2139 || (cp >= 0x25AA && cp <= 0x25FF) ||
+         (cp >= 0x2934 && cp <= 0x2935) || cp == 0x3030 || cp == 0x303D ||
+         cp == 0x3297 || cp == 0x3299 || IsRegionalIndicator(cp);
 }
 inline bool IsKeycapBase(std::uint32_t cp) {
   return cp == 0x23 || cp == 0x2A || (cp >= 0x30 && cp <= 0x39);
@@ -71,11 +66,22 @@ std::uint32_t DecodeUtf8(std::string_view s, std::size_t &i) {
   unsigned char c = (unsigned char)s[i];
   std::uint32_t cp;
   std::size_t extra;
-  if (c < 0x80) { cp = c; extra = 0; }
-  else if (c < 0xC0) { i++; return 0xFFFD; }
-  else if (c < 0xE0) { cp = c & 0x1F; extra = 1; }
-  else if (c < 0xF0) { cp = c & 0x0F; extra = 2; }
-  else { cp = c & 0x07; extra = 3; }
+  if (c < 0x80) {
+    cp = c;
+    extra = 0;
+  } else if (c < 0xC0) {
+    i++;
+    return 0xFFFD;
+  } else if (c < 0xE0) {
+    cp = c & 0x1F;
+    extra = 1;
+  } else if (c < 0xF0) {
+    cp = c & 0x0F;
+    extra = 2;
+  } else {
+    cp = c & 0x07;
+    extra = 3;
+  }
   i++;
   for (std::size_t k = 0; k < extra && i < s.size(); ++k, ++i)
     cp = (cp << 6) | ((unsigned char)s[i] & 0x3F);
@@ -85,14 +91,17 @@ std::uint32_t DecodeUtf8(std::string_view s, std::size_t &i) {
 // ISO country/region flags are exactly two Regional Indicator symbols.
 inline bool IsFlagClusterUtf8(std::string_view utf8) {
   std::size_t i = 0;
-  if (i >= utf8.size()) return false;
+  if (i >= utf8.size())
+    return false;
   const std::uint32_t a = DecodeUtf8(utf8, i);
-  if (i >= utf8.size()) return false;
+  if (i >= utf8.size())
+    return false;
   const std::uint32_t b = DecodeUtf8(utf8, i);
   return i == utf8.size() && IsRegionalIndicator(a) && IsRegionalIndicator(b);
 }
 
-// Canonical raster size for OS/CBDT backends — drawn at this px, scaled at draw time.
+// Canonical raster size for OS/CBDT backends — drawn at this px, scaled at draw
+// time.
 static constexpr int kRasterPx = 128;
 
 } // namespace
@@ -119,10 +128,14 @@ bool EmojiFont::Available() {
 EmojiFont::BackendKind EmojiFont::ActiveBackend() {
   EnsureBackend();
   switch (backend_) {
-    case Backend::Raster: return BackendKind::OsRasterizer;
-    case Backend::Cbdt:   return BackendKind::Bundled;
-    case Backend::None:   return BackendKind::None;
-    default:              return BackendKind::Unresolved;
+  case Backend::Raster:
+    return BackendKind::OsRasterizer;
+  case Backend::Cbdt:
+    return BackendKind::Bundled;
+  case Backend::None:
+    return BackendKind::None;
+  default:
+    return BackendKind::Unresolved;
   }
 }
 
@@ -131,12 +144,14 @@ EmojiFont::BackendKind EmojiFont::ActiveBackend() {
 // has no emoji coverage at all, in which case every cluster would come back
 // blank — better to discover that once here than silently render nothing.
 bool EmojiFont::ProbeRasterizer() {
-  if (!rasterizer_) return false;
+  if (!rasterizer_)
+    return false;
   int w = 0, h = 0;
   // U+1F600 GRINNING FACE — in every emoji font since Unicode 6.1.
   unsigned char *rgba = rasterizer_("\xF0\x9F\x98\x80", 32, &w, &h);
   if (!rgba || w <= 0 || h <= 0) {
-    if (rgba) std::free(rgba);
+    if (rgba)
+      std::free(rgba);
     return false;
   }
   bool anyInk = false;
@@ -147,7 +162,8 @@ bool EmojiFont::ProbeRasterizer() {
 }
 
 void EmojiFont::EnsureBackend() {
-  if (backend_ != Backend::Unresolved) return;
+  if (backend_ != Backend::Unresolved)
+    return;
 
   if (rasterizer_) {
     if (ProbeRasterizer()) {
@@ -159,9 +175,10 @@ void EmojiFont::EnsureBackend() {
     // in a bundled ~10 MB CBDT font. Only an explicit loadEmoji() /
     // RegisterCustomEmojiFont seed opts into CBDT when a rasterizer was set.
     if (customFontBytes_.empty()) {
-      TraceLog(LOG_WARNING,
-               "EmojiFont: OS rasterizer produced no ink for U+1F600 — "
-               "no emoji backend (bundled CBDT is not used as automatic fallback)");
+      TraceLog(
+          LOG_WARNING,
+          "EmojiFont: OS rasterizer produced no ink for U+1F600 — "
+          "no emoji backend (bundled CBDT is not used as automatic fallback)");
       backend_ = Backend::None;
       return;
     }
@@ -199,7 +216,8 @@ void EmojiFont::RegisterCustomEmojiFont(std::vector<std::uint8_t> bytes) {
 }
 
 bool EmojiFont::LoadCbdtFont() {
-  if (fontParsed_) return !cmap_.empty() && !strike_.empty();
+  if (fontParsed_)
+    return !cmap_.empty() && !strike_.empty();
   fontParsed_ = true;
 
   std::string path;
@@ -208,32 +226,44 @@ bool EmojiFont::LoadCbdtFont() {
     path = "<custom emoji font bytes>";
   } else {
     const std::vector<std::string> candidates = {
-        // Linux: system emoji fonts (checked before bundled to avoid shipping 10 MB)
-        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",        // Ubuntu/Debian
-        "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",    // Fedora
-        "/usr/share/fonts/noto/NotoColorEmoji.ttf",                 // openSUSE / Arch
+        // Linux: system emoji fonts (checked before bundled to avoid shipping
+        // 10 MB)
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", // Ubuntu/Debian
+        "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf", // Fedora
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf", // openSUSE / Arch
         "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf",
         "/usr/share/fonts/NotoColorEmoji.ttf",
         // Bundled / MEMFS paths — Linux desktop packages and the web embed.
-        // Apple / Android / Windows use an OS rasterizer and do not ship this file.
+        // Apple / Android / Windows use an OS rasterizer and do not ship this
+        // file.
         std::string(RAYM3_RESOURCE_DIR) + "/fonts/NotoColorEmoji.ttf",
         "./resources/fonts/NotoColorEmoji.ttf",
         "./raym3/resources/fonts/NotoColorEmoji.ttf",
         "NotoColorEmoji.ttf",
     };
     for (const auto &c : candidates)
-      if (std::filesystem::exists(c)) { path = c; break; }
-    if (path.empty()) return false;
+      if (std::filesystem::exists(c)) {
+        path = c;
+        break;
+      }
+    if (path.empty())
+      return false;
 
     FILE *f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
+    if (!f)
+      return false;
     std::fseek(f, 0, SEEK_END);
     long sz = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
-    if (sz <= 0) { std::fclose(f); return false; }
+    if (sz <= 0) {
+      std::fclose(f);
+      return false;
+    }
     data_.resize((std::size_t)sz);
     if (std::fread(data_.data(), 1, (std::size_t)sz, f) != (std::size_t)sz) {
-      std::fclose(f); data_.clear(); return false;
+      std::fclose(f);
+      data_.clear();
+      return false;
     }
     std::fclose(f);
   }
@@ -242,7 +272,8 @@ bool EmojiFont::LoadCbdtFont() {
 }
 
 bool EmojiFont::LoadFlagsCbdtFont() {
-  if (flagsFontResolved_) return flagsFontOk_;
+  if (flagsFontResolved_)
+    return flagsFontOk_;
   flagsFontResolved_ = true;
 
   // Full/custom CBDT already parsed (Linux / loadEmoji) — it has flags too.
@@ -263,7 +294,10 @@ bool EmojiFont::LoadFlagsCbdtFont() {
   };
   std::string path;
   for (const auto &c : candidates)
-    if (std::filesystem::exists(c)) { path = c; break; }
+    if (std::filesystem::exists(c)) {
+      path = c;
+      break;
+    }
   if (path.empty()) {
     flagsFontOk_ = false;
     return false;
@@ -299,24 +333,38 @@ bool EmojiFont::LoadFlagsCbdtFont() {
 bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
   const std::uint8_t *base = data_.data();
   const std::size_t total = data_.size();
-  if (total < 12) return false;
+  if (total < 12)
+    return false;
 
   std::uint16_t numTables = RdU16(base + 4);
   std::uint32_t cmapOff = 0, cblcOff = 0, gsubOff = 0;
   std::uint32_t cmapLen = 0, cblcLen = 0, gsubLen = 0;
   std::size_t rec = 12;
   for (std::uint16_t i = 0; i < numTables; ++i, rec += 16) {
-    if (rec + 16 > total) break;
+    if (rec + 16 > total)
+      break;
     std::uint32_t tag = RdU32(base + rec);
     std::uint32_t off = RdU32(base + rec + 8);
     std::uint32_t len = RdU32(base + rec + 12);
-    if (tag == MakeTag("cmap")) { cmapOff = off; cmapLen = len; }
-    else if (tag == MakeTag("CBLC")) { cblcOff = off; cblcLen = len; }
-    else if (tag == MakeTag("CBDT")) { cbdtOffset_ = off; cbdtLength_ = len; }
-    else if (tag == MakeTag("GSUB")) { gsubOff = off; gsubLen = len; }
+    if (tag == MakeTag("cmap")) {
+      cmapOff = off;
+      cmapLen = len;
+    } else if (tag == MakeTag("CBLC")) {
+      cblcOff = off;
+      cblcLen = len;
+    } else if (tag == MakeTag("CBDT")) {
+      cbdtOffset_ = off;
+      cbdtLength_ = len;
+    } else if (tag == MakeTag("GSUB")) {
+      gsubOff = off;
+      gsubLen = len;
+    }
   }
-  (void)cmapLen; (void)cblcLen; (void)gsubLen;
-  if (!cmapOff || !cblcOff || !cbdtOffset_) return false;
+  (void)cmapLen;
+  (void)cblcLen;
+  (void)gsubLen;
+  if (!cmapOff || !cblcOff || !cbdtOffset_)
+    return false;
 
   // ── cmap ──────────────────────────────────────────────────────────────
   {
@@ -331,12 +379,20 @@ bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
       const std::uint8_t *s = cm + subOff;
       std::uint16_t fmt = RdU16(s);
       int score = -1;
-      if (fmt == 12 && plat == 3 && enc == 10) score = 5;
-      else if (fmt == 12 && plat == 0) score = 4;
-      else if (fmt == 12) score = 3;
-      else if (fmt == 4 && plat == 3 && enc == 1) score = 2;
-      else if (fmt == 4) score = 1;
-      if (score > bestScore) { bestScore = score; best = subOff; }
+      if (fmt == 12 && plat == 3 && enc == 10)
+        score = 5;
+      else if (fmt == 12 && plat == 0)
+        score = 4;
+      else if (fmt == 12)
+        score = 3;
+      else if (fmt == 4 && plat == 3 && enc == 1)
+        score = 2;
+      else if (fmt == 4)
+        score = 1;
+      if (score > bestScore) {
+        bestScore = score;
+        best = subOff;
+      }
     }
     if (best) {
       const std::uint8_t *s = cm + best;
@@ -364,10 +420,13 @@ bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
               cmap_.push_back({c, c, (std::uint16_t)(c + delta)});
           } else {
             for (std::uint32_t c = startC; c <= endC && c != 0xFFFF; ++c) {
-              const std::uint8_t *gp = idRange + i * 2 + rangeOff + (c - startC) * 2;
-              if (gp + 2 > base + total) break;
+              const std::uint8_t *gp =
+                  idRange + i * 2 + rangeOff + (c - startC) * 2;
+              if (gp + 2 > base + total)
+                break;
               std::uint16_t gi = RdU16(gp);
-              if (gi != 0) gi = (std::uint16_t)(gi + delta);
+              if (gi != 0)
+                gi = (std::uint16_t)(gi + delta);
               cmap_.push_back({c, c, gi});
             }
           }
@@ -375,7 +434,9 @@ bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
       }
     }
     std::sort(cmap_.begin(), cmap_.end(),
-              [](const CmapRange &a, const CmapRange &b) { return a.start < b.start; });
+              [](const CmapRange &a, const CmapRange &b) {
+                return a.start < b.start;
+              });
   }
 
   // ── GSUB ligatures (type 4 + extension type 7) ────────────────────────
@@ -399,9 +460,11 @@ bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
           std::uint32_t extOff = RdU32(st + 4);
           ligSub = st + extOff;
         }
-        if (effType != 4) continue;
+        if (effType != 4)
+          continue;
         std::uint16_t substFormat = RdU16(ligSub);
-        if (substFormat != 1) continue;
+        if (substFormat != 1)
+          continue;
         std::uint16_t covOff = RdU16(ligSub + 2);
         std::uint16_t ligSetCount = RdU16(ligSub + 4);
         const std::uint8_t *cov = ligSub + covOff;
@@ -420,7 +483,8 @@ bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
               covGlyphs.push_back((std::uint16_t)gg);
           }
         }
-        for (std::uint16_t i = 0; i < ligSetCount && i < (std::uint16_t)covGlyphs.size(); ++i) {
+        for (std::uint16_t i = 0;
+             i < ligSetCount && i < (std::uint16_t)covGlyphs.size(); ++i) {
           std::uint16_t firstGlyph = covGlyphs[i];
           std::uint16_t ligSetOff = RdU16(ligSub + 6 + i * 2);
           const std::uint8_t *ls = ligSub + ligSetOff;
@@ -461,7 +525,8 @@ bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
       std::uint8_t ppemX = e[44];
       if ((float)ppemX > bestPpem) {
         bestPpem = (float)ppemX;
-        bestArrOff = arrOff; bestNumSub = numSub;
+        bestArrOff = arrOff;
+        bestNumSub = numSub;
       }
     }
     strikePpem_ = bestPpem > 0 ? bestPpem : 128.0f;
@@ -472,8 +537,10 @@ bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
       std::uint32_t addOff = RdU32(a + 4);
       const std::uint8_t *ist = arr + addOff;
       IndexSubTable t;
-      t.firstGlyph = firstG; t.lastGlyph = lastG;
-      t.indexFormat = RdU16(ist); t.imageFormat = RdU16(ist + 2);
+      t.firstGlyph = firstG;
+      t.lastGlyph = lastG;
+      t.indexFormat = RdU16(ist);
+      t.imageFormat = RdU16(ist + 2);
       t.imageDataOffset = RdU32(ist + 4);
       std::uint32_t n = (std::uint32_t)(lastG - firstG + 1);
       if (t.indexFormat == 1) {
@@ -508,9 +575,10 @@ bool EmojiFont::ParseLoadedCbdtFont(const std::string &path) {
                     path != "NotoColorEmoji-Flags.ttf" &&
                     path.find("<custom") == std::string::npos;
     TraceLog(LOG_INFO,
-             "EmojiFont: loaded CBDT %s (%s, cmap ranges=%zu, ligatures=%zu, strike ppem=%.0f)",
-             path.c_str(), isSystem ? "system" : "bundled",
-             cmap_.size(), ligatures_.size(), strikePpem_);
+             "EmojiFont: loaded CBDT %s (%s, cmap ranges=%zu, ligatures=%zu, "
+             "strike ppem=%.0f)",
+             path.c_str(), isSystem ? "system" : "bundled", cmap_.size(),
+             ligatures_.size(), strikePpem_);
   }
   return ok;
 }
@@ -521,9 +589,12 @@ std::uint16_t EmojiFont::GlyphForCodepoint(std::uint32_t cp) const {
   std::size_t lo = 0, hi = cmap_.size();
   while (lo < hi) {
     std::size_t mid = (lo + hi) / 2;
-    if (cp < cmap_[mid].start) hi = mid;
-    else if (cp > cmap_[mid].end) lo = mid + 1;
-    else return (std::uint16_t)(cmap_[mid].startGlyph + (cp - cmap_[mid].start));
+    if (cp < cmap_[mid].start)
+      hi = mid;
+    else if (cp > cmap_[mid].end)
+      lo = mid + 1;
+    else
+      return (std::uint16_t)(cmap_[mid].startGlyph + (cp - cmap_[mid].start));
   }
   return 0;
 }
@@ -532,14 +603,22 @@ std::size_t EmojiFont::MatchLigature(const std::vector<std::uint16_t> &glyphs,
                                      std::size_t pos,
                                      std::uint16_t &outGlyph) const {
   auto it = ligatures_.find(glyphs[pos]);
-  if (it == ligatures_.end()) return 0;
+  if (it == ligatures_.end())
+    return 0;
   for (const Ligature &lig : it->second) {
     std::size_t n = lig.components.size();
-    if (pos + n > glyphs.size()) continue;
+    if (pos + n > glyphs.size())
+      continue;
     bool ok = true;
     for (std::size_t k = 0; k < n; ++k)
-      if (glyphs[pos + k] != lig.components[k]) { ok = false; break; }
-    if (ok) { outGlyph = lig.ligatureGlyph; return n; }
+      if (glyphs[pos + k] != lig.components[k]) {
+        ok = false;
+        break;
+      }
+    if (ok) {
+      outGlyph = lig.ligatureGlyph;
+      return n;
+    }
   }
   return 0;
 }
@@ -550,9 +629,11 @@ std::uint16_t EmojiFont::ShapeCluster(std::string_view clusterUtf8) const {
   for (std::size_t i = 0; i < clusterUtf8.size();) {
     std::uint32_t cp = DecodeUtf8(clusterUtf8, i);
     std::uint16_t g = GlyphForCodepoint(cp);
-    if (g != 0) glyphs.push_back(g);
+    if (g != 0)
+      glyphs.push_back(g);
   }
-  if (glyphs.empty()) return 0;
+  if (glyphs.empty())
+    return 0;
   std::size_t k = 0;
   while (k < glyphs.size()) {
     std::uint16_t ligGlyph = 0;
@@ -570,14 +651,20 @@ std::uint16_t EmojiFont::ShapeCluster(std::string_view clusterUtf8) const {
 bool EmojiFont::DecodeGlyphBitmap(std::uint16_t glyphId, Glyph &out) const {
   const IndexSubTable *t = nullptr;
   for (const auto &s : strike_)
-    if (glyphId >= s.firstGlyph && glyphId <= s.lastGlyph) { t = &s; break; }
-  if (!t) return false;
+    if (glyphId >= s.firstGlyph && glyphId <= s.lastGlyph) {
+      t = &s;
+      break;
+    }
+  if (!t)
+    return false;
 
   std::uint32_t recOff = 0;
   if (t->indexFormat == 1 || t->indexFormat == 3) {
     std::uint32_t gi = (std::uint32_t)(glyphId - t->firstGlyph);
-    if (gi + 1 >= t->offsets.size()) return false;
-    if (t->offsets[gi + 1] == t->offsets[gi]) return false;
+    if (gi + 1 >= t->offsets.size())
+      return false;
+    if (t->offsets[gi + 1] == t->offsets[gi])
+      return false;
     recOff = t->imageDataOffset + t->offsets[gi];
   } else if (t->indexFormat == 2) {
     std::uint32_t gi = (std::uint32_t)(glyphId - t->firstGlyph);
@@ -585,24 +672,33 @@ bool EmojiFont::DecodeGlyphBitmap(std::uint16_t glyphId, Glyph &out) const {
   } else if (t->indexFormat == 4 || t->indexFormat == 5) {
     std::size_t pos = SIZE_MAX;
     for (std::size_t k = 0; k < t->glyphArray.size(); ++k)
-      if (t->glyphArray[k] == glyphId) { pos = k; break; }
-    if (pos == SIZE_MAX) return false;
-    if (t->indexFormat == 4) recOff = t->imageDataOffset + t->offsets[pos];
-    else recOff = t->imageDataOffset + t->imageSize * (std::uint32_t)pos;
+      if (t->glyphArray[k] == glyphId) {
+        pos = k;
+        break;
+      }
+    if (pos == SIZE_MAX)
+      return false;
+    if (t->indexFormat == 4)
+      recOff = t->imageDataOffset + t->offsets[pos];
+    else
+      recOff = t->imageDataOffset + t->imageSize * (std::uint32_t)pos;
   } else {
     return false;
   }
 
   const std::uint8_t *base = data_.data();
   const std::uint8_t *rec = base + cbdtOffset_ + recOff;
-  if (rec + 4 > base + data_.size()) return false;
+  if (rec + 4 > base + data_.size())
+    return false;
 
   std::uint32_t metricsLen = 0;
   if (t->imageFormat == 17) {
-    out.pngHeight = rec[0]; out.pngWidth = rec[1];
+    out.pngHeight = rec[0];
+    out.pngWidth = rec[1];
     metricsLen = 5;
   } else if (t->imageFormat == 18) {
-    out.pngHeight = rec[0]; out.pngWidth = rec[1];
+    out.pngHeight = rec[0];
+    out.pngWidth = rec[1];
     metricsLen = 8;
   } else if (t->imageFormat == 19) {
     metricsLen = 0;
@@ -611,18 +707,22 @@ bool EmojiFont::DecodeGlyphBitmap(std::uint16_t glyphId, Glyph &out) const {
   }
 
   const std::uint8_t *p = rec + metricsLen;
-  if (p + 4 > base + data_.size()) return false;
+  if (p + 4 > base + data_.size())
+    return false;
   std::uint32_t dataLen = RdU32(p);
   p += 4;
-  if (p + dataLen > base + data_.size()) return false;
+  if (p + dataLen > base + data_.size())
+    return false;
 
   Image img = LoadImageFromMemory(".png", p, (int)dataLen);
-  if (img.data == nullptr || img.width <= 0) return false;
+  if (img.data == nullptr || img.width <= 0)
+    return false;
   out.pngWidth = img.width;
   out.pngHeight = img.height;
   Texture2D tex = LoadTextureFromImage(img);
   UnloadImage(img);
-  if (tex.id == 0) return false;
+  if (tex.id == 0)
+    return false;
   SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
   out.texture = tex;
   return true;
@@ -634,7 +734,8 @@ bool EmojiFont::DecodeGlyphBitmap(std::uint16_t glyphId, Glyph &out) const {
 // Raster and CBDT backends without accessing the font data).
 std::vector<EmojiFont::Segment> EmojiFont::SegmentText(std::string_view utf8) {
   std::vector<Segment> segs;
-  if (utf8.empty()) return segs;
+  if (utf8.empty())
+    return segs;
 
   std::vector<Cp> cps;
   for (std::size_t i = 0; i < utf8.size();) {
@@ -659,7 +760,8 @@ std::vector<EmojiFont::Segment> EmojiFont::SegmentText(std::string_view utf8) {
         startsEmoji = true;
     }
     if (!startsEmoji) {
-      if (textStart == std::string_view::npos) textStart = cps[i].byteStart;
+      if (textStart == std::string_view::npos)
+        textStart = cps[i].byteStart;
       ++i;
       continue;
     }
@@ -667,9 +769,19 @@ std::vector<EmojiFont::Segment> EmojiFont::SegmentText(std::string_view utf8) {
     std::size_t j = i + 1;
     while (j < n) {
       std::uint32_t c = cps[j].cp;
-      if (IsEmojiExtend(c)) { ++j; continue; }
-      if (cps[j - 1].cp == 0x200D && (IsEmojiStart(c) || IsKeycapBase(c))) { ++j; continue; }
-      if (IsRegionalIndicator(cps[i].cp) && IsRegionalIndicator(c) && (j - i) < 2) { ++j; continue; }
+      if (IsEmojiExtend(c)) {
+        ++j;
+        continue;
+      }
+      if (cps[j - 1].cp == 0x200D && (IsEmojiStart(c) || IsKeycapBase(c))) {
+        ++j;
+        continue;
+      }
+      if (IsRegionalIndicator(cps[i].cp) && IsRegionalIndicator(c) &&
+          (j - i) < 2) {
+        ++j;
+        continue;
+      }
       break;
     }
 
@@ -693,7 +805,8 @@ std::vector<EmojiFont::Segment> EmojiFont::SegmentText(std::string_view utf8) {
 
 const EmojiFont::Glyph *EmojiFont::GetCluster(std::string_view clusterUtf8) {
   EnsureBackend();
-  if (backend_ == Backend::None) return nullptr;
+  if (backend_ == Backend::None)
+    return nullptr;
 
   std::string key(clusterUtf8);
   auto it = clusterCache_.find(key);
@@ -717,7 +830,8 @@ const EmojiFont::Glyph *EmojiFont::GetCluster(std::string_view clusterUtf8) {
     int w = 0, h = 0;
     unsigned char *rgba = rasterizer_(key.c_str(), kRasterPx, &w, &h);
     if (!rgba || w <= 0 || h <= 0) {
-      if (rgba) std::free(rgba);
+      if (rgba)
+        std::free(rgba);
       g.failed = true;
       clusterCache_[key] = g;
       return nullptr;
@@ -755,20 +869,102 @@ const EmojiFont::Glyph *EmojiFont::GetCluster(std::string_view clusterUtf8) {
 
 void EmojiFont::ResetTextureCache() {
   for (auto &[k, g] : clusterCache_)
-    if (g.texture.id != 0) UnloadTexture(g.texture);
+    if (g.texture.id != 0)
+      UnloadTexture(g.texture);
   clusterCache_.clear();
 }
 
 // ── Draw / measure helpers ─────────────────────────────────────────────────
+
+namespace {
+
+struct FontRun {
+  Font font;
+  std::string text;
+};
+
+bool FontContainsGlyph(Font font, int codepoint) {
+  if (font.texture.id == 0 || !font.glyphs)
+    return false;
+  for (int i = 0; i < font.glyphCount; ++i)
+    if (font.glyphs[i].value == codepoint)
+      return true;
+  return false;
+}
+
+std::vector<FontRun> SplitByGlyphFallback(Font font, std::string_view utf8,
+                                          int size) {
+  struct Character {
+    std::size_t begin;
+    std::size_t end;
+    int codepoint;
+  };
+  std::vector<Character> characters;
+  std::vector<int> missing;
+  for (std::size_t offset = 0; offset < utf8.size();) {
+    const std::size_t begin = offset;
+    const int cp = static_cast<int>(DecodeUtf8(utf8, offset));
+    characters.push_back({begin, offset, cp});
+    if (cp > 127 && !FontContainsGlyph(font, cp))
+      missing.push_back(cp);
+  }
+  Font fallback = missing.empty()
+                      ? Font{0}
+                      : FontManager::LoadSystemFallbackFont(size, missing);
+  std::vector<FontRun> runs;
+  for (const Character &character : characters) {
+    Font selected = fallback.texture.id != 0 &&
+                            FontContainsGlyph(fallback, character.codepoint)
+                        ? fallback
+                        : font;
+    const std::string_view glyph =
+        utf8.substr(character.begin, character.end - character.begin);
+    if (runs.empty() || runs.back().font.texture.id != selected.texture.id)
+      runs.push_back({selected, {}});
+    runs.back().text.append(glyph.data(), glyph.size());
+  }
+  return runs;
+}
+
+void DrawTextWithFallback(Font font, std::string_view utf8, Vector2 pos,
+                          float fontSize, float spacing, Color tint) {
+  float x = pos.x;
+  for (const FontRun &run : SplitByGlyphFallback(
+           font, utf8, std::max(1, static_cast<int>(std::ceil(fontSize))))) {
+    DrawTextEx(run.font, run.text.c_str(), {x, pos.y}, fontSize, spacing, tint);
+    x += MeasureTextEx(run.font, run.text.c_str(), fontSize, spacing).x +
+         spacing;
+  }
+}
+
+Vector2 MeasureTextWithFallback(Font font, std::string_view utf8,
+                                float fontSize, float spacing) {
+  float width = 0.0f;
+  float height = fontSize;
+  for (const FontRun &run : SplitByGlyphFallback(
+           font, utf8, std::max(1, static_cast<int>(std::ceil(fontSize))))) {
+    Vector2 measured =
+        MeasureTextEx(run.font, run.text.c_str(), fontSize, spacing);
+    width += measured.x + spacing;
+    height = std::max(height, measured.y);
+  }
+  return {width, height};
+}
+
+} // namespace
 
 void DrawTextWithEmoji(Font font, std::string_view utf8, Vector2 pos,
                        float fontSize, float spacing, Color tint) {
   EmojiFont &ef = EmojiFont::Instance();
   auto segs = ef.SegmentText(utf8);
   bool anyEmoji = false;
-  for (const auto &s : segs) if (s.isEmoji) { anyEmoji = true; break; }
+  for (const auto &s : segs)
+    if (s.isEmoji) {
+      anyEmoji = true;
+      break;
+    }
   if (!anyEmoji || !ef.Available()) {
-    DrawTextEx(font, std::string(utf8).c_str(), pos, fontSize, spacing, tint);
+    DrawTextWithFallback(font, utf8, pos, fontSize, spacing, tint);
     return;
   }
 
@@ -776,20 +972,26 @@ void DrawTextWithEmoji(Font font, std::string_view utf8, Vector2 pos,
   for (const auto &s : segs) {
     std::string sub(utf8.substr(s.byteStart, s.byteEnd - s.byteStart));
     if (!s.isEmoji) {
-      DrawTextEx(font, sub.c_str(), {x, pos.y}, fontSize, spacing, tint);
-      x += MeasureTextEx(font, sub.c_str(), fontSize, spacing).x + spacing;
+      DrawTextWithFallback(font, sub, {x, pos.y}, fontSize, spacing, tint);
+      x += MeasureTextWithFallback(font, sub, fontSize, spacing).x + spacing;
     } else {
       const float box = fontSize;
       const EmojiFont::Glyph *g = ef.GetCluster(sub);
       if (g && g->texture.id != 0) {
         float aspect =
             g->pngHeight > 0 ? (float)g->pngWidth / (float)g->pngHeight : 1.0f;
-        float h = box, w = box * aspect;
-        // Keep ink inside the advance box — wide CBDT flags (e.g. 136×128) used
-        // to draw with dx < x and clip against the parent scissor/padding.
-        if (w > box) {
-          w = box;
-          h = box / aspect;
+        // CBDT/OS emoji rasters carry more transparent edge space than the
+        // browser's inline emoji glyphs. Keep the CSS em advance unchanged,
+        // but enlarge the painted ink slightly so it fills the same visual
+        // footprint as a native color-font glyph.
+        constexpr float kInkScale = 1.2f;
+        const float inkBox = box * kInkScale;
+        float h = inkBox, w = inkBox * aspect;
+        // Keep wide CBDT flags proportional while allowing emoji ink to
+        // overhang its em advance, as it does in browsers.
+        if (w > inkBox) {
+          w = inkBox;
+          h = inkBox / aspect;
         }
         float dx = x + (box - w) * 0.5f;
         float dy = pos.y + fontSize * 0.08f + (box - h) * 0.5f;
@@ -807,15 +1009,19 @@ Vector2 MeasureTextWithEmoji(Font font, std::string_view utf8, float fontSize,
   EmojiFont &ef = EmojiFont::Instance();
   auto segs = ef.SegmentText(utf8);
   bool anyEmoji = false;
-  for (const auto &s : segs) if (s.isEmoji) { anyEmoji = true; break; }
+  for (const auto &s : segs)
+    if (s.isEmoji) {
+      anyEmoji = true;
+      break;
+    }
   if (!anyEmoji || !ef.Available())
-    return MeasureTextEx(font, std::string(utf8).c_str(), fontSize, spacing);
+    return MeasureTextWithFallback(font, utf8, fontSize, spacing);
 
   float w = 0, h = fontSize;
   for (const auto &s : segs) {
     if (!s.isEmoji) {
       std::string sub(utf8.substr(s.byteStart, s.byteEnd - s.byteStart));
-      Vector2 m = MeasureTextEx(font, sub.c_str(), fontSize, spacing);
+      Vector2 m = MeasureTextWithFallback(font, sub, fontSize, spacing);
       w += m.x + spacing;
       h = std::max(h, m.y);
     } else {
@@ -831,10 +1037,14 @@ std::vector<std::size_t> EmojiAwareGraphemeBoundaries(std::string_view utf8) {
   std::vector<std::size_t> bounds;
   bounds.push_back(0);
 
-  if (utf8.empty()) return bounds;
+  if (utf8.empty())
+    return bounds;
 
   // Decode to codepoints with byte spans.
-  struct CpSpan { std::uint32_t cp; std::size_t start, end; };
+  struct CpSpan {
+    std::uint32_t cp;
+    std::size_t start, end;
+  };
   std::vector<CpSpan> cps;
   for (std::size_t i = 0; i < utf8.size();) {
     std::size_t s = i;
@@ -855,16 +1065,26 @@ std::vector<std::size_t> EmojiAwareGraphemeBoundaries(std::string_view utf8) {
       std::size_t j = i + 1;
       while (j < n) {
         std::uint32_t c = cps[j].cp;
-        if (IsEmojiExtend(c)) { ++j; continue; }
-        if (cps[j - 1].cp == 0x200D && (IsEmojiStart(c) || IsKeycapBase(c))) { ++j; continue; }
-        if (IsRegionalIndicator(cps[i].cp) && IsRegionalIndicator(c) && (j - i) < 2) { ++j; continue; }
+        if (IsEmojiExtend(c)) {
+          ++j;
+          continue;
+        }
+        if (cps[j - 1].cp == 0x200D && (IsEmojiStart(c) || IsKeycapBase(c))) {
+          ++j;
+          continue;
+        }
+        if (IsRegionalIndicator(cps[i].cp) && IsRegionalIndicator(c) &&
+            (j - i) < 2) {
+          ++j;
+          continue;
+        }
         break;
       }
       bounds.push_back(cps[j - 1].end);
       i = j;
     } else {
-      // Plain grapheme: single codepoint (simplified — no Unicode combining classes,
-      // but sufficient for Latin + common CJK text alongside emoji).
+      // Plain grapheme: single codepoint (simplified — no Unicode combining
+      // classes, but sufficient for Latin + common CJK text alongside emoji).
       bounds.push_back(cps[i].end);
       ++i;
     }

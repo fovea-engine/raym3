@@ -656,6 +656,10 @@ static void CommitBuffer(Node &node, char *buffer) {
 }
 
 constexpr double kMultiClickWindow = 0.35;
+// Ignore duplicate/batched press edges that arrive almost simultaneously.
+// A real mouse double/triple click has a distinct down/up cadence; queued
+// host events can otherwise turn one interaction burst into select-all.
+constexpr double kMultiClickMinInterval = 0.06;
 constexpr float kSelectionAutoScrollSpeed = 600.0f; // px/s past field edges
 
 static void HandlePointer(Node &node, const PointerInput &p) {
@@ -715,11 +719,16 @@ static void HandlePointer(Node &node, const PointerInput &p) {
       edit.isSelecting = true;
       edit.clickCount = 1;
     } else {
-      if (now - edit.lastClickTime < kMultiClickWindow &&
+      const double clickInterval = now - edit.lastClickTime;
+      if (edit.lastClickCompleted &&
+          clickInterval >= kMultiClickMinInterval &&
+          clickInterval < kMultiClickWindow &&
           std::abs(pos - edit.lastClickPos) <= 1)
         edit.clickCount++;
       else
         edit.clickCount = 1;
+      edit.lastClickCompleted = false;
+      edit.clickWasDragged = false;
       edit.lastClickPos = pos;
 
       if (edit.clickCount >= 3) {
@@ -728,7 +737,7 @@ static void HandlePointer(Node &node, const PointerInput &p) {
         edit.selectionEnd = len;
         edit.selectionAnchor = 0;
         edit.cursor = len;
-        edit.isSelecting = false;
+        edit.isSelecting = true;
       } else if (edit.clickCount == 2) {
         int ws = pos, we = pos;
         FindWordBoundaries(buffer, pos, ws, we);
@@ -736,7 +745,9 @@ static void HandlePointer(Node &node, const PointerInput &p) {
         edit.selectionEnd = we;
         edit.selectionAnchor = ws;
         edit.cursor = we;
-        edit.isSelecting = false;
+        // Stays selecting: a double-click followed by a drag extends by
+        // whole words (matches selectable Text).
+        edit.isSelecting = true;
       } else {
         edit.cursor = pos;
         edit.selectionStart = edit.selectionEnd = -1;
@@ -760,6 +771,14 @@ static void HandlePointer(Node &node, const PointerInput &p) {
   }
 
   if (p.down && edit.isSelecting) {
+    const float dragDx = p.pos.x - edit.longPressOrigin.x;
+    const float dragDy = p.pos.y - edit.longPressOrigin.y;
+    if (!edit.clickWasDragged &&
+        std::sqrt(dragDx * dragDx + dragDy * dragDy) > kTouchSlop) {
+      edit.clickWasDragged = true;
+      edit.lastClickCompleted = false;
+      edit.clickCount = 1;
+    }
     float dt = GetFrameTime();
     if (dt <= 0.0f || dt > 0.1f)
       dt = 0.016f;
@@ -805,6 +824,7 @@ static void HandlePointer(Node &node, const PointerInput &p) {
 
   if (p.released) {
     const bool keepToolbar = edit.longPressSelectionActive;
+    edit.lastClickCompleted = !edit.clickWasDragged && !keepToolbar;
     edit.isSelecting = false;
     edit.longPressActive = false;
     edit.longPressSelectionActive = false;

@@ -2,6 +2,7 @@
 #include "raym3/components/IconButton.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/EmojiFont.h"
 #include <algorithm>
 
 namespace raym3 {
@@ -40,7 +41,8 @@ int AppBarComponent::Render(Rectangle bounds, const char *title,
   if (options.navigationIcon) {
     IconButtonOptions iconOptions;
     if (IconButtonComponent::Render(
-            options.navigationIcon, {bounds.x + 4.0f, topRowY, touchSize, touchSize},
+            options.navigationIcon,
+            {bounds.x + 4.0f, topRowY, touchSize, touchSize},
             ButtonVariant::Text, IconVariation::Filled, BLANK, &iconOptions)) {
       clicked = -2;
     }
@@ -50,12 +52,12 @@ int AppBarComponent::Render(Rectangle bounds, const char *title,
   float trailingX = bounds.x + bounds.width - 4.0f - touchSize;
   for (int i = options.actionCount - 1; i >= 0; --i) {
     IconButtonOptions iconOptions;
-    iconOptions.tooltip = options.actions ? options.actions[i].tooltip : nullptr;
+    iconOptions.tooltip =
+        options.actions ? options.actions[i].tooltip : nullptr;
     if (options.actions && options.actions[i].icon &&
-        IconButtonComponent::Render(options.actions[i].icon,
-                                    {trailingX, topRowY, touchSize, touchSize},
-                                    ButtonVariant::Text, IconVariation::Filled,
-                                    BLANK, &iconOptions)) {
+        IconButtonComponent::Render(
+            options.actions[i].icon, {trailingX, topRowY, touchSize, touchSize},
+            ButtonVariant::Text, IconVariation::Filled, BLANK, &iconOptions)) {
       clicked = i;
     }
     trailingX -= touchSize;
@@ -77,7 +79,8 @@ int AppBarComponent::Render(Rectangle bounds, const char *title,
 
   const char *safeTitle = title ? title : "";
   Font titleFont = Theme::GetFont(titleFontSize, titleWeight);
-  Vector2 titleSize = MeasureTextEx(titleFont, safeTitle, titleFontSize, 0.0f);
+  Vector2 titleSize =
+      v2::MeasureTextWithEmoji(titleFont, safeTitle, titleFontSize, 0.0f);
 
   float titleX = bounds.x + leadingSpace;
   if (options.variant == AppBarVariant::CenterAligned) {
@@ -86,14 +89,15 @@ int AppBarComponent::Render(Rectangle bounds, const char *title,
                       std::min(titleX, trailingX - titleSize.x));
   }
 
-  DrawTextEx(titleFont, safeTitle, {titleX, titleY}, titleFontSize, 0.0f,
-             scheme.onSurface);
+  v2::DrawTextWithEmoji(titleFont, safeTitle, {titleX, titleY}, titleFontSize,
+                        0.0f, scheme.onSurface);
 
   if (options.subtitle) {
     float subtitleSize = Theme::GetTypographyScale().titleMedium;
     Font subtitleFont = Theme::GetFont(subtitleSize, FontWeight::Regular);
-    DrawTextEx(subtitleFont, options.subtitle, {titleX, titleY + titleLineHeight},
-               subtitleSize, 0.0f, scheme.onSurfaceVariant);
+    v2::DrawTextWithEmoji(subtitleFont, options.subtitle,
+                          {titleX, titleY + titleLineHeight}, subtitleSize,
+                          0.0f, scheme.onSurfaceVariant);
   }
 
   return clicked;

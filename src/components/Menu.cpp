@@ -6,9 +6,10 @@
 #include "raym3/rendering/Renderer.h"
 #include "raym3/rendering/SvgRenderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/EmojiFont.h"
+#include <algorithm>
 #include <raylib.h>
 #include <string>
-#include <algorithm>
 
 #if RAYM3_USE_INPUT_LAYERS
 #include "raym3/input/InputLayer.h"
@@ -100,8 +101,9 @@ void MenuComponent::Render(Rectangle bounds, const MenuItem *items,
 
       // Interaction
       bool canInteract = !items[i].disabled && !inputBlocked;
-      
-      if (CheckCollisionPointRec(GetMousePosition(), itemBounds) && canInteract) {
+
+      if (CheckCollisionPointRec(GetMousePosition(), itemBounds) &&
+          canInteract) {
         RequestCursor(MOUSE_CURSOR_POINTING_HAND);
       }
 
@@ -282,8 +284,8 @@ void MenuComponent::Render(Rectangle bounds, const MenuItem *items,
 
     // Trailing Text / Icon
     if (items[i].trailingText) {
-      Vector2 textSize =
-          MeasureTextEx(GetFontDefault(), items[i].trailingText, 14.0f, 1.0f);
+      Vector2 textSize = v2::MeasureTextWithEmoji(
+          GetFontDefault(), items[i].trailingText, 14.0f, 1.0f);
       Vector2 textPos = {itemBounds.x + itemBounds.width - textSize.x - 12.0f,
                          centerY - 7.0f};
       Renderer::DrawText(items[i].trailingText, textPos, 14.0f, textColor,

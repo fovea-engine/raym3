@@ -3,6 +3,7 @@
 #include "raym3/components/Icon.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/EmojiFont.h"
 #include <cmath>
 
 #if RAYM3_USE_INPUT_LAYERS
@@ -12,8 +13,8 @@
 namespace raym3 {
 
 static int focusedSegmentGroupId_ = -1;
-static int focusedSegmentIndex_   = -1;
-static int currentGroupId_        = 0;
+static int focusedSegmentIndex_ = -1;
+static int currentGroupId_ = 0;
 
 void SegmentedButtonComponent::ResetIds() { currentGroupId_ = 0; }
 
@@ -28,10 +29,10 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
       DialogComponent::IsActive() && !DialogComponent::IsRendering();
 
   ColorScheme &scheme = Theme::GetColorScheme();
-  float segmentWidth  = bounds.width / (float)itemCount;
-  float cornerRadius  = bounds.height / 2.0f;
+  float segmentWidth = bounds.width / (float)itemCount;
+  float cornerRadius = bounds.height / 2.0f;
 
-  bool changed  = false;
+  bool changed = false;
   int thisGroup = currentGroupId_++;
   bool isFocusedGroup = (focusedSegmentGroupId_ == thisGroup);
 
@@ -48,7 +49,8 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
       focusedSegmentIndex_ = (focusedSegmentIndex_ - 1 + itemCount) % itemCount;
       int tries = 0;
       while (items[focusedSegmentIndex_].disabled && tries++ < itemCount)
-        focusedSegmentIndex_ = (focusedSegmentIndex_ - 1 + itemCount) % itemCount;
+        focusedSegmentIndex_ =
+            (focusedSegmentIndex_ - 1 + itemCount) % itemCount;
     }
     if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_ENTER)) {
       int i = focusedSegmentIndex_;
@@ -78,8 +80,8 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
 
     bool isDisabled = items[i].disabled || inputBlocked;
 
-    bool isSelected = multiSelect ? ((*selectedIndex >> i) & 1)
-                                  : (*selectedIndex == i);
+    bool isSelected =
+        multiSelect ? ((*selectedIndex >> i) & 1) : (*selectedIndex == i);
 
     ComponentState state = ComponentState::Default;
     if (!isDisabled) {
@@ -93,17 +95,19 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
     // Colors
     Color bgColor, contentColor;
     if (isDisabled) {
-      bgColor      = isSelected ? ColorAlpha(scheme.onSurface, 0.12f)
-                                : ColorAlpha(scheme.surface, 0.0f);
+      bgColor = isSelected ? ColorAlpha(scheme.onSurface, 0.12f)
+                           : ColorAlpha(scheme.surface, 0.0f);
       contentColor = ColorAlpha(scheme.onSurface, 0.38f);
     } else {
-      bgColor      = isSelected ? scheme.secondaryContainer
-                                : ColorAlpha(scheme.surface, 0.0f);
-      contentColor = isSelected ? scheme.onSecondaryContainer : scheme.onSurface;
+      bgColor = isSelected ? scheme.secondaryContainer
+                           : ColorAlpha(scheme.surface, 0.0f);
+      contentColor =
+          isSelected ? scheme.onSecondaryContainer : scheme.onSurface;
     }
 
     // Cursor feedback
-    if (!isDisabled && CheckCollisionPointRec(GetMousePosition(), segmentBounds)) {
+    if (!isDisabled &&
+        CheckCollisionPointRec(GetMousePosition(), segmentBounds)) {
       RequestCursor(MOUSE_CURSOR_POINTING_HAND);
     }
 
@@ -149,7 +153,7 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
 
     // Content
     const char *iconName = items[i].icon;
-    const char *label    = items[i].label;
+    const char *label = items[i].label;
 
     if (isSelected) {
       iconName = "check"; // Checkmark replaces or prepends icon per M3 spec
@@ -160,30 +164,33 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
 
     if (iconName && label) {
       float iconSize = 18.0f;
-      float gap      = 8.0f;
-      Font font      = Theme::GetFont(14, FontWeight::Medium);
-      Vector2 textSize = MeasureTextEx(font, label, 14, 1.0f);
+      float gap = 8.0f;
+      Font font = Theme::GetFont(14, FontWeight::Medium);
+      Vector2 textSize = v2::MeasureTextWithEmoji(font, label, 14, 1.0f);
       float totalWidth = iconSize + gap + textSize.x;
-      float startX     = contentX - totalWidth / 2.0f;
+      float startX = contentX - totalWidth / 2.0f;
 
-      Rectangle iconRect = {startX, contentY - iconSize / 2.0f, iconSize, iconSize};
-      IconComponent::Render(iconName, iconRect, IconVariation::Filled, contentColor);
+      Rectangle iconRect = {startX, contentY - iconSize / 2.0f, iconSize,
+                            iconSize};
+      IconComponent::Render(iconName, iconRect, IconVariation::Filled,
+                            contentColor);
 
       Vector2 textPos = {startX + iconSize + gap, contentY - textSize.y / 2.0f};
-      DrawTextEx(font, label, textPos, 14, 1.0f, contentColor);
+      v2::DrawTextWithEmoji(font, label, textPos, 14, 1.0f, contentColor);
 
     } else if (iconName) {
       float iconSize = 24.0f;
       Rectangle iconRect = {contentX - iconSize / 2.0f,
                             contentY - iconSize / 2.0f, iconSize, iconSize};
-      IconComponent::Render(iconName, iconRect, IconVariation::Filled, contentColor);
+      IconComponent::Render(iconName, iconRect, IconVariation::Filled,
+                            contentColor);
 
     } else if (label) {
-      Font font          = Theme::GetFont(14, FontWeight::Medium);
-      Vector2 textSize   = MeasureTextEx(font, label, 14, 1.0f);
-      Vector2 textPos    = {contentX - textSize.x / 2.0f,
-                            contentY - textSize.y / 2.0f};
-      DrawTextEx(font, label, textPos, 14, 1.0f, contentColor);
+      Font font = Theme::GetFont(14, FontWeight::Medium);
+      Vector2 textSize = v2::MeasureTextWithEmoji(font, label, 14, 1.0f);
+      Vector2 textPos = {contentX - textSize.x / 2.0f,
+                         contentY - textSize.y / 2.0f};
+      v2::DrawTextWithEmoji(font, label, textPos, 14, 1.0f, contentColor);
     }
 
     // Input
@@ -192,8 +199,8 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
 #if RAYM3_USE_INPUT_LAYERS
       bool canProcessInput =
           InputLayerManager::ShouldProcessMouseInput(segmentBounds);
-      bool isHovered = canProcessInput &&
-                       CheckCollisionPointRec(mousePos, segmentBounds);
+      bool isHovered =
+          canProcessInput && CheckCollisionPointRec(mousePos, segmentBounds);
       bool isClicked = isHovered && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 #else
       bool isHovered = CheckCollisionPointRec(mousePos, segmentBounds);
@@ -201,7 +208,7 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
 #endif
       if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && isHovered) {
         focusedSegmentGroupId_ = thisGroup;
-        focusedSegmentIndex_   = i;
+        focusedSegmentIndex_ = i;
       }
       if (isClicked) {
         if (multiSelect) {
@@ -223,7 +230,8 @@ bool SegmentedButtonComponent::Render(Rectangle bounds,
   // Dividers between segments
   for (int i = 1; i < itemCount; ++i) {
     float x = bounds.x + i * segmentWidth;
-    DrawLineEx({x, bounds.y}, {x, bounds.y + bounds.height}, 1.0f, scheme.outline);
+    DrawLineEx({x, bounds.y}, {x, bounds.y + bounds.height}, 1.0f,
+               scheme.outline);
   }
 
   return changed;
@@ -233,7 +241,7 @@ ComponentState SegmentedButtonComponent::GetState(Rectangle bounds) {
   Vector2 mousePos = GetMousePosition();
 #if RAYM3_USE_INPUT_LAYERS
   bool canProcessInput = InputLayerManager::ShouldProcessMouseInput(bounds);
-  bool isHovered       = canProcessInput && CheckCollisionPointRec(mousePos, bounds);
+  bool isHovered = canProcessInput && CheckCollisionPointRec(mousePos, bounds);
 #else
   bool isHovered = CheckCollisionPointRec(mousePos, bounds);
 #endif

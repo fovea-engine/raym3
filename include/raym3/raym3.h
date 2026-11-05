@@ -30,6 +30,10 @@ void BeginScissor(Rectangle bounds);
 void PushScissor(Rectangle bounds);
 void PopScissor();
 void PushRoundedStencil(Rectangle bounds, float radius);
+// Push a rounded stencil in the current modelview space while constraining it
+// to a screen-space scissor. This is used by transformed CSS overflow boxes.
+void PushRoundedStencilWithScissor(Rectangle bounds, float radius,
+                                   Rectangle scissorBounds);
 void PopRoundedStencil();
 Rectangle GetCurrentScissorBounds();
 // Rebuild the current logical scissor/rounded-stencil state after a renderer
@@ -42,6 +46,27 @@ void DrawScissorDebug();
 
 void BeginFrame();
 void EndFrame();
+
+// Paint a web-style range input track and circular thumb. Layout and input
+// remain owned by the host; colors and geometry come from CSS.
+void DrawCssSlider(Rectangle bounds, float progress, Color accent,
+                   Color track, float trackThickness = 4.0f,
+                   float thumbRadius = 8.0f);
+
+// Paint a single continuous horizontal gradient row. The color function is
+// supplied by the CSS host; keeping the row in one Raylib draw call avoids a
+// raster seam at the gradient midpoint.
+void DrawCssGradientRow(float x, float y, float width, float height,
+                        Color left, Color right);
+void DrawCssEllipseBorder(Rectangle bounds, Color color, float thickness,
+                          bool dashed);
+void DrawCssInsetEllipse(Rectangle bounds, Color color, float offsetY,
+                         float thickness);
+void DrawCssSuitMark(Rectangle bounds, int suit, Color color);
+void DrawCssFullscreenIcon(Rectangle bounds, Color color);
+void DrawCssBoxFill(Rectangle bounds, float cornerRadius, Color color);
+void DrawCssBoxBorder(Rectangle bounds, float cornerRadius, float thickness,
+                      Color color);
 
 void RequestCursor(int cursor);
 

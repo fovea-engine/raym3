@@ -426,7 +426,9 @@ typedef struct NSVGattrib
 	unsigned int strokeColor;
 	float opacity;
 	float fillOpacity;
+	float fillColorOpacity;
 	float strokeOpacity;
+	float strokeColorOpacity;
 	char fillGradient[64];
 	char strokeGradient[64];
 	float strokeWidth;
@@ -440,6 +442,7 @@ typedef struct NSVGattrib
 	float fontSize;
 	unsigned int stopColor;
 	float stopOpacity;
+	float stopColorOpacity;
 	float stopOffset;
 	char hasFill;
 	char hasStroke;
@@ -644,8 +647,11 @@ static NSVGparser* nsvg__createParser(void)
 	p->attr[0].strokeColor = NSVG_RGB(0,0,0);
 	p->attr[0].opacity = 1;
 	p->attr[0].fillOpacity = 1;
+	p->attr[0].fillColorOpacity = 1;
 	p->attr[0].strokeOpacity = 1;
+	p->attr[0].strokeColorOpacity = 1;
 	p->attr[0].stopOpacity = 1;
+	p->attr[0].stopColorOpacity = 1;
 	p->attr[0].strokeWidth = 1;
 	p->attr[0].strokeLineJoin = NSVG_JOIN_MITER;
 	p->attr[0].strokeLineCap = NSVG_CAP_BUTT;
@@ -1008,7 +1014,7 @@ static void nsvg__addShape(NSVGparser* p)
 	} else if (attr->hasFill == 1) {
 		shape->fill.type = NSVG_PAINT_COLOR;
 		shape->fill.color = attr->fillColor;
-		shape->fill.color |= (unsigned int)(attr->fillOpacity*255) << 24;
+		shape->fill.color |= (unsigned int)(attr->fillOpacity*attr->fillColorOpacity*255) << 24;
 	} else if (attr->hasFill == 2) {
 		shape->fill.type = NSVG_PAINT_UNDEF;
 	}
@@ -1019,7 +1025,7 @@ static void nsvg__addShape(NSVGparser* p)
 	} else if (attr->hasStroke == 1) {
 		shape->stroke.type = NSVG_PAINT_COLOR;
 		shape->stroke.color = attr->strokeColor;
-		shape->stroke.color |= (unsigned int)(attr->strokeOpacity*255) << 24;
+		shape->stroke.color |= (unsigned int)(attr->strokeOpacity*attr->strokeColorOpacity*255) << 24;
 	} else if (attr->hasStroke == 2) {
 		shape->stroke.type = NSVG_PAINT_UNDEF;
 	}
@@ -1296,6 +1302,51 @@ static unsigned int nsvg__parseColorRGB(const char* str)
 		if (rgbi[i] > 255) rgbi[i] = 255;
 	}
 	return NSVG_RGB(rgbi[0], rgbi[1], rgbi[2]);
+}
+
+// Parse CSS rgba() colors into RGB plus the separate opacity channel used by
+// NanoSVG paints. Alpha is returned as a multiplier so fill-opacity,
+// stroke-opacity, stop-opacity and inherited element opacity still compose.
+static unsigned int nsvg__parseColorRGBA(const char* str, float* opacity)
+{
+	int i;
+	float values[4];
+	int percentages[4] = {0, 0, 0, 0};
+	str += 5; // skip "rgba("
+	for (i = 0; i < 4; i++) {
+		char number[64];
+		while (*str && nsvg__isspace(*str)) str++;
+		str = nsvg__parseNumber(str, number, 64);
+		if (!number[0]) {
+			*opacity = 1.0f;
+			return NSVG_RGB(128, 128, 128);
+		}
+		values[i] = nsvg__atof(number);
+		if (*str == '%') { percentages[i] = 1; str++; }
+		while (*str && nsvg__isspace(*str)) str++;
+		if (i < 3) {
+			if (*str != ',') {
+				*opacity = 1.0f;
+				return NSVG_RGB(128, 128, 128);
+			}
+			str++;
+		}
+	}
+	if (*str != ')') {
+		*opacity = 1.0f;
+		return NSVG_RGB(128, 128, 128);
+	}
+	for (i = 0; i < 3; i++) {
+		if (percentages[i]) values[i] *= 2.55f;
+		if (values[i] < 0.0f) values[i] = 0.0f;
+		if (values[i] > 255.0f) values[i] = 255.0f;
+	}
+	if (percentages[3]) values[3] /= 100.0f;
+	if (values[3] < 0.0f) values[3] = 0.0f;
+	if (values[3] > 1.0f) values[3] = 1.0f;
+	*opacity = values[3];
+	return NSVG_RGB((unsigned int)roundf(values[0]),
+		(unsigned int)roundf(values[1]), (unsigned int)roundf(values[2]));
 }
 
 typedef struct NSVGNamedColor {
@@ -1829,7 +1880,13 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 			nsvg__parseUrl(attr->fillGradient, value);
 		} else {
 			attr->hasFill = 1;
-			attr->fillColor = nsvg__parseColor(value);
+			if (strncmp(value, "rgba(", 5) == 0) {
+				float colorOpacity = 1.0f;
+				attr->fillColor = nsvg__parseColorRGBA(value, &colorOpacity);
+				attr->fillColorOpacity = colorOpacity;
+			} else {
+				attr->fillColor = nsvg__parseColor(value);
+			}
 		}
 	} else if (strcmp(name, "opacity") == 0) {
 		attr->opacity = nsvg__parseOpacity(value);
@@ -1843,7 +1900,13 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 			nsvg__parseUrl(attr->strokeGradient, value);
 		} else {
 			attr->hasStroke = 1;
-			attr->strokeColor = nsvg__parseColor(value);
+			if (strncmp(value, "rgba(", 5) == 0) {
+				float colorOpacity = 1.0f;
+				attr->strokeColor = nsvg__parseColorRGBA(value, &colorOpacity);
+				attr->strokeColorOpacity = colorOpacity;
+			} else {
+				attr->strokeColor = nsvg__parseColor(value);
+			}
 		}
 	} else if (strcmp(name, "stroke-width") == 0) {
 		attr->strokeWidth = nsvg__parseCoordinate(p, value, 0.0f, nsvg__actualLength(p));
@@ -1867,7 +1930,13 @@ static int nsvg__parseAttr(NSVGparser* p, const char* name, const char* value)
 		nsvg__parseTransform(xform, value);
 		nsvg__xformPremultiply(attr->xform, xform);
 	} else if (strcmp(name, "stop-color") == 0) {
-		attr->stopColor = nsvg__parseColor(value);
+		if (strncmp(value, "rgba(", 5) == 0) {
+			float colorOpacity = 1.0f;
+			attr->stopColor = nsvg__parseColorRGBA(value, &colorOpacity);
+			attr->stopColorOpacity = colorOpacity;
+		} else {
+			attr->stopColor = nsvg__parseColor(value);
+		}
 	} else if (strcmp(name, "stop-opacity") == 0) {
 		attr->stopOpacity = nsvg__parseOpacity(value);
 	} else if (strcmp(name, "offset") == 0) {
@@ -2750,6 +2819,7 @@ static void nsvg__parseGradientStop(NSVGparser* p, const char** attr)
 	curAttr->stopOffset = 0;
 	curAttr->stopColor = 0;
 	curAttr->stopOpacity = 1.0f;
+	curAttr->stopColorOpacity = 1.0f;
 
 	for (i = 0; attr[i]; i += 2) {
 		nsvg__parseAttr(p, attr[i], attr[i + 1]);
@@ -2778,7 +2848,7 @@ static void nsvg__parseGradientStop(NSVGparser* p, const char** attr)
 
 	stop = &grad->stops[idx];
 	stop->color = curAttr->stopColor;
-	stop->color |= (unsigned int)(curAttr->stopOpacity*255) << 24;
+	stop->color |= (unsigned int)(curAttr->stopOpacity*curAttr->stopColorOpacity*255) << 24;
 	stop->offset = curAttr->stopOffset;
 }
 

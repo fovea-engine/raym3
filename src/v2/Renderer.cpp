@@ -76,6 +76,10 @@ static Color ResolveTextColor(const std::optional<Color> &own) {
 // an off-screen animated node returns to view at the right position, it just
 // isn't drawn while off-screen.
 static thread_local std::vector<Rectangle> g_cullStack;
+// CSS transforms are applied with rlPushMatrix while painting. Keep the same
+// accumulated affine transform for clip scissors, which are window-space
+// rectangles and therefore cannot inherit the rlgl model matrix.
+static thread_local std::vector<std::array<float, 9>> g_paintTransformStack;
 
 static std::array<float, 9> MultiplyTransform(
     const std::array<float, 9> &a, const std::array<float, 9> &b) {
@@ -107,6 +111,31 @@ static std::array<float, 9> NodeTransform(const Node &node,
       1, 0, cx + tx, 0, 1, cy + ty, 0, 0, 1};
   return MultiplyTransform(fromOrigin,
                            MultiplyTransform(rotateScale, toOrigin));
+}
+
+static Vector2 TransformPoint(const std::array<float, 9> &transform,
+                              Vector2 point) {
+  return {transform[0] * point.x + transform[1] * point.y + transform[2],
+          transform[3] * point.x + transform[4] * point.y + transform[5]};
+}
+
+static Rectangle TransformBounds(const std::array<float, 9> &transform,
+                                 Rectangle bounds) {
+  const Vector2 corners[] = {
+      TransformPoint(transform, {bounds.x, bounds.y}),
+      TransformPoint(transform, {bounds.x + bounds.width, bounds.y}),
+      TransformPoint(transform, {bounds.x, bounds.y + bounds.height}),
+      TransformPoint(transform,
+                     {bounds.x + bounds.width, bounds.y + bounds.height})};
+  float left = corners[0].x, right = corners[0].x;
+  float top = corners[0].y, bottom = corners[0].y;
+  for (size_t i = 1; i < std::size(corners); ++i) {
+    left = std::min(left, corners[i].x);
+    right = std::max(right, corners[i].x);
+    top = std::min(top, corners[i].y);
+    bottom = std::max(bottom, corners[i].y);
+  }
+  return {left, top, right - left, bottom - top};
 }
 
 static bool RectsOverlap(const Rectangle& a, const Rectangle& b) {
@@ -2079,12 +2108,21 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   // Layout + onLayout above already ran, and CSS transitions/animations tick on
   // the whole tree before Render(), so culling never neglects animation state —
   // it only skips draw calls. Fixed-position overlays paint in a separate pass.
+  const bool hasTransform = style.rotation || style.scale ||
+                            style.translateX || style.translateY;
+  const std::array<float, 9> identity = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  const auto localTransform =
+      hasTransform ? NodeTransform(*node, style) : identity;
+  const auto nodePaintTransform =
+      MultiplyTransform(g_paintTransformStack.back(), localTransform);
   {
     const Rectangle& cull = g_cullStack.back();
     const bool insideClip = g_cullStack.size() > 1;
     const bool clips = style.overflow == Overflow::Hidden ||
                        style.overflow == Overflow::Scroll;
-    if ((insideClip || clips) && !RectsOverlap(node->layout, cull)) {
+    const Rectangle paintBounds =
+        TransformBounds(nodePaintTransform, node->layout);
+    if ((insideClip || clips) && !RectsOverlap(paintBounds, cull)) {
       g_renderOpacity = parentOpacity; // restore; normal path restores at end
       g_inheritedTextColor = parentInheritedText;
       Ctx().externalViewMutators.resize(parentMutatorCount);
@@ -2172,12 +2210,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   }
 
   // Affine transform (rotation/scale/translate) applied about the node's center
-  // so the whole subtree — background, content, children — moves together. Note:
-  // hardware scissor/stencil clip in window space, so a clipped *and* rotated
-  // node would mis-clip; in practice transforms are used on unclipped nodes
-  // (icons, FABs, the nav-rail expand button).
-  const bool hasTransform = style.rotation || style.scale ||
-                            style.translateX || style.translateY;
+  // so the whole subtree — background, content, children — moves together.
   if (hasTransform) {
     float cx = node->layout.x + node->layout.width * 0.5f;
     float cy = node->layout.y + node->layout.height * 0.5f;
@@ -2188,6 +2221,7 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
     rlRotatef(style.rotation.value_or(0.0f), 0.0f, 0.0f, 1.0f);
     rlScalef(sc, sc, 1.0f);
     rlTranslatef(-cx, -cy, 0.0f);
+    g_paintTransformStack.push_back(nodePaintTransform);
     if (Ctx().externalViewEmbedder) {
       ExternalViewMutator mutator;
       mutator.kind = ExternalViewMutatorKind::Transform;
@@ -2216,9 +2250,15 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   bool useStencil  = clipped && clipRadius > 0.0f;
 
   if (useStencil) {
-    raym3::PushRoundedStencil(node->layout, clipRadius);
+    // The stencil mask is drawn under the current rlgl matrix, while the
+    // scissor must be explicitly transformed into window space. Keeping both
+    // derived from the accumulated transform makes rotated/scaled overflow
+    // parents clip their children at the same geometry they paint.
+    raym3::PushRoundedStencilWithScissor(
+        node->layout, clipRadius,
+        TransformBounds(g_paintTransformStack.back(), node->layout));
   } else if (clipped) {
-    PushScissor(node->layout);
+    PushScissor(TransformBounds(g_paintTransformStack.back(), node->layout));
   }
   if (Ctx().externalViewEmbedder && clipped) {
     ExternalViewMutator mutator;
@@ -2231,7 +2271,9 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
   // Narrow the cull region to this node's rect for its subtree (paint culling,
   // parallel to the scissor/stencil clip above but in DP space).
   if (clipped)
-    g_cullStack.push_back(IntersectRect(node->layout, g_cullStack.back()));
+    g_cullStack.push_back(IntersectRect(
+        TransformBounds(g_paintTransformStack.back(), node->layout),
+        g_cullStack.back()));
 
   bool embeddedExternalView = false;
   if (node->externalViewId != 0 && Ctx().externalViewEmbedder) {
@@ -2638,8 +2680,10 @@ static void RenderNode(const NodePtr &node, int parentMaxZ) {
         ColorAlpha(Theme::GetColorScheme().outline, opacity), 1.0f);
   }
 
-  if (hasTransform)
+  if (hasTransform) {
     rlPopMatrix();
+    g_paintTransformStack.pop_back();
+  }
   g_renderOpacity = parentOpacity;
   g_inheritedTextColor = parentInheritedText;
   Ctx().externalViewMutators.resize(parentMutatorCount);
@@ -3006,6 +3050,8 @@ void Render(const NodePtr &root, Rectangle bounds, bool layoutAlreadyComputed) {
   // Seed viewport culling with the on-screen bounds (DP space).
   g_cullStack.clear();
   g_cullStack.push_back(bounds);
+  g_paintTransformStack.clear();
+  g_paintTransformStack.push_back({1, 0, 0, 0, 1, 0, 0, 0, 1});
 
   if (Ctx().externalViewEmbedder)
     Ctx().externalViewEmbedder->BeginFrame(Ctx().surfaceId, bounds,
@@ -3208,27 +3254,90 @@ void ClearDirtyRects() {
 
 const std::vector<Rectangle> &GetDirtyRects() { return Ctx().dirtyRects; }
 
-static bool IsClippedByAncestors(const NodePtr &node, Vector2 point, const std::unordered_map<Node *, NodePtr> &parentMap) {
-  Node *curr = node.get();
-  Style scratch;
+static bool PointInRoundedRect(Vector2 point, Rectangle bounds, float radius) {
+  if (!CheckCollisionPointRec(point, bounds))
+    return false;
+  radius = std::clamp(radius, 0.0f,
+                      std::min(bounds.width, bounds.height) * 0.5f);
+  if (radius <= 0.0f)
+    return true;
+  const float nearestX = std::clamp(point.x, bounds.x + radius,
+                                    bounds.x + bounds.width - radius);
+  const float nearestY = std::clamp(point.y, bounds.y + radius,
+                                    bounds.y + bounds.height - radius);
+  const float dx = point.x - nearestX;
+  const float dy = point.y - nearestY;
+  return dx * dx + dy * dy <= radius * radius;
+}
+
+static bool InverseTransformPoint(const std::array<float, 9> &transform,
+                                  Vector2 point, Vector2 &local) {
+  const float determinant = transform[0] * transform[4] -
+                            transform[1] * transform[3];
+  if (std::abs(determinant) < 1e-7f)
+    return false;
+  const float x = point.x - transform[2];
+  const float y = point.y - transform[5];
+  local = {(transform[4] * x - transform[1] * y) / determinant,
+           (-transform[3] * x + transform[0] * y) / determinant};
+  return true;
+}
+
+// Input must follow the same rounded overflow shapes as painting. StackEntry
+// bounds are rectangular, so check each clipping ancestor in its own local
+// coordinates after composing the transforms from root to leaf. `includeNode`
+// is used by scroll hit testing, where the scroll container itself must reject
+// drags that begin in its clipped rounded corners.
+static bool PointEscapesClipChain(
+    Node *node, Vector2 point,
+    const std::unordered_map<Node *, NodePtr> &parentMap, bool includeNode) {
+  // Hit testing runs this for every candidate on pointer movement. Reuse the
+  // ancestor-chain capacity per thread instead of allocating a temporary
+  // vector for each candidate.
+  static thread_local std::vector<Node *> chain;
+  chain.clear();
+  Node *curr = includeNode ? node : nullptr;
+  if (!curr) {
+    auto it = parentMap.find(node);
+    curr = it != parentMap.end() ? it->second.get() : nullptr;
+  }
   while (curr) {
-    // By reference: this walks to the root for every hit-test candidate, and
-    // every pointer move runs a hit test. Returning Style by value put a heap
-    // allocation on each step of that walk.
-    const Style &style = EffectiveStyleRef(*curr, scratch);
-    if (style.overflow == Overflow::Hidden || style.overflow == Overflow::Scroll) {
-      if (!CheckCollisionPointRec(point, curr->layout)) {
-        return true; // Clipped!
-      }
-    }
-    // Fixed-position overlays are viewport-positioned: ancestors' overflow
-    // rects (scroll containers, cards) don't clip them.
-    if (style.position == PositionType::Fixed)
-      return false;
+    chain.push_back(curr);
+    Style scratch;
+    if (EffectiveStyleRef(*curr, scratch).position == PositionType::Fixed)
+      break; // fixed descendants escape clips above their containing block
     auto it = parentMap.find(curr);
-    curr = (it != parentMap.end()) ? it->second.get() : nullptr;
+    curr = it != parentMap.end() ? it->second.get() : nullptr;
+  }
+
+  const std::array<float, 9> identity = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  auto transform = identity;
+  Style scratch;
+  for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+    Node *ancestor = *it;
+    const Style &style = EffectiveStyleRef(*ancestor, scratch);
+    const bool hasTransform = style.rotation || style.scale ||
+                              style.translateX || style.translateY;
+    if (hasTransform)
+      transform = MultiplyTransform(transform, NodeTransform(*ancestor, style));
+
+    if (style.overflow != Overflow::Hidden &&
+        style.overflow != Overflow::Scroll)
+      continue;
+
+    Vector2 localPoint;
+    if (!InverseTransformPoint(transform, point, localPoint) ||
+        !PointInRoundedRect(localPoint, ancestor->layout,
+                            style.borderRadius.value_or(0.0f)))
+      return true;
   }
   return false;
+}
+
+static bool IsClippedByAncestors(
+    const NodePtr &node, Vector2 point,
+    const std::unordered_map<Node *, NodePtr> &parentMap) {
+  return PointEscapesClipChain(node.get(), point, parentMap, false);
 }
 
 // Topmost hit-testable committed entry under `point`, ranked by effective z
@@ -3644,7 +3753,9 @@ static NodePtr FindScrollableNodeAt(const NodePtr &node, Vector2 point) {
   bool inBounds = CheckCollisionPointRec(point, node->layout);
   bool clipped = node->style.overflow == Overflow::Hidden ||
                  node->style.overflow == Overflow::Scroll;
-  if (clipped && !inBounds)
+  if (clipped &&
+      (!inBounds || PointEscapesClipChain(node.get(), point,
+                                          Ctx().committedParentMap, true)))
     return nullptr;
 
   std::vector<NodePtr> children = node->children;

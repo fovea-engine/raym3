@@ -5,6 +5,7 @@
 #include "raym3/layout/Layout.h"
 #include "raym3/rendering/Renderer.h"
 #include "raym3/styles/Theme.h"
+#include "raym3/v2/EmojiFont.h"
 #include <algorithm>
 #include <cstring>
 
@@ -64,9 +65,8 @@ bool ChipComponent::Render(const char *label, Rectangle bounds, bool *selected,
 
   const bool inputBlocked =
       DialogComponent::IsActive() && !DialogComponent::IsRendering();
-  ComponentState state =
-      inputBlocked ? ComponentState::Default
-                   : GetChipState(bounds, resolved.disabled);
+  ComponentState state = inputBlocked ? ComponentState::Default
+                                      : GetChipState(bounds, resolved.disabled);
 
   ColorScheme &scheme = Theme::GetColorScheme();
   const bool isSelectable = resolved.variant == ChipVariant::Filter ||
@@ -75,7 +75,8 @@ bool ChipComponent::Render(const char *label, Rectangle bounds, bool *selected,
   const bool isSelected = resolved.selected && isSelectable;
   const float availableHeight = bounds.height > 0.0f ? bounds.height : 48.0f;
   const float containerHeight = std::min(32.0f, availableHeight);
-  Rectangle container = {bounds.x, bounds.y + (availableHeight - containerHeight) / 2.0f,
+  Rectangle container = {bounds.x,
+                         bounds.y + (availableHeight - containerHeight) / 2.0f,
                          bounds.width, containerHeight};
 
   Color containerColor = ColorAlpha(scheme.surface, 0.0f);
@@ -102,9 +103,8 @@ bool ChipComponent::Render(const char *label, Rectangle bounds, bool *selected,
     iconColor = DisabledColor(scheme.onSurface, 0.38f);
     trailingIconColor = DisabledColor(scheme.onSurface, 0.38f);
     outlineColor = DisabledColor(scheme.onSurface, 0.12f);
-    containerColor = resolved.elevated
-                         ? DisabledColor(scheme.onSurface, 0.12f)
-                         : ColorAlpha(scheme.surface, 0.0f);
+    containerColor = resolved.elevated ? DisabledColor(scheme.onSurface, 0.12f)
+                                       : ColorAlpha(scheme.surface, 0.0f);
     elevation = 0;
   }
 
@@ -122,8 +122,8 @@ bool ChipComponent::Render(const char *label, Rectangle bounds, bool *selected,
                                      outlineWidth);
   }
 
-  Color stateLayerBase = isSelected ? scheme.onSecondaryContainer
-                                    : scheme.onSurfaceVariant;
+  Color stateLayerBase =
+      isSelected ? scheme.onSecondaryContainer : scheme.onSurfaceVariant;
   Renderer::DrawStateLayer(container, radius, stateLayerBase, state);
 
   float x = container.x + 16.0f;
@@ -147,13 +147,14 @@ bool ChipComponent::Render(const char *label, Rectangle bounds, bool *selected,
 
   Font font = Theme::GetFont(Theme::GetTypographyScale().labelLarge,
                              FontWeight::Medium);
-  Vector2 labelSize =
-      MeasureTextEx(font, label, Theme::GetTypographyScale().labelLarge, 0.0f);
-  DrawTextEx(font, label, {x, centerY - labelSize.y / 2.0f},
-             Theme::GetTypographyScale().labelLarge, 0.0f, contentColor);
+  Vector2 labelSize = v2::MeasureTextWithEmoji(
+      font, label, Theme::GetTypographyScale().labelLarge, 0.0f);
+  v2::DrawTextWithEmoji(font, label, {x, centerY - labelSize.y / 2.0f},
+                        Theme::GetTypographyScale().labelLarge, 0.0f,
+                        contentColor);
 
-  const bool drawCloseIcon = resolved.showCloseIcon ||
-                             resolved.variant == ChipVariant::Input;
+  const bool drawCloseIcon =
+      resolved.showCloseIcon || resolved.variant == ChipVariant::Input;
   const char *trailingIcon = drawCloseIcon ? "close" : resolved.trailingIcon;
   if (trailingIcon) {
     Rectangle trailingRect = {container.x + container.width - 16.0f - iconSize,
@@ -176,9 +177,8 @@ bool ChipComponent::Render(const char *label, Rectangle bounds, bool *selected,
 #else
   bool isHovered = isVisible && CheckCollisionPointRec(mousePos, bounds);
 #endif
-  bool wasClicked =
-      !resolved.disabled && !inputBlocked && isHovered &&
-      IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
+  bool wasClicked = !resolved.disabled && !inputBlocked && isHovered &&
+                    IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
 
   if (isHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
     focusedChipId_ = thisId;
