@@ -9,6 +9,7 @@ This directory contains documentation for advanced raym3 features and systems.
 - **[Scissor System](scissor-system.md)** - Stack-based clipping regions
 - **[v2 Native UI Upgrade](v2-upgrade.md)** - Retained/composable v2 API, same-frame layout, dependency, icon, and text-engine foundation
 - **[M3 Component Browser Audit](m3-component-browser-audit.md)** - Browser-reviewed Material 3 component and motion checklist
+- **[October Rendering and Text Updates](october-rendering-text.md)** - SVG documents, platform font selection, multi-click text selection, and transformed overflow clipping
 
 ## Combining Layout, Input Layers, and Scissor
 

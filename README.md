@@ -18,6 +18,9 @@ raym3 is a Material Design 3 inspired immediate-mode GUI library built on raylib
 - **Roboto Font Support** - Roboto v3 (from roboto-3-classic); can be loaded from disk or embedded for portable deployment
 - **Light and Dark Themes** - Full theme support with Material Design 3 color system
 - **SVG Icon Support** - Material Design icons with multiple variations (filled, outlined, round, sharp, two-tone)
+- **Inline SVG Rendering** - Rasterize and cache arbitrary SVG documents, including RGBA fills and opacity
+- **Platform Font Fallback** - Native system UI fonts by default, CSS-family resolution, and glyph coverage fallback
+- **Transformed Overflow Clipping** - Rounded clipping and hit testing follow nested rotation and scale transforms
 - **Zero External Dependencies** - Can be built as a standalone library (raylib is fetched automatically)
 - **Scissor Stack API** - Stack-based clipping with `PushScissor`/`PopScissor`, debug visualization
 
@@ -149,6 +152,19 @@ The TextField component supports several advanced features:
 - **Undo/Redo**: Built-in support with configurable history depth via `maxUndoHistory`
 - **Icons**: Add `leadingIcon` and `trailingIcon` with click callbacks
 - **Read-Only**: Set `readOnly = true` to prevent editing
+- **Multi-click Selection**: Completed stationary double/triple clicks select words or all text; dragging after a multi-click extends the selection by word or character
+
+### SVG Rendering
+
+`raym3::SvgRenderer::DrawDocument(source, bounds, opacity)` renders an inline SVG document into a cached texture. Repeated source documents reuse the bounded cache. This supports native `v2::View` SVG rendering as well as direct `raym3` drawing. SVG fill RGBA and composed fill opacity are preserved.
+
+### Native Font Selection
+
+On native platforms the default body face follows the system UI font. CSS family stacks can resolve platform fonts by family, weight, and style, with system fallback faces selected for missing glyphs. Emscripten continues to use bundled Roboto. Embedded resources do not change the native default.
+
+### Rendering and Clipping
+
+Nested overflow clips account for rotation, scale, rounded corners, and hit testing. The renderer also fixes clipping balance, texture and atlas releases during a frame, and frame statistics when multiple rendering contexts are used.
 
 ### Menu Component Features
 
