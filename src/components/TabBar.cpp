@@ -134,6 +134,9 @@ int TabBarComponent::Render(Rectangle bounds, const std::vector<TabItem> &items,
   float tabWidth = CalcTabWidth(availableWidth, tabCount, options.minTabWidth,
                                 options.maxTabWidth);
   float tabHeight = options.tabHeight;
+  // Tabs sit on the bottom edge of the strip so the active tab meets the
+  // content below, whatever height the caller gives the strip.
+  float tabTop = bounds.y + std::max(0.0f, bounds.height - tabHeight);
 
   // Track hover (Input Logic)
   Vector2 mousePos = GetMousePosition();
@@ -142,7 +145,7 @@ int TabBarComponent::Render(Rectangle bounds, const std::vector<TabItem> &items,
   // Calculate Add Button Bounds
   Rectangle addButtonBounds = {
       bounds.x + (tabCount * tabWidth) + 4.0f,
-      bounds.y + (tabHeight - 24.0f) / 2.0f,
+      tabTop + (tabHeight - 24.0f) / 2.0f,
       24.0f, 24.0f
   };
   
@@ -166,7 +169,7 @@ int TabBarComponent::Render(Rectangle bounds, const std::vector<TabItem> &items,
   for (int i = 0; i < tabCount; i++) {
     Rectangle tabBounds = {
         bounds.x + i * tabWidth,
-        bounds.y,
+        tabTop,
         tabWidth,
         tabHeight
     };
@@ -205,70 +208,56 @@ int TabBarComponent::Render(Rectangle bounds, const std::vector<TabItem> &items,
   // Draw Function (Deferred or Immediate)
   auto drawFunc = [=]() {
       float r = options.cornerRadius;
-      float topPadding = 5.0f;
 
       // PASS 1: Strip Background
       DrawRectangleRec(bounds, inactiveTabColor);
 
-      // PASS 2: Inactive Tab Backgrounds/Hover (drawn BEFORE active tab flares)
-      for (int i = 0; i < tabCount; i++) {
-          if (i == selectedIndex) continue; // Skip active
-          Rectangle tabBounds = {bounds.x + i * tabWidth, bounds.y, tabWidth, tabHeight};
-          if (localHoveredTabIndex == i) {
-              DrawRectangleRec(tabBounds, ColorAlpha(scheme.onSurface, 0.08f));
-          }
-      }
-
-      // PASS 3: Active Tab Shape & Flares (drawn ON TOP of inactive bgs)
-      if (selectedIndex >= 0 && selectedIndex < tabCount) {
-          Rectangle tabBounds = {bounds.x + selectedIndex * tabWidth, bounds.y, tabWidth, tabHeight};
-          
-          float r = options.cornerRadius;
-          float topPadding = 2.0f; 
+      // Tab shape: rounded top corners and concave flares into the strip at
+      // the bottom. The flares are cut with circles of the colors beside them.
+      auto drawTabShape = [&](Rectangle tabBounds, Color fill, Color leftMask, Color rightMask) {
+          float topPadding = 2.0f;
           float x = floorf(tabBounds.x);
           float y = floorf(tabBounds.y + topPadding);
           float w = floorf(tabBounds.width);
           float h = floorf(tabBounds.height - topPadding);
+          // body: center strip plus the two sides under the top arches
+          DrawRectangleRec({x + r, y, w - 2*r, h}, fill);
+          DrawRectangleRec({x, y + r, r, h - r + 0.5f}, fill);
+          DrawRectangleRec({x + w - r, y + r, r, h - r + 0.5f}, fill);
+          // top rounded corners (convex)
+          DrawCircleSector({x + r, y + r}, r, 180, 270, 64, fill);
+          DrawCircleSector({x + w - r, y + r}, r, 270, 360, 64, fill);
+          // bottom flares (concave): a square of the tab color, cut by a circle
+          DrawRectangleRec({x - r, y + h - r, r + 0.5f, r + 0.5f}, fill);
+          DrawCircleSector({x - r, y + h - r}, r + 0.5f, 0, 90, 64, leftMask);
+          DrawRectangleRec({x + w - 0.5f, y + h - r, r + 0.5f, r + 0.5f}, fill);
+          DrawCircleSector({x + w + r, y + h - r}, r + 0.5f, 90, 180, 64, rightMask);
+      };
+      // Hovered inactive tab: halfway between the strip and the active tab.
+      Color hoverTabColor = ColorLerp(inactiveTabColor, activeTabColor, 0.5f);
 
-          // Sequence: bottom horizontal line -> arch -> vertical line -> arch -> horizontal line -> arch -> vertical line -> arch -> horizontal line
+      // PASS 2: hovered inactive tab, in the same shape as the active one
+      // (drawn BEFORE the active tab so the active tab's flares stay on top)
+      for (int i = 0; i < tabCount; i++) {
+          if (i == selectedIndex || localHoveredTabIndex != i) continue;
+          Rectangle tabBounds = {bounds.x + i * tabWidth, tabTop, tabWidth, tabHeight};
+          drawTabShape(tabBounds, hoverTabColor, inactiveTabColor, inactiveTabColor);
+      }
 
-          // --- 1. Main body rectangles (Center & Sides) ---
-          // Center vertical strip
-          DrawRectangleRec({x + r, y, w - 2*r, h}, activeTabColor);
-          // Left vertical strip (connected to top-left arch and bottom-left flare)
-          DrawRectangleRec({x, y + r, r, h - r + 0.5f}, activeTabColor);
-          // Right vertical strip (connected to top-right arch and bottom-right flare)
-          DrawRectangleRec({x + w - r, y + r, r, h - r + 0.5f}, activeTabColor);
+      // PASS 3: Active Tab Shape & Flares (drawn ON TOP of inactive bgs)
+      if (selectedIndex >= 0 && selectedIndex < tabCount) {
+          Rectangle tabBounds = {bounds.x + selectedIndex * tabWidth, tabTop, tabWidth, tabHeight};
           
-          // --- 2. Top Rounded Corners (Convex Arches) ---
-          DrawCircleSector({x + r, y + r}, r, 180, 270, 64, activeTabColor);
-          DrawCircleSector({x + w - r, y + r}, r, 270, 360, 64, activeTabColor);
-          
-          // --- 3. Bottom Flares (Concave Arches) ---
           Color leftMaskColor = inactiveTabColor;
-          if (selectedIndex > 0 && localHoveredTabIndex == selectedIndex - 1) {
-              leftMaskColor = ColorAlphaBlend(inactiveTabColor, ColorAlpha(scheme.onSurface, 0.08f), WHITE);
-          }
-          
+          if (selectedIndex > 0 && localHoveredTabIndex == selectedIndex - 1) leftMaskColor = hoverTabColor;
           Color rightMaskColor = inactiveTabColor;
-          if (selectedIndex < tabCount - 1 && localHoveredTabIndex == selectedIndex + 1) {
-              rightMaskColor = ColorAlphaBlend(inactiveTabColor, ColorAlpha(scheme.onSurface, 0.08f), WHITE);
-          }
-
-          // Left Flare
-          // Draw a slightly larger base rectangle to ensure no gaps with the body
-          DrawRectangleRec({x - r, y + h - r, r + 0.5f, r + 0.5f}, activeTabColor);
-          // Draw the mask slightly larger to ensure it covers the edge completely
-          DrawCircleSector({x - r, y + h - r}, r + 0.5f, 0, 90, 64, leftMaskColor);
-          
-          // Right Flare
-          DrawRectangleRec({x + w - 0.5f, y + h - r, r + 0.5f, r + 0.5f}, activeTabColor);
-          DrawCircleSector({x + w + r, y + h - r}, r + 0.5f, 90, 180, 64, rightMaskColor);
+          if (selectedIndex < tabCount - 1 && localHoveredTabIndex == selectedIndex + 1) rightMaskColor = hoverTabColor;
+          drawTabShape(tabBounds, activeTabColor, leftMaskColor, rightMaskColor);
       }
 
       // PASS 4: All Tab Content (Text, Icons, Close Buttons)
       for (int i = 0; i < tabCount; i++) {
-          Rectangle tabBounds = {bounds.x + i * tabWidth, bounds.y, tabWidth, tabHeight};
+          Rectangle tabBounds = {bounds.x + i * tabWidth, tabTop, tabWidth, tabHeight};
           bool isActive = (i == selectedIndex);
           bool prevIsActive = (i > 0 && i - 1 == selectedIndex);
           
