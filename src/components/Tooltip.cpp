@@ -58,10 +58,40 @@ static void OnTooltipShown() {
 // TooltipManager implementation
 //-----------------------------------------------------------------------------
 
+// Set when some component asked for a tooltip while its anchor was hovered this frame.
+static bool hoveredThisFrame_ = false;
+
 void TooltipManager::Update() {
+  // Components only ask while their anchor is hovered, so a frame with no
+  // request means the mouse left (or the anchor was not drawn): hide the
+  // tooltip and restart the hover delay. Rich tooltips get a grace period and
+  // stay up while the mouse is over the tooltip itself.
+  if (!hoveredThisFrame_) {
+    hoverTimer_ = 0.0f;
+    lastAnchor_ = {0, 0, 0, 0};
+  }
+  if (!hasRequest_ && isVisible_) {
+    bool keep = false;
+    if (options_.IsRich()) {
+      if (CheckCollisionPointRec(GetMousePosition(), tooltipBounds_)) {
+        dismissTimer_ = 0.0f;
+        keep = true;
+      } else {
+        dismissTimer_ += GetFrameTime() * 1000.0f;
+        keep = dismissTimer_ < kDismissDelayMs;
+      }
+      mouseOverTooltip_ = keep && dismissTimer_ == 0.0f;
+    }
+    if (!keep) {
+      isVisible_ = false;
+      dismissTimer_ = 0.0f;
+      mouseOverTooltip_ = false;
+    }
+  }
   RenderPendingTooltip();
-  // Reset request flag for next frame
+  // Reset request flags for next frame
   hasRequest_ = false;
+  hoveredThisFrame_ = false;
 }
 
 void TooltipManager::DismissAll() {
@@ -121,6 +151,7 @@ void TooltipManager::RequestTooltip(Rectangle anchor, const char *text,
   }
 
   // Mouse is hovering - reset dismiss timer
+  hoveredThisFrame_ = true;
   dismissTimer_ = 0.0f;
 
   // Hovering - update timer
