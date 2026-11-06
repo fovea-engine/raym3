@@ -36,6 +36,7 @@ file(GLOB_RECURSE RAYM3_SOURCES CONFIGURE_DEPENDS
 )
 
 if(APPLE)
+    list(APPEND RAYM3_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/MacOSWindow.mm")
     list(APPEND RAYM3_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/SystemAppearance.mm")
     list(APPEND RAYM3_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/v2/EmojiRasterizerApple.mm")
 endif()
@@ -95,6 +96,14 @@ if(APPLE AND RAYM3_BUILD_SHARED)
 endif()
 
 if(RAYM3_BUILD_EXAMPLES AND NOT ANDROID)
+    if(APPLE)
+        add_executable(example_macos_window examples/macos_window_demo.cpp)
+        target_link_libraries(example_macos_window PRIVATE raym3)
+        set_target_properties(example_macos_window PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+        )
+    endif()
+
     add_executable(example_test
         examples/test.cpp
     )
@@ -238,8 +247,10 @@ if(APPLE)
     find_library(RAYM3_APPKIT_FRAMEWORK AppKit REQUIRED)
     find_library(RAYM3_CORETEXT_FRAMEWORK CoreText REQUIRED)
     find_library(RAYM3_COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
+    find_library(RAYM3_QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
     target_link_libraries(raym3 PRIVATE
         ${RAYM3_APPKIT_FRAMEWORK}
+        ${RAYM3_QUARTZCORE_FRAMEWORK}
         ${RAYM3_CORETEXT_FRAMEWORK}
         ${RAYM3_COREGRAPHICS_FRAMEWORK}
     )

@@ -247,6 +247,29 @@ raym3 requests 4x MSAA for the raylib window, so shapes have smooth edges. The r
 set(RAYM3_ANTIALIASING OFF CACHE BOOL "" FORCE)
 ```
 
+### macOS window transparency and titlebars
+
+RayM3 can configure raylib's native Cocoa window without replacing raylib's renderer. Request a transparent framebuffer before creating the window, then configure Cocoa after `InitWindow`:
+
+```cpp
+SetConfigFlags(FLAG_WINDOW_TRANSPARENT);
+InitWindow(800, 600, "My transparent app");
+
+raym3::platform::MacOSWindowOptions windowOptions;
+windowOptions.transparentBackground = true;
+windowOptions.fullSizeContentView = true;
+windowOptions.transparentTitlebar = true;
+raym3::platform::ConfigureMacOSWindow(windowOptions);
+```
+
+For desktop transparency, clear/draw with alpha zero in areas that should reveal the desktop. raylib's `FLAG_WINDOW_TRANSPARENT` must be set before `InitWindow`; setting Cocoa's window opacity afterward cannot add the missing framebuffer alpha channel. Existing opaque `ClearBackground` calls will continue to produce an opaque surface. Cocoa compositing is native desktop transparency; it is not Liquid Glass, which is a system material effect rather than a general raylib drawing API. Set `hideTitlebar` to hide the native titlebar while retaining standard window controls. `fullSizeContentView` allows custom raylib content to extend into the titlebar area. These options are macOS-specific and are no-ops on other platforms.
+
+Windows and Linux support is a future platform task: Windows needs evaluation of layered/composition window support and its interaction with raylib's swapchain; Linux support depends on compositor and X11/Wayland backend capabilities. Neither is implemented yet.
+
+On macOS, `SetMacOSWindowMaterialRegions` places rounded AppKit blur materials behind specified raylib-coordinate regions. `SetMacOSWindowDragRegions` marks blank custom-titlebar areas that should initiate native window dragging. Drag regions intercept mouse input, so keep custom controls out of them. The native close, minimize, and zoom buttons still receive clicks and hover when a drag region covers them. In v2, `Style.opacity` applies opacity to an individual view/container and its rendered contents; background colors can also carry alpha independently.
+
+Set `MacOSWindowOptions::showWindowBorder` to draw a native rounded edge around a transparent window (off by default; `windowBorderCornerWidth` can make the corners heavier than the edges), and call `SetMacOSWindowControlsPosition` to place the close, minimize, and zoom buttons in raylib window coordinates while retaining their native behavior.
+
 ### Font Configuration (Project-Agnostic)
 
 RayM3 supports Roboto v3.015 from [roboto-3-classic](https://github.com/googlefonts/roboto-3-classic). Native UI text defaults to the platform system UI face; Emscripten uses the bundled Roboto faces. This applies to projects using RayM3 as a submodule or standalone on macOS, Windows, Linux, Android, and Web/WASM.
