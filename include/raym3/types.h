@@ -124,6 +124,11 @@ struct TextFieldOptions {
   // single highlight that should span the whole element.
   bool drawStateLayer = true;
   float borderRadius = -1.0f;           // If >= 0, overrides theme cornerRadius
+  // Stay focused after Enter submits (chat composers, command lines).
+  bool keepFocusOnEnter = false;
+  // Take focus, with all text selected, the first frame the field is drawn
+  // (inline rename, a field that opens in response to a click).
+  bool autoFocus = false;
   std::function<void()> onFocus;
   std::function<void()> onBlur;
 };

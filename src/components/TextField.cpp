@@ -266,7 +266,16 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
                                 const TextFieldOptions &options) {
   int fieldId = currentFieldId_++;
 
+  bool fresh = fieldStates_.find(fieldId) == fieldStates_.end();
   TextFieldState &fieldState = fieldStates_[fieldId];
+  if (fresh && options.autoFocus && !options.disabled && !options.readOnly && buffer) {
+    activeFieldId_ = fieldId;
+    int len = (int)strlen(buffer);
+    fieldState.lastValue = buffer; // Escape restores this
+    fieldState.cursorPosition = len;
+    fieldState.selectionStart = 0;
+    fieldState.selectionEnd = len;
+  }
   fieldState.lastActiveFrame = currentFrame_;
   activeFieldIdsThisFrame_.insert(fieldId);
 
@@ -295,6 +304,15 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
 
   std::string incomingValue(buffer ? buffer : "");
   if (isFocused) {
+    // The host may change the buffer while the field is focused (e.g. clear it
+    // after a keepFocusOnEnter submit); keep the cursor inside the new text.
+    int len = buffer ? (int)strlen(buffer) : 0;
+    if (fieldState.cursorPosition > len) fieldState.cursorPosition = len;
+    if (fieldState.selectionStart > len || fieldState.selectionEnd > len) {
+      fieldState.selectionStart = -1;
+      fieldState.selectionEnd = -1;
+    }
+    if (len == 0) fieldState.scrollOffset = 0.0f;
   } else {
     if (fieldState.lastValue.empty() || incomingValue != fieldState.lastValue) {
       fieldState.lastValue = incomingValue;
@@ -1210,7 +1228,7 @@ bool TextFieldComponent::Render(char *buffer, int bufferSize, Rectangle bounds,
 
     if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
       fieldState.lastValue = std::string(buffer ? buffer : "");
-      activeFieldId_ = -1;
+      if (!options.keepFocusOnEnter) activeFieldId_ = -1;
       fieldState.selectionStart = -1;
       fieldState.selectionEnd = -1;
       return true;

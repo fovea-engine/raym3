@@ -428,6 +428,13 @@ void BeginFrame() {
   s_stencilStack.clear();
   // Clear stencil buffer at frame start so rounded clips from previous frame don't leak
   glClear(GL_STENCIL_BUFFER_BIT);
+  // Blend alpha as "over" (src + dst*(1-src)) instead of raylib's default
+  // (src*src + dst*(1-src)). With the default, every translucent overlay lowers
+  // the framebuffer's alpha, so opaque UI turns see-through in transparent windows.
+  rlDrawRenderBatchActive();
+  rlSetBlendFactorsSeparate(RL_SRC_ALPHA, RL_ONE_MINUS_SRC_ALPHA, RL_ONE,
+                            RL_ONE_MINUS_SRC_ALPHA, RL_FUNC_ADD, RL_FUNC_ADD);
+  rlSetBlendMode(RL_BLEND_CUSTOM_SEPARATE);
   TextFieldComponent::ResetFieldId();
   SliderComponent::ResetFieldId();
   RangeSliderComponent::ResetFieldId();
