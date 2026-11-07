@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include "raym3/components/AppBar.h"
 #include "raym3/components/Badge.h"
 #include "raym3/components/Divider.h"         // Include for enum definition
@@ -46,6 +48,20 @@ void DrawScissorDebug();
 
 void BeginFrame();
 void EndFrame();
+
+// Keep drawing while the user drags a window edge. On macOS and Windows the OS
+// runs its own event loop during a live resize, so the app's loop (and every
+// raylib frame) stops until the mouse is released and the old frame is shown
+// stretched. With a frame callback set, raym3 draws from the window refresh
+// callback whenever the window size changed. `frame` must draw one complete
+// frame (BeginDrawing ... EndFrame) and finish with PresentFrame(). Pass
+// nullptr to turn it off. No-op on platforms without GLFW.
+void SetLiveResizeFrame(std::function<void()> frame);
+// True while `frame` runs from inside a live resize.
+bool IsInLiveResize();
+// Ends the drawing like EndDrawing(). During a live resize it only flushes and
+// swaps: polling events from inside the OS resize loop is not allowed.
+void PresentFrame();
 
 // Paint a web-style range input track and circular thumb. Layout and input
 // remain owned by the host; colors and geometry come from CSS.

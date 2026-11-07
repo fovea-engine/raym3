@@ -801,4 +801,56 @@ void Divider(Rectangle bounds, DividerVariant variant) {
   DividerComponent::Render(bounds, variant);
 }
 
+//-----------------------------------------------------------------------------
+// Live resize
+//-----------------------------------------------------------------------------
+#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__) && !defined(PLATFORM_DRM)
+// raylib links GLFW in; only these two entry points are needed.
+extern "C" {
+typedef struct GLFWwindow GLFWwindow;
+typedef void (*GLFWwindowrefreshfun)(GLFWwindow *);
+GLFWwindow *glfwGetCurrentContext(void);
+GLFWwindowrefreshfun glfwSetWindowRefreshCallback(GLFWwindow *, GLFWwindowrefreshfun);
+}
+#define RAYM3_HAS_GLFW 1
+#endif
+
+static std::function<void()> s_liveResizeFrame;
+static bool s_inLiveResize = false;
+static int s_presentedW = -1, s_presentedH = -1;
+
+#ifdef RAYM3_HAS_GLFW
+static void LiveResizeRefresh(GLFWwindow *) {
+  // The refresh callback also fires for ordinary expose events, from inside
+  // the main loop's event polling. Draw only when the size changed since the
+  // last presented frame, which is what a live resize looks like.
+  if (!s_liveResizeFrame || s_inLiveResize) return;
+  if (GetScreenWidth() == s_presentedW && GetScreenHeight() == s_presentedH) return;
+  s_inLiveResize = true;
+  s_liveResizeFrame();
+  s_inLiveResize = false;
+}
+#endif
+
+void SetLiveResizeFrame(std::function<void()> frame) {
+  s_liveResizeFrame = std::move(frame);
+#ifdef RAYM3_HAS_GLFW
+  if (GLFWwindow *w = glfwGetCurrentContext())
+    glfwSetWindowRefreshCallback(w, s_liveResizeFrame ? LiveResizeRefresh : nullptr);
+#endif
+}
+
+bool IsInLiveResize() { return s_inLiveResize; }
+
+void PresentFrame() {
+  s_presentedW = GetScreenWidth();
+  s_presentedH = GetScreenHeight();
+  if (s_inLiveResize) {
+    rlDrawRenderBatchActive();
+    SwapScreenBuffer();
+  } else {
+    EndDrawing();
+  }
+}
+
 } // namespace raym3
