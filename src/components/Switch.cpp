@@ -44,10 +44,10 @@ bool SwitchComponent::Render(const char *label, Rectangle bounds,
 
   Rectangle switchBounds = GetSwitchBounds(bounds);
 
-  float trackX = switchBounds.x;
-  if (!label) {
-    trackX += (switchBounds.width - trackWidth) / 2.0f;
-  }
+  // With a label the track sits at the right edge and the label at the left,
+  // like iOS and Android settings rows. Without one it is centered.
+  float trackX = label ? switchBounds.x + switchBounds.width - trackWidth
+                       : switchBounds.x + (switchBounds.width - trackWidth) / 2.0f;
 
   // Align track vertically in bounds
   Rectangle trackRect = {
@@ -150,7 +150,7 @@ bool SwitchComponent::Render(const char *label, Rectangle bounds,
 
   // Label
   if (label) {
-    Vector2 labelPos = {bounds.x + trackWidth + 12.0f,
+    Vector2 labelPos = {bounds.x,
                         bounds.y + (bounds.height - 14.0f) / 2.0f};
     Renderer::DrawText(label, labelPos, 14.0f, scheme.onSurface,
                        FontWeight::Regular);
