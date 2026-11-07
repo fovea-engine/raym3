@@ -104,6 +104,15 @@ static void InstallControlHitTest(NSWindow* window) {
 // mouseDownCanMoveWindow only applies when the whole window background is
 // movable, so start the drag explicitly.
 - (void)mouseDown:(NSEvent*)event {
+  // A double click does what the user chose for titlebars in System Settings
+  // (Desktop & Dock > "Double-click a window's title bar to"): zoom by default.
+  if (event.clickCount == 2) {
+    NSString* action =
+        [NSUserDefaults.standardUserDefaults stringForKey:@"AppleActionOnDoubleClick"];
+    if ([action isEqualToString:@"Minimize"]) [self.window performMiniaturize:nil];
+    else if (![action isEqualToString:@"None"]) [self.window performZoom:nil];
+    return;
+  }
   [self.window performWindowDragWithEvent:event];
 }
 - (BOOL)acceptsFirstMouse:(NSEvent*)event { return YES; }

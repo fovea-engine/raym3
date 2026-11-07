@@ -70,7 +70,9 @@ void SetMacOSWindowMaterialRegions(
 // Replace the native drag hit regions, in raylib coordinates. These regions
 // intercept mouse input to start a native window drag, so keep custom controls
 // out of them. The native close, minimize, and zoom buttons still receive
-// clicks and hover when a region overlaps them. No-op off macOS.
+// clicks and hover when a region overlaps them. A double click in a region
+// zooms or minimizes the window, following the user's titlebar setting.
+// No-op off macOS.
 void SetMacOSWindowDragRegions(const std::vector<MacOSWindowDragRegion>& regions);
 
 // Position the native controls in raylib window coordinates. Call after
