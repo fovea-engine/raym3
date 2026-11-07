@@ -9,6 +9,8 @@ Capture the app from inside raylib. Do not screenshot the desktop: it shows the 
 - For a path you choose, or to check pixels in code: `Image img = LoadImageFromScreen();` then
   `ExportImage(img, "/abs/path.png");` or `GetImageColor(img, x, y)`, then `UnloadImage(img)`.
   `tests/overflow_transform_test.cpp` does both.
+  Before `EndDrawing()`, flush raylib's batch first (`rlDrawRenderBatchActive()`, or `EndScissorMode()`), or the
+  capture misses everything drawn since the last flush.
 - Gate it behind an env var (e.g. capture on frame N when `APP_SHOT=/path.png` is set) so the app needs no input and
   nothing stays in release behavior. Wait a few frames: fonts, icons and layout settle after the first frames.
 - Captures are in framebuffer pixels (2x on Retina) and keep alpha. On a transparent window, areas meant to be opaque
