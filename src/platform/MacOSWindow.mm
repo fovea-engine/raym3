@@ -7,7 +7,11 @@
 
 #include "raym3/platform/MacOSWindow.h"
 
-@class Raym3BorderView;
+@interface Raym3BorderView : NSView
+@property(nonatomic) CGFloat width;
+@property(nonatomic) CGFloat cornerWidth;
+- (void)updatePath;
+@end
 
 @interface Raym3MaterialHostView : NSView {
  @public
@@ -26,13 +30,19 @@
   self.raylibView.frame = self.bounds;
   self.borderView.frame = self.bounds;
   [(Raym3BorderView*)self.borderView updatePath];
-  self.layer.cornerRadius = 12.0;
+  self.layer.cornerRadius = raym3::platform::kMacOSWindowCornerRadius;
   self.layer.masksToBounds = YES;
   const NSRect bounds = self.bounds;
   for (NSUInteger i = 0; i < self.effects.count && i < regionValues.size(); ++i) {
-    const Rectangle r = regionValues[i].bounds;
-    self.effects[i].frame = NSMakeRect(r.x, NSHeight(bounds) - r.y - r.height,
-                                      r.width, r.height);
+    const auto& region = regionValues[i];
+    const Rectangle r = region.bounds;
+    const CGFloat height = region.tracksWindowHeight ? NSHeight(bounds) : r.height;
+    const CGFloat y = region.tracksWindowHeight ? 0.0 : NSHeight(bounds) - r.y - r.height;
+    const CGFloat width = region.tracksWindowWidth
+        ? std::min<CGFloat>(region.maxWidth > 0.0f ? region.maxWidth : r.width,
+                            std::max<CGFloat>(0.0, NSWidth(bounds) - region.windowRightInset))
+        : r.width;
+    self.effects[i].frame = NSMakeRect(r.x, y, width, height);
     self.effects[i].wantsLayer = YES;
     self.effects[i].layer.cornerRadius = regionValues[i].cornerRadius;
     self.effects[i].layer.masksToBounds = regionValues[i].cornerRadius > 0;
@@ -243,16 +253,11 @@ static Raym3ControlsOverlay* ControlsOverlay(NSWindow* window, bool create) {
 // Draws the window border above all other views and never takes input.
 // The border is a filled ring: outer rounded rect minus an inner one. A larger
 // inner radius than a concentric ring would use makes the corners heavier.
-@interface Raym3BorderView : NSView
-@property(nonatomic) CGFloat width;
-@property(nonatomic) CGFloat cornerWidth;
-- (void)updatePath;
-@end
 @implementation Raym3BorderView
 - (NSView*)hitTest:(NSPoint)point { return nil; }
 - (CALayer*)makeBackingLayer { return [CAShapeLayer layer]; }
 - (void)updatePath {
-  const CGFloat radius = 12.0;
+  const CGFloat radius = raym3::platform::kMacOSWindowCornerRadius;
   const CGFloat w = self.width;
   const CGFloat k = sqrt(2.0) - 1.0;
   // Diagonal thickness is w*sqrt2 + (innerRadius - radius) * k.
@@ -324,7 +329,7 @@ void ConfigureMacOSWindow(const MacOSWindowOptions& options) {
     [window setHasShadow:YES];
     Raym3MaterialHostView* host = MaterialHost(window, true);
     host.wantsLayer = YES;
-    host.layer.cornerRadius = 12.0;
+    host.layer.cornerRadius = kMacOSWindowCornerRadius;
     host.layer.masksToBounds = YES;
     Raym3BorderView* border = (Raym3BorderView*)host.borderView;
     border.width = options.showWindowBorder ? std::max(0.0f, options.windowBorderWidth) : 0.0;
@@ -372,17 +377,23 @@ void SetMacOSWindowMaterialRegions(
   Raym3MaterialHostView* host = MaterialHost(window, !regions.empty());
   if (host == nil) return;
 
-  for (NSVisualEffectView* effect in host.effects) [effect removeFromSuperview];
-  [host.effects removeAllObjects];
-  host->regionValues = regions;
-  for (const auto& region : regions) {
+  while (host.effects.count < regions.size()) {
     NSVisualEffectView* effect = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
-    effect.material = NativeMaterial(region.material);
-    effect.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    effect.state = NSVisualEffectStateActive;
     [host addSubview:effect positioned:NSWindowBelow relativeTo:host.raylibView];
     [host.effects addObject:effect];
   }
+  host->regionValues = regions;
+  for (NSUInteger i = 0; i < host.effects.count && i < regions.size(); ++i) {
+    const auto& region = regions[i];
+    NSVisualEffectView* effect = host.effects[i];
+    effect.material = NativeMaterial(region.material);
+    effect.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    effect.state = NSVisualEffectStateActive;
+    effect.autoresizingMask = region.tracksWindowHeight ? NSViewHeightSizable : NSViewNotSizable;
+    effect.hidden = NO;
+  }
+  for (NSUInteger i = regions.size(); i < host.effects.count; ++i)
+    host.effects[i].hidden = YES;
   [host setNeedsLayout:YES];
   [host layoutSubtreeIfNeeded];
 }
@@ -393,15 +404,15 @@ void SetMacOSWindowDragRegions(
   Raym3MaterialHostView* host = MaterialHost(window, !regions.empty());
   if (host == nil) return;
 
-  for (NSView* view in host.dragViews) [view removeFromSuperview];
-  [host.dragViews removeAllObjects];
-  host->dragValues = regions;
-  for (const auto& region : regions) {
+  while (host.dragViews.count < regions.size()) {
     Raym3WindowDragView* dragView = [[Raym3WindowDragView alloc] initWithFrame:NSZeroRect];
     dragView.autoresizingMask = NSViewNotSizable;
     [host addSubview:dragView positioned:NSWindowBelow relativeTo:host.borderView];
     [host.dragViews addObject:dragView];
   }
+  host->dragValues = regions;
+  for (NSUInteger i = 0; i < host.dragViews.count; ++i)
+    host.dragViews[i].hidden = i >= regions.size();
   [host setNeedsLayout:YES];
   [host layoutSubtreeIfNeeded];
 }
