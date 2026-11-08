@@ -8,6 +8,10 @@
 
 namespace raym3::platform {
 
+// Keep client-drawn material cutouts and rounded hit clips aligned with the
+// native transparent window edge.
+inline constexpr float kMacOSWindowCornerRadius = 12.0f;
+
 struct MacOSWindowOptions {
   // Allow transparent pixels in the window's content to show the desktop.
   bool transparentBackground = false;
@@ -49,6 +53,12 @@ struct MacOSWindowMaterialRegion {
   MacOSWindowMaterial material = MacOSWindowMaterial::Sidebar;
   // In raylib logical points. Match the radius used to draw the raylib shape.
   float cornerRadius = 0.0f;
+  bool tracksWindowHeight = false; // Keep full-height regions aligned during live resize.
+  // Track a width that is constrained by maxWidth and the window's trailing inset.
+  // Useful for sidebars that must follow narrow live resizes before the next render.
+  bool tracksWindowWidth = false;
+  float maxWidth = 0.0f;
+  float windowRightInset = 0.0f;
 };
 
 // Blank/custom-titlebar areas that should initiate native window dragging.
@@ -63,7 +73,9 @@ struct MacOSWindowDragRegion {
 void ConfigureMacOSWindow(const MacOSWindowOptions& options);
 
 // Replace the native material regions. Call after ConfigureMacOSWindow() and
-// refresh the rectangles when layout or window size changes. No-op off macOS.
+// refresh the rectangles when layout changes. Regions may track window height,
+// or a width capped by maxWidth and windowRightInset during live resize. No-op
+// off macOS.
 void SetMacOSWindowMaterialRegions(
     const std::vector<MacOSWindowMaterialRegion>& regions);
 

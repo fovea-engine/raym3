@@ -91,6 +91,33 @@ static void NormalizeSelection(int &start, int &end) {
     std::swap(start, end);
 }
 
+static void WipeString(std::string &text) {
+  // A volatile store prevents the compiler from treating this as a dead
+  // clear before the string releases its allocation. Extend to the existing
+  // capacity first so bytes left behind by earlier edits are overwritten too.
+  if (text.capacity() > text.size())
+    text.resize(text.capacity(), '\0');
+  volatile char *data = text.empty() ? nullptr : text.data();
+  for (size_t i = 0; i < text.size(); ++i)
+    data[i] = '\0';
+  text.clear();
+}
+
+static void ClearTextInputHistory(NodeId nodeId) {
+  auto &context = Ctx();
+  auto history = context.textInputUndo.find(nodeId);
+  if (history != context.textInputUndo.end()) {
+    for (std::string &entry : history->second.history)
+      WipeString(entry);
+    context.textInputUndo.erase(history);
+  }
+  auto mirrored = context.lastNotifiedTextInputState.find(nodeId);
+  if (mirrored != context.lastNotifiedTextInputState.end()) {
+    WipeString(mirrored->second.text);
+    context.lastNotifiedTextInputState.erase(mirrored);
+  }
+}
+
 static bool IsUtf8ContinuationByte(unsigned char c) {
   return (c & 0xC0) == 0x80;
 }
@@ -345,6 +372,11 @@ static void NotifyTextInputState(Node &node, bool textChanged) {
   NodeId id = IdOf(&node);
   TextInputEditingState next = SnapshotEditingState(node);
   next.textChanged = textChanged;
+  if (node.textInput.secure) {
+    StateCallback()(id, next);
+    WipeString(next.text);
+    return;
+  }
   auto &last = Ctx().lastNotifiedTextInputState[id];
   if (!textChanged && last.text == next.text &&
       last.selectionStart == next.selectionStart &&
@@ -375,8 +407,10 @@ static void HideSelectionOverlay(Node &node) {
   node.textEdit.longPressSelectionActive = false;
 }
 
-static void SaveToHistory(NodeId id, const std::string &text) {
-  TextInputUndoState &u = Ctx().textInputUndo[id];
+static void SaveToHistory(Node &node, const std::string &text) {
+  if (node.textInput.secure)
+    return;
+  TextInputUndoState &u = Ctx().textInputUndo[IdOf(&node)];
   if (u.isUndoRedo)
     return;
   if (u.index >= 0 && u.index < static_cast<int>(u.history.size()) - 1)
@@ -869,11 +903,11 @@ static void SubmitEditingInternal(Node &node) {
     if (!node.textInput.maxLength ||
         Utf8CodepointCount(std::string(buffer)) < node.textInput.maxLength) {
       if (edit.selectionStart != -1 && edit.selectionEnd != -1) {
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
         DeleteSelection(node, buffer);
         len = static_cast<int>(std::strlen(buffer));
       } else {
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
       }
       edit.cursor = std::clamp(edit.cursor, 0, len);
       if (len + 1 < bufferSize) {
@@ -948,6 +982,8 @@ static void ProcessKeyboard(Node &node) {
   }
 
   if (cmd && IsKeyPressed(KEY_C)) {
+    if (node.textInput.secure)
+      return;
     int s = edit.selectionStart, e = edit.selectionEnd;
     NormalizeSelection(s, e);
     if (s != -1 && e != -1) {
@@ -960,6 +996,8 @@ static void ProcessKeyboard(Node &node) {
   }
 
   if (cmd && IsKeyPressed(KEY_X)) {
+    if (node.textInput.secure)
+      return;
     int s = edit.selectionStart, e = edit.selectionEnd;
     NormalizeSelection(s, e);
     if (s != -1 && e != -1) {
@@ -967,7 +1005,7 @@ static void ProcessKeyboard(Node &node) {
         HostHooks().setClipboardText(std::string(buffer + s, e - s));
       else
         SetClipboardText(std::string(buffer + s, e - s).c_str());
-      SaveToHistory(id, buffer);
+      SaveToHistory(node, buffer);
       DeleteSelection(node, buffer);
       notify();
     }
@@ -981,7 +1019,7 @@ static void ProcessKeyboard(Node &node) {
             : std::string(GetClipboardText() ? GetClipboardText() : "");
     const char *clipText = clip.c_str();
     if (clipText && clipText[0]) {
-      SaveToHistory(id, buffer);
+      SaveToHistory(node, buffer);
       int s = edit.selectionStart, e = edit.selectionEnd;
       NormalizeSelection(s, e);
       if (s != -1 && e != -1)
@@ -1032,7 +1070,7 @@ static void ProcessKeyboard(Node &node) {
       shouldUndo = true;
       edit.undoTimer = GetTime() + 0.05;
     }
-    if (shouldUndo && undo.index > 0) {
+    if (!node.textInput.secure && shouldUndo && undo.index > 0) {
       undo.isUndoRedo = true;
       undo.index--;
       std::strncpy(buffer, undo.history[undo.index].c_str(), bufferSize - 1);
@@ -1056,7 +1094,8 @@ static void ProcessKeyboard(Node &node) {
       shouldRedo = true;
       edit.redoTimer = GetTime() + 0.05;
     }
-    if (shouldRedo && undo.index < static_cast<int>(undo.history.size()) - 1) {
+    if (!node.textInput.secure && shouldRedo &&
+        undo.index < static_cast<int>(undo.history.size()) - 1) {
       undo.isUndoRedo = true;
       undo.index++;
       std::strncpy(buffer, undo.history[undo.index].c_str(), bufferSize - 1);
@@ -1233,10 +1272,10 @@ static void ProcessKeyboard(Node &node) {
           GetTime() + (IsKeyPressed(KEY_BACKSPACE) ? 0.5 : 0.05);
       edit.lastBlinkTime = static_cast<float>(GetTime());
       if (hasSelection) {
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
         DeleteSelection(node, buffer);
       } else if (cmd && edit.cursor > 0) {
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
         int len = static_cast<int>(std::strlen(buffer));
         int start = GetPrevWordPos(buffer, edit.cursor);
         std::memmove(&buffer[start], &buffer[edit.cursor],
@@ -1244,13 +1283,13 @@ static void ProcessKeyboard(Node &node) {
         edit.cursor = start;
       } else if (alt && edit.cursor > 0) {
         int prev = GetPrevWordPos(buffer, edit.cursor);
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
         int len = static_cast<int>(std::strlen(buffer));
         std::memmove(&buffer[prev], &buffer[edit.cursor],
                      static_cast<size_t>(len - edit.cursor + 1));
         edit.cursor = prev;
       } else if (edit.cursor > 0) {
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
         int len = static_cast<int>(std::strlen(buffer));
         int prev = Utf8Prev(std::string(buffer), edit.cursor);
         std::memmove(&buffer[prev], &buffer[edit.cursor],
@@ -1273,15 +1312,15 @@ static void ProcessKeyboard(Node &node) {
       edit.lastBlinkTime = static_cast<float>(GetTime());
       int len = static_cast<int>(std::strlen(buffer));
       if (hasSelection) {
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
         DeleteSelection(node, buffer);
       } else if (alt && edit.cursor < len) {
         int next = GetNextWordPos(buffer, edit.cursor);
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
         std::memmove(&buffer[edit.cursor], &buffer[next],
                      static_cast<size_t>(len - next + 1));
       } else if (edit.cursor < len) {
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
         int next = Utf8Next(std::string(buffer), edit.cursor);
         std::memmove(&buffer[edit.cursor], &buffer[next],
                      static_cast<size_t>(len - next + 1));
@@ -1304,11 +1343,11 @@ static void ProcessKeyboard(Node &node) {
         Utf8CodepointCount(std::string(buffer)) >= node.textInput.maxLength;
     if (len < bufferSize - 1 && key >= 32 && !atMaxLength) {
       if (hasSelection) {
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
         DeleteSelection(node, buffer);
         len = static_cast<int>(std::strlen(buffer));
       } else {
-        SaveToHistory(id, buffer);
+        SaveToHistory(node, buffer);
       }
       edit.cursor = std::clamp(edit.cursor, 0, len);
       std::string insert;
@@ -1338,8 +1377,7 @@ void TextInputSubmitEditing(Node &node) { SubmitEditingInternal(node); }
 
 void ResyncTextInputBuffer(NodeId nodeId, int cursorPos) {
   (void)cursorPos;
-  Ctx().textInputUndo.erase(nodeId);
-  Ctx().lastNotifiedTextInputState.erase(nodeId);
+  ClearTextInputHistory(nodeId);
 }
 
 void SetTextInputHostHooks(TextInputHostHooks hooks) {
@@ -1498,6 +1536,8 @@ void TextInputSelectAll(Node &node) {
 }
 
 bool TextInputCopy(Node &node) {
+  if (node.textInput.secure)
+    return false;
   char *buffer = TextBuffer(node);
   if (!buffer)
     return false;
@@ -1516,7 +1556,7 @@ bool TextInputCut(Node &node) {
   char *buffer = TextBuffer(node);
   if (!buffer || !TextInputCopy(node))
     return false;
-  SaveToHistory(IdOf(&node), buffer);
+  SaveToHistory(node, buffer);
   DeleteSelection(node, buffer);
   node.textEdit.handlesVisible = false;
   node.textEdit.toolbarVisible = false;
@@ -1544,7 +1584,7 @@ bool TextInputReplaceSelection(Node &node, const std::string &text,
   int bufferSize = TextBufferSize(node);
   if (!buffer || bufferSize <= 1)
     return false;
-  SaveToHistory(IdOf(&node), buffer);
+  SaveToHistory(node, buffer);
   int s = node.textEdit.selectionStart, e = node.textEdit.selectionEnd;
   NormalizeSelection(s, e);
   if (s < 0 || e < 0) {
@@ -1607,6 +1647,8 @@ void TextInputSetEditingState(Node &node, const std::string &text,
   if (notifyTextChanged && node.textInput.onChange)
     node.textInput.onChange(clipped);
   NotifyTextInputState(node, notifyTextChanged);
+  if (node.textInput.secure)
+    WipeString(clipped);
 }
 
 void ResolveTextInput(const NodePtr &root) {
@@ -1628,19 +1670,23 @@ void ResolveTextInput(const NodePtr &root) {
 
     // Gain focus (and IME switch) before blur so onBlur can see the new field.
     if (next && next->kind == NodeKind::TextInput) {
-      if ((!next->textEdit.wasFocused || switchingField) &&
-          next->textInput.onFocus)
+      const bool gainedFocus = !next->textEdit.wasFocused || switchingField;
+      if (gainedFocus && next->textInput.onFocus)
         next->textInput.onFocus();
       next->textEdit.wasFocused = true;
+      if (next->textInput.secure && gainedFocus)
+        ClearTextInputHistory(IdOf(next));
       char *buffer = TextBuffer(*next);
       if (buffer) {
         int len = static_cast<int>(std::strlen(buffer));
         if (next->textEdit.cursor > len)
           next->textEdit.cursor = len;
-        TextInputUndoState &u = Ctx().textInputUndo[IdOf(next)];
-        if (u.history.empty()) {
-          u.history.push_back(buffer);
-          u.index = 0;
+        if (!next->textInput.secure) {
+          TextInputUndoState &u = Ctx().textInputUndo[IdOf(next)];
+          if (u.history.empty()) {
+            u.history.push_back(buffer);
+            u.index = 0;
+          }
         }
       }
       NotifyTextInputState(*next, true);
