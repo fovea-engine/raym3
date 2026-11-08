@@ -4,6 +4,7 @@
 #include "raym3/fonts/FontManager.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
